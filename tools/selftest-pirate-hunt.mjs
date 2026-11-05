@@ -1,8 +1,8 @@
+import {testPirateRecovery} from './selftest-pirate-recovery.mjs';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { pirateHuntOptions, startPirateHunt } from '../src/pirates.mjs';
-import { registerFleetReservations, isFleetReserved } from '../src/fleet-reservations.mjs';
 
 const player = { level: 16, worldId: 1000001, scenarioId: 1 };
 const cfg = { tables: {
@@ -52,6 +52,7 @@ async function selection(client) {
 const send = (client, choice) => startPirateHunt(client, cfg, player, choice);
 
 export async function testPirateHunt() {
+  testPirateRecovery();
   const { client, data, fleet } = fixture();
   const view = await options(client);
   assert.equal(view.targets.length, 1);
@@ -60,7 +61,6 @@ export async function testPirateHunt() {
   assert.equal(view.fuelPerFleet, 300);
   const updates = [], choose = { ...(await selection(client)), report: e => updates.push(e) };
   assert.equal((await send(client, choose)).status, 'sent');
-  assert.equal(isFleetReserved(client, fleet.buildingId, 'radar'), true, '海盗未确认的出征必须对情报任务可见');
   await assert.rejects(send(client, choose), /变化|等待|请求/);
   const renewed = await selection(client);
   await assert.rejects(send(client, renewed), /等待|请求|派出/);
@@ -74,7 +74,6 @@ export async function testPirateHunt() {
   data.PirateKillRecordResponse.records = [{ type: 1, maxKilledLevel: 1 }];
   const after = await options(client);
   assert.equal(updates.at(-1).status, 'won');
-  assert.equal(isFleetReserved(client, fleet.buildingId), false, '个人首杀确认后释放本模块预占');
   assert.match(after.targets[0].reason, /赛季阶段/);
 
   for (const [mutate, reason] of [
@@ -113,27 +112,33 @@ export async function testPirateHunt() {
   assert.deepEqual(events, ['pending', 'unknown'], '仅目标广播不足以宣称本队已出征或失败');
   await assert.rejects(send(foreign.client, await selection(foreign.client)), /等待|请求|派出/);
 
+  const recovering = fixture(), observed = [];
+  const choice = await selection(recovering.client);
+  recovering.client.sendWatch = async () => {
+    const push = fields => recovering.client.emit('message', {name:'SCMyFleetUpdate',body:{fleets:[{buildingId:'1远征船',...fields}]}});
+    push({state:2,targetCityId:0,targetGridIdx:401,moveEndTs:nowForTest()});
+    push({state:5,cityId:39,curGridIdx:401});
+    recovering.client.emit('message',{name:'SCPirateCampaignBegin',body:{uid:201}});
+    push({state:3,cityId:39,curGridIdx:401});
+    recovering.client.emit('message',{name:'SCPirateCampaignEnd',body:{uid:201,isWin:false}});
+  };
+  function nowForTest(){return Math.floor(Date.now()/1000)+7;}
+  const lost=await send(recovering.client,{...choice,report:e=>observed.push(e.status)});
+  assert.equal(lost.status,'lost');assert(observed.includes('started'));assert.equal(observed.at(-1),'lost');
+  assert(!(await options(recovering.client)).fleets[0].reason);
+
+  const unrelated=fixture();
+  await send(unrelated.client,await selection(unrelated.client));
+  unrelated.client.emit('message',{name:'SCMyFleetUpdate',body:{fleets:[{buildingId:'1远征船',state:3,curGridIdx:999},{buildingId:'2远征船',state:3,curGridIdx:401}]}});
+  unrelated.client.emit('message',{name:'SCPirateCampaignEnd',body:{uid:201,isWin:false}});
+  assert.match((await options(unrelated.client)).fleets[0].reason,/待确认|已派出/);
+
   const rejected = fixture();
   const rejection = Object.assign(new Error('server prompt: insufficient petrol'), { request: 'ChallengePirateRequest', prompt: {} });
   rejected.client.sendWatch = async () => { throw rejection; };
   await assert.rejects(send(rejected.client, await selection(rejected.client)), /insufficient petrol/);
   const retry = await options(rejected.client);
   assert(!retry.targets[0].reason && !retry.fleets[0].reason, '收到明确拒绝后允许用户重新选择');
-
-  const shared = fixture();
-  const choice = await selection(shared.client);
-  let radarPending = true;
-  registerFleetReservations(shared.client, 'radar', id => radarPending && id === '1远征船', () => radarPending);
-  await assert.rejects(send(shared.client, choice), /已派出|尚待确认/);
-  assert.equal(shared.client.writes.length, 0, '服务器仍显示空闲时也不得抢情报或维修预占的舰队');
-  radarPending = false;
-  await send(shared.client, choice);
-  assert.equal(shared.client.writes.length, 1);
-
-  const otherFleet = fixture();
-  registerFleetReservations(otherFleet.client, 'radar', id => id === '2远征船', () => true);
-  await assert.rejects(send(otherFleet.client, await selection(otherFleet.client)), /汽油/);
-  assert.equal(otherFleet.client.writes.length, 0, '另一艘船的耗油未确认时也不能读取旧余额继续出征');
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

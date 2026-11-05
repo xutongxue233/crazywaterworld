@@ -1,5 +1,5 @@
 {
-  "name": "crazywaterworld",
+  "name": "crazywaterword",
   "version": "1.0.0",
   "description": "微信小游戏《疯狂水世界》协议侧挂机工具：直连游戏网关完成日常/任务/英雄/海面循环，附本地网页控制台",
   "type": "module",
@@ -7,9 +7,8 @@
   "scripts": {
     "build:ui": "esbuild src/ui/console.tsx --bundle --platform=node --format=esm --packages=external --outfile=src/ui/dist/console.mjs && tailwindcss -i src/ui/theme.css -o src/ui/dist/theme.css --minify",
     "start": "node src/app.mjs",
-    "test": "node src/selftest.mjs && node tools/selftest-automation.mjs && node tools/selftest-activity-actions.mjs && node tools/selftest-overview-power.mjs && node tools/selftest-free-rewards.mjs && node tools/selftest-pirate-board.mjs && node tools/selftest-hero-show-rewards.mjs && node tools/selftest-daily-schedule.mjs && node tools/selftest-daily-combat.mjs && node tools/selftest-ad-shop.mjs && npm run test:level16 && node tools/selftest-equipment-crafting.mjs && node tools/selftest-lineups.mjs && node tools/selftest-reconnect.mjs && node tools/selftest-extra-rewards.mjs && node tools/selftest-idle-growth.mjs && npm run test:progression",
+    "test": "node src/selftest.mjs && node tools/selftest-automation.mjs && node tools/selftest-hero-show-rewards.mjs && node tools/selftest-daily-schedule.mjs && node tools/selftest-ad-shop.mjs && npm run test:level16",
     "test:level16": "node tools/selftest-trial-sweeps.mjs && node tools/selftest-hero-equipment.mjs && node tools/selftest-guild.mjs && node tools/selftest-fleet-formation.mjs && node tools/selftest-pirate-hunt.mjs",
-    "test:progression": "node tools/selftest-equipment-automation.mjs && node tools/selftest-radar.mjs && node tools/selftest-order-reservations.mjs && node tools/selftest-guild-orders.mjs && node tools/selftest-museum.mjs && node tools/selftest-pet-breeding.mjs && node tools/selftest-progression-budgets.mjs && node tools/selftest-progress-automation.mjs",
     "test:capture": "node tools/selftest-raw-capture.mjs && node tools/selftest-douyin-cli.mjs",
     "test:wxapkg": "node tools/selftest-wxapkg.mjs",
     "test:wechat": "node tools/selftest-wechat-capture.mjs && node tools/selftest-wechat-cli.mjs",

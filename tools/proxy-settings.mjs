@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 export const KEY = process.env.CW_REG_KEY
   ?? 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 export const BACKUP = process.env.CW_PROXY_BACKUP
-  ?? path.join(os.homedir(), '.cw-ca', 'proxy-backup.json');
+  ?? path.resolve(import.meta.dirname, '../../certificates/proxy-backup.json');
 const VALUES = ['ProxyEnable', 'ProxyServer', 'ProxyOverride'];
 
 export function pointsToCapture(values, port) {

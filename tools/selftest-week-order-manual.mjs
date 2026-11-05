@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+import { commentsEighteenFixture } from './fixtures/comments-eighteen.mjs';
+import { activityView,runWeekOrder } from '../src/activities.mjs';
+import { createUsageLedger,defaultSettings } from '../src/automation-settings.mjs';
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cw-week-order-'));
+const f=await commentsEighteenFixture(),cfg=f.config,p=f.protocol,original=f.client.request;
+const bag=f.responses.AllItemRequest.items,order=f.responses.WeekOrderInfoRequest;order.order=[{id:'冲浪板',num:1}];
+const settings=defaultSettings();settings.resources.allowDiamonds=true;let ruby=2000,mode='normal';const writes=[];
+f.client.request=async(n,b={},resp=n.replace(/Request$/,'Response'))=>{
+ if(n==='AllResourceRequest')return {list:[{res:4,amount:ruby}]};
+ if(!['CommonBuyGoodsRequest','FinishWeekOrderRequest'].includes(n))return original(n,b,resp);
+ const body=p[n].decode(p[n].encode(b).finish());writes.push(n);
+ if(mode==='lost')throw Error('timeout');if(mode==='reject')throw Object.assign(Error('rejected'),{prompt:{prompt:5},request:n});
+ if(n==='CommonBuyGoodsRequest'){assert.equal(body.goods[0].itemId,'冲浪板');assert.equal(body.goods[0].num,1);ruby-=320;bag.push({itemId:'冲浪板',num:1});return p[resp].decode(p[resp].encode({reward:{asset:[{id:'冲浪板',num:1}]}}).finish());}
+ const id=cfg.tables.WeekOrderRwdCfg.data.find(x=>!order.gotRwdId.includes(x.rwdId)&&x.rwdId>0).rwdId;order.gotRwdId.push(id);order.order=[{id:'木材',num:2}];
+ return p[resp].decode(p[resp].encode({randomRwdId:id,newOrder:order.order}).finish());
+};
+const ledger=createUsageLedger('week-test',{file:path.join(dir,'usage.json')});
+const current=async()=>(await activityView(f.client,f.client.festivals,cfg)).order;
+const call=(action,payload)=>runWeekOrder(f.client,cfg,settings,ledger,()=>true,action,payload);
+const initial=await current(),quote={orderKey:initial.orderKey,itemId:'冲浪板',quantity:1,cost:320};
+assert.equal(initial.materials[0].price,320);
+await assert.rejects(call('submit',quote),/未齐/);
+await assert.rejects(call('buy',{...quote,cost:1}),/报价/);
+settings.resources.allowDiamonds=false;await assert.rejects(call('buy',quote),/关闭/);settings.resources.allowDiamonds=true;
+settings.resources.diamondThreshold=1900;await assert.rejects(call('buy',quote),/保留/);settings.resources.diamondThreshold=0;
+assert.equal(writes.length,0);mode='reject';await assert.rejects(call('buy',quote));mode='normal';
+await call('buy',quote);assert.equal(ledger.snapshot().counters.diamonds,320);await assert.rejects(call('buy',quote));
+await call('submit',quote);await assert.rejects(call('submit',quote),/订单已变化/);
+const next=await current();mode='lost';await assert.rejects(call('submit',{orderKey:next.orderKey}));await assert.rejects(call('submit',{orderKey:next.orderKey}),/已提交/);
+assert.equal(writes.length,4);console.log('周订单专项通过：价格、钻石开关/保留、缺料、拒绝后重试、补料与整单回读、旧单与未知结果防重。');

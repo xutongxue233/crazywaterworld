@@ -1,14 +1,38 @@
+import {checkFleetSettlement,invalidateFleetReports} from './fleet-settlement.mjs';
+import { recoverPirateHunts } from './pirate-recovery.mjs';
+import {readGuildTech,upgradeGuildTech} from './guild-tech.mjs';
+import {resourceFieldRows,resourceFieldTotals} from './resource-fields.mjs';
+import {activityRankCatalog,readActivityRanking} from './activity-rankings.mjs';
+import {readActivityStatistics} from './activity-statistics.mjs';
+import { giftCodeStatus, startGiftCodes } from './gift-codes.mjs';
+import {runtimeProgress} from './runtime-progress.mjs';
+import {watchTreasureTravel} from './treasure-follow.mjs';
+import {watchFleetMaintenance,fleetMaintenanceEnabled} from './fleet-maintenance.mjs';
+import {readPirateSweeps} from './pirate-sweeps.mjs';
+import {readWorldTarget} from './world-target.mjs';
+import {readWorldBoss} from './world-boss.mjs';
+import { readWeekCalendar, claimReportRewards, rewardData } from './missing-rewards.mjs';
+import { readWorldOverview } from './world-overview.mjs';
+import { readAllianceRadar } from './alliance-radar.mjs';
+import { planRadarPreview, pendingPetrol } from './dispatch-preview.mjs';
+import { inspectHunt } from './pirates.mjs';
+import { selectPirateAdvance, runSinglePirateHunt } from './pirate-advance.mjs';
+import { fleetRecordReason, dispatchReservationReason, reserveDispatch, fleetDispatchView, dispatchLabels } from './fleet-availability.mjs';
+import { watchFreeRewardClock } from './extra-free-rewards.mjs';
+import { createPirateAdvanceTask } from './pirate-advance.mjs';
+import { automationControlView, setAutomationControl } from './automation-controls.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { GameClient, toNumber } from './client.mjs';
-import { challengeTrial, trialProgress } from './trials.mjs';
-import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment, uidText } from './hero-equipment.mjs';
-import { readEquipmentCrafting, startEquipmentCraft, collectEquipmentCraft } from './equipment-crafting.mjs';
-import { readGuild, claimGuildWelfare } from './guild.mjs';
+import { createHash } from 'node:crypto';
+import { GameClient } from './client.mjs';
+import { challengeTrial, trialProgress, createTrialTask } from './trials.mjs';
+import { readTrialSweeps, executeTrialSweep } from './trial-sweeps.mjs';
+import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment } from './hero-equipment.mjs';
+import { readGuild, readGuildMembers, claimGuildWelfare, claimMyGuildAid } from './guild.mjs';
+import { createGuildMutualTask, readMutualOptions } from './guild-mutual.mjs';
 import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
-import { readLineups, applyLineup } from './lineups.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
@@ -17,23 +41,27 @@ import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
 import { pirateTracker, pirateHuntOptions, startPirateHunt } from './pirates.mjs';
-import { activityView, runActivity } from './activities.mjs';
-import { applyActiveScore, syncFestivalDay } from './free-rewards.mjs';
-import { pirateBoard, claimCampaignReports } from './pirate-board.mjs';
+import { activityView, runWeekOrder } from './activities.mjs';
 import { displayMaterial, getConfig } from './config.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { appointments } from './appointments.mjs';
 import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
-import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
-import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
+import { dailySingleState, addDailyOptions, runDailySingle } from './daily-single.mjs';
+import { surveyTasks, runTasks, formatTaskPlan, selectTaskSettings } from './tasks.mjs';
+import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, rerollResidentOrder, watchResidentRefreshes, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { describeLogError } from './log-errors.mjs';
+import { classifyLog } from './log-categories.mjs';
 import { operationLabels } from './operation-labels.mjs';
-import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey } from './automation.mjs';
+import { automationTasks, defaultFishingGoldReserve, taskSettings, worldTaskKey, dailyTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
-import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDecision } from './reconnect.mjs';
-import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
-import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
+import { beijingDay, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative, nativeTaskValues, applyNativeTask, hasExtraWork, createUsageLedger, exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
+import { budgetPreview, exactAutomationId, createActionGuard, nativePreferenceEnabled, needsCargoDemand, AutomationSkip } from './automation-policy.mjs';
+import { readTreasureLoot, planTreasureLoot, treasureAutomationEnabled } from './treasure-loot.mjs';
+import { readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets } from './city-war.mjs';
+import { readWorldOnlineReward, worldOnlineRewardKey } from './world-online-rewards.mjs';
+import { readEquipmentForge, planEquipmentForge, forgeEnabled } from './equipment-forge.mjs';
+import { watchBasePushes, surveyBaseAutomation, planBaseAutomation, baseDemands, previewNativeAutomation } from './base-automation.mjs';
 import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
@@ -41,10 +69,7 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
-const OUTAGE_ALERT_ATTEMPT = 3;
-const TASK_FAILURE_ALERT_ROUNDS = 5;
-const INCOME_SAMPLE_MS = 10 * 60 * 1000;
-const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
+const RUN_VERSION = new Date().toISOString();
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
   'AllResourceRequest', 'AllItemRequest', 'AllHeroRequest', 'MainTaskInfoRequest', 'DailyTaskInfoRequest',
   'AchievementInfoRequest', 'EmailBoxRequest', 'AfkInfoRequest', 'OnWaterRequest', 'MyResFieldsRequest', 'MonthCardRequest',
@@ -68,7 +93,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const streams = new Set();
   const sessions = new Map();
   let logId = 0;
-  const notifier = createNotifier({ onError: message => emit(null, 'warn', '通知发送失败：' + message) });
 
   const logLimit = (list) => {
     while (list.length > LOG_LIMIT) list.shift();
@@ -77,7 +101,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   function emit(session, level, message, extra) {
     const display = describeLogError(message, extra);
     const detail = [extra?.diagnostic, display.detail].filter(Boolean).join('\n');
-    const entry = { id: ++logId, t: Date.now(), level, message: display.message, detail: detail || undefined, extra, account: session?.id ?? null };
+    const entry = { id: ++logId, t: Date.now(), level, category: classifyLog(display.message, extra), message: display.message, detail: detail || undefined, extra, account: session?.id ?? null };
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
@@ -121,14 +145,22 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   function newSession(id) {
     const saved = loadStore().accounts.find(account => account.id === id)?.automation;
+    const detailed = loadAutomationSettings(id);
+    const preferences = detailed.revision ? detailed.settings : null;
     return {
       id,
+      preferences,
+      preferencesRevision: detailed.revision,
+      preferencesSavedAt: detailed.savedAt,
       paused: saved?.paused === true,
       generation: 0,
       client: null,
       connecting: null,
       player: null,
+      pirateAdvance: createPirateAdvanceTask(),
       stages: createStageTask(),
+      trials: new Map(),
+      mutualAid: createGuildMutualTask(),
       busy: null,
       overviewRead: null,
       claiming: null,
@@ -137,20 +169,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       appointmentJob: null,
       residentJobs: new Map(),
       progressionJobs: new Map(),
-      recovery: null,
-      failStreak: new Map(),
-      stats: { rounds: 0, failures: 0, outages: 0 },
-      incomeAt: 0,
       log: [],
+      logClearBefore: 0,
+      logClearAt: 0,
+      dailySingle: dailySingleState(),
       loop: {
         running: false,
         rounds: 0,
         completed: 0,
-        everyMs: (saved?.everySeconds ?? 60) * 1000,
-        tasks: taskSettings(saved?.tasks),
-        fishingGoldReserve: saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
-        compassSpinCount: saved?.compassSpinCount ?? defaultCompassSpinCount,
-        reconnect: normalizeReconnect(saved?.reconnect),
+        everyMs: (preferences?.loop.everySeconds ?? saved?.everySeconds ?? 60) * 1000,
+        tasks: preferences ? nativeTaskValues(preferences, taskSettings(saved?.tasks)) : taskSettings(saved?.tasks),
+        fishingGoldReserve: preferences?.gather.fishingGoldReserve ?? saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
         controller: null, job: null,
         history: [],
         error: null,
@@ -185,12 +214,96 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     return sessions.get(id);
   }
 
+  function usageFor(session) {
+    return createUsageLedger(session.id, { now: () => Date.now() + (session.client?.serverClockOffsetMs ?? 0) });
+  }
+
+  function adoptPreferences(session, entry) {
+    session.preferences = entry.settings;
+    session.preferencesRevision = entry.revision;
+    session.preferencesSavedAt = entry.savedAt;
+    session.loop.tasks = nativeTaskValues(entry.settings, session.loop.tasks);
+    session.loop.fishingGoldReserve = entry.settings.gather.fishingGoldReserve;
+    session.loop.everyMs = entry.settings.loop.everySeconds * 1000;
+  }
+
+  function settingsView(session) {
+    const saved = loadAutomationSettings(session.id);
+    if (saved.revision && saved.revision !== session.preferencesRevision) adoptPreferences(session, saved);
+    const settings = saved.revision ? saved.settings : settingsFromNative(session.loop.tasks, {
+      everySeconds: session.loop.everyMs / 1000, fishingGoldReserve: session.loop.fishingGoldReserve,
+    });
+    const baseRevision = createHash('sha256').update(JSON.stringify([session.loop.tasks, session.loop.everyMs, session.loop.fishingGoldReserve])).digest('hex');
+    return { settings, revision: saved.revision, savedAt: saved.savedAt, baseRevision, catalog: settingsCatalog(loadConfigSafe()),
+      tasks: automationTasks, rules: settingsUiRules(), usage: usageFor(session).snapshot(), pendingUsage: usageFor(session).pendingCounters(), running: session.loop.running };
+  }
+
+  async function refreshFleetReservations(session,settings) {
+    const client=session.client,p=settings.cityWar;
+    if(!p.enabled||!p.reserveDuringWar){reserveDispatch(client,'cityWar',[]);return;}
+    const snapshot=await readCityWar(client,protocol,loadConfigSafe(),session.player,p);
+    reserveDispatch(client,'cityWar',snapshot.reason?p.fleetIds:cityWarReservedFleets(snapshot,settings),Date.now()+60000);
+  }
+  function actionGuard(session, client) {
+    const generation = session.generation;
+    return createActionGuard(client, () => session.preferences, usageFor(session), {
+      enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected,
+    });
+  }
+
   function factoryReportFile(id) {
     return path.join(DATA_DIR, 'factory-report-' + encodeURIComponent(id) + '.json');
   }
 
   function wire(session, instance) {
+    watchBasePushes(instance);
+    instance.on('message', ({name,body}) => {
+      if(name==='RecruitInfoResponse')instance.freeRecruitTimes={hero:body.hero?.freeEndTimeSeconds,antique:body.antique?.freeEndTimeSeconds};
+      if(name==='RecruitStartResponse'||name==='AntiqueRecruitResponse'){
+        instance.freeRecruitTimes??={};instance.freeRecruitTimes[name==='RecruitStartResponse'?'hero':'antique']=body.recruitData?.freeEndTimeSeconds;
+      }
+      if (name === 'TreasureLootStatsResponse') recordTreasureRewards(instance, body);
+    });
+    instance.on('login',()=>{session.loop.controlStatus=new Map();});
+    watchFreeRewardClock(instance);
+    watchTreasureTravel(instance);
+    watchFleetMaintenance(instance);
+    // 任务已停或关闭自动派遣时也处理返航。合并同一批推送，进入账号原有的串行队列。
+    let settlementTimer=null, settlementBusy=false, settlementDirty=false;
+    const current=()=>session.client===instance && instance.connected && session.player && !session.paused;
+    function scheduleSettlement(){
+      if(!current())return;
+      settlementDirty=true;
+      if(settlementTimer||settlementBusy)return;
+      settlementTimer=setTimeout(()=>{
+        settlementTimer=null;
+        if(!current())return;
+        settlementBusy=true;
+        enqueue(session,async()=>{
+          settlementDirty=false;
+          if(current())await checkFleetSettlement(instance,session.player,usageFor(session),{afterPush:true});
+        }).catch(error=>{if(current())emit(session,'warn','舰队归队状态待核对：'+error.message);}).finally(()=>{
+          settlementBusy=false;
+          if(settlementDirty&&current())scheduleSettlement();
+        });
+      },250);
+      settlementTimer.unref?.();
+    }
+    instance.on('message',({name})=>{
+      if(name==='SCNewCampaignReport')invalidateFleetReports(instance);
+      if(['SCNewCampaignReport','SCMyFleetUpdate','SCRadarEventState','SCPirateCampaignEnd','SCPirateKillRecordUpdate'].includes(name))scheduleSettlement();
+    });
+    instance.on('close',()=>{clearTimeout(settlementTimer);settlementTimer=null;settlementDirty=false;});
     instance.on('message', ({ name, body }) => {
+      if (session.client === instance && session.player && name === 'SCVipUpdate' && Number.isSafeInteger(body.vipLevel)) {
+        session.player.vip = { ...session.player.vip, vipLevel: body.vipLevel, vipExp: body.vipExp };
+      }
+      if (session.client === instance && session.player && name === 'SCForgeLevelUpdate') {
+        session.player.forgeLevel = body.forgeLevel; session.player.forgeExp = body.forgeExp;
+      }
+      if (session.client === instance && ['SCGuildAidHelp', 'SCGuildAidRemove', 'SCGuildAidNew'].includes(name) && (body?.type ?? 0) === 0) {
+        for (const stream of streams) if (stream.account === session.id) stream.write('event: guild-aid-changed\ndata: {}\n\n');
+      }
       if (session.client === instance && session.player) {
         if (name === 'SCJoinGuild') session.player.guildId = body.guildId;
         if (name === 'SCLeaveGuild') session.player.guildId = 0;
@@ -199,37 +312,26 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // so crossing an unlock level takes effect without restarting the console.
       if (name === 'SCPlayerExpUpdate' && session.client === instance && session.player && body.level > 0) {
         if (session.player.level !== body.level) {
-          for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests',
-            'museumCollect', 'museumExplore', 'petCollect', 'petBreed', 'worldOnline', 'tradeTasks', 'seasonTasks',
-            'museumRevenue', 'museumAchievements', 'heroGrowth', 'stageAuto', 'treasureLoot']) rewardSchedule(instance).clearTask(key);
+          for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests']) rewardSchedule(instance).clearTask(key);
         }
         session.player.level = body.level;
         session.player.exp = body.exp;
-      }
-      if (name === 'SCPlayerPower' && session.client === instance && session.player && toNumber(body.power) > 0) {
-        session.player.power = body.power;
       }
       if (name === 'SCVipUpdate' && session.client === instance && session.player) {
         Object.assign(session.player.vip ??= {}, { vipLevel: body.vipLevel, vipExp: body.vipExp });
       }
       if (name === 'SCAllActivity' || name === 'SCNewbieActivityUpdate') instance.newbieActivity = normalize(body.newbieActivity);
-      if (name === 'SCActivityActiveScoreUpdate') applyActiveScore(instance, body);
-      // A finished battle should pay out even when idle is off, as long as the switch is on.
-      if (name === 'SCNewCampaignReport' && session.client === instance) {
-        emit(session, 'info', '收到新战报', { pirateUpdated: true });
-        if (session.loop.tasks.campaignReports && !session.reportClaim) {
-          session.reportClaim = enqueue(session, () => claimCampaignReports(instance, loadConfigSafe(), session.player,
-            key => key === 'campaignReports' && session.client === instance && session.loop.tasks.campaignReports,
-            entry => emit(session, 'info', entry.label, { pirateUpdated: true })))
-            .catch(error => emit(session, 'warn', '领取战报奖励失败：' + error.message))
-            .finally(() => { session.reportClaim = null; });
-        }
+      if(name==='SCActivityActiveScoreUpdate'){
+        const activity=instance.festivals?.find(row=>exactAutomationId(row.activityId)===exactAutomationId(body.activityId));
+        const data=activity?.subActivity?.find(sub=>sub.subActivityType===11)?.dailyActive;
+        if(data)data.activeScore=body.activeScore;
       }
       if (name === 'SCAllActivity') {
-        instance.tradeActivity = normalize(body.trade);
+        instance.openRankActivity = body.openRankActivity ? rewardData(body.openRankActivity) : null;
         instance.festivals = body.festivalActivities ?? [];
-        instance.festivalDay = undefined;
-        syncFestivalDay(instance);
+        instance.seriesSnapshotDay = Math.floor(((Date.now()+(instance.serverClockOffsetMs||0))/1000+28800)/86400);
+        instance.tradeWindow = body.trade ? rewardData(body.trade) : null;
+        instance.beautyWindow = body.beauty ? rewardData(body.beauty) : null;
         trace(session, '节日活动目录 ' + JSON.stringify(instance.festivals.map(row => ({
           type: row.type, start: row.startTime, end: row.endTime, open: row.openTime, close: row.closeTime,
           subs: row.subActivity.map(sub => sub.subActivityType),
@@ -246,115 +348,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     instance.on('warn', (message) => emit(session, 'warn', message === 'ping timeout' ? '服务器心跳超时，连接可能已经断了' : message));
     instance.on('fatal', ({ reason }) => {
       const message = reason === 'SCChannelExpired' ? '这个账号在别处登录了，本条连接被顶掉' : `连接被服务器中断（${reason}）`;
-      instance.fatalReason = reason;
+      if (session.client === instance) { session.stages.stop(message); session.mutualAid.stop(message); for (const task of session.trials.values()) task.stop(message); stopLoop(session, message); }
       emit(session, 'error', message);
     });
     instance.on('error', (error) => emit(session, 'error', error.message));
     instance.on('close', () => {
-      connectionLost(session, instance);
+      if (session.client === instance) { session.stages.stop('连接已断开'); session.mutualAid.stop('连接已断开'); for (const task of session.trials.values()) task.stop('连接已断开'); stopLoop(session, '连接已断开'); }
       emit(session, 'state', '连接已断开');
     });
-  }
-
-  function alert(session, event, title, message) {
-    const account = loadStore().accounts.find(item => item.id === session.id);
-    const name = account ? describeAccount(account).title : session.id;
-    notifier.send(event, session.id, name + '：' + title, message)
-      .catch(error => emit(session, 'warn', '通知发送失败：' + error.message));
-  }
-
-  function cancelRecovery(session) {
-    const waiting = Boolean(session.recovery?.timer);
-    clearTimeout(session.recovery?.timer);
-    session.recovery = null;
-    return waiting;
-  }
-
-  function connectionLost(session, instance) {
-    if (instance.lostHandled || instance.stopping || session.client !== instance) return;
-    instance.lostHandled = true;
-    const kicked = instance.fatalReason === 'SCChannelExpired';
-    const reason = kicked ? '账号在别处登录，连接被顶掉' : '连接已断开';
-    session.stages.stop(reason);
-    const loop = session.loop;
-    if (!loop.running || loop.controller?.signal.aborted) return;
-    if (loop.rounds !== 0) { stopLoop(session, reason); return; }
-    session.stats.outages += 1;
-    loop.controller.abort();
-    emit(session, 'info', reason);
-    requestRecovery(session, kicked ? 'kicked' : 'network', reason);
-  }
-
-  // 只有持续挂机才恢复。有限轮数的任务和用户主动停止都不会走到这里。
-  function requestRecovery(session, kind, reason) {
-    const settings = session.loop.reconnect;
-    const attempt = (session.recovery?.attempts ?? 0) + 1;
-    const decision = recoveryDecision(settings, kind, attempt);
-    clearTimeout(session.recovery?.timer);
-    if (decision.action === 'stop') {
-      session.recovery = null;
-      saveAutomation(session.id, { enabled: false });
-      if (decision.reason === 'kicked') {
-        emit(session, 'warn', '账号被顶号，已停止挂机。需要时请在挂机页重新开始，或在设置中改为自动重连');
-        alert(session, 'kicked', '账号被顶号', '已停止挂机，需要时请手动恢复。');
-      } else {
-        const message = decision.reason === 'exhausted' ? '已重连 ' + settings.maxAttempts + ' 次仍未恢复，已停止挂机' : '未开启自动重连，已停止挂机';
-        emit(session, 'warn', message);
-        alert(session, 'disconnect', '挂机已停止', message + '（' + reason + '）');
-      }
-      return;
-    }
-    const seconds = reconnectDelaySeconds(settings, attempt, kind);
-    const recovery = { kind, attempts: attempt, reason, nextAt: Date.now() + seconds * 1000, connected: false, timer: null };
-    recovery.timer = setTimeout(() => recoverSession(session, recovery), seconds * 1000);
-    recovery.timer.unref?.();
-    session.recovery = recovery;
-    emit(session, 'info', seconds + ' 秒后自动重连（第 ' + attempt + ' 次）');
-    if (kind === 'kicked' && attempt === 1) alert(session, 'kicked', '账号被顶号', settings.kickedMinutes + ' 分钟后自动重连，这可能把正在玩的游戏顶下线。');
-    if (kind !== 'kicked' && attempt === OUTAGE_ALERT_ATTEMPT) alert(session, 'disconnect', '掉线后仍未恢复', '已尝试重连 ' + attempt + ' 次，会继续重试。原因：' + reason);
-  }
-
-  async function recoverSession(session, recovery) {
-    recovery.timer = null;
-    recovery.nextAt = null;
-    await session.loop.job;
-    if (session.recovery !== recovery || session.loop.running) return;
-    const account = loadStore().accounts.find(item => item.id === session.id);
-    if (session.paused || !account) { cancelRecovery(session); return; }
-    if (!session.client?.connected) {
-      session.client?.stop();
-      session.client = null;
-      session.player = null;
-    }
-    try { startLoop(session, account); }
-    catch (error) { requestRecovery(session, recovery.kind, error.message); }
-  }
-
-  function trackRound(session, summary) {
-    if (session.recovery && !session.recovery.timer) session.recovery = null;
-    const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
-    const failed = results.filter(entry => !entry.skipped && entry.ok === false);
-    session.stats.rounds += 1;
-    session.stats.failures += failed.length;
-    const streak = new Map();
-    for (const entry of failed) {
-      const id = entry.key || entry.label || entry.title || entry.step?.label || '自动任务';
-      const count = (session.failStreak.get(id) ?? 0) + 1;
-      streak.set(id, count);
-      if (count === TASK_FAILURE_ALERT_ROUNDS) {
-        alert(session, 'taskFailing', '自动任务连续失败', (entry.label || entry.title || id) + ' 已连续 ' + count + ' 轮失败：' + (entry.error || '未返回原因'));
-      }
-    }
-    session.failStreak = streak;
-    if (Date.now() - session.incomeAt < INCOME_SAMPLE_MS) return;
-    session.incomeAt = Date.now();
-    enqueue(session, async () => {
-      const client = session.client;
-      if (!client?.connected) return;
-      const snapshot = await readIncomeSnapshot(client, session.player);
-      recordIncome(session.id, snapshot, session.stats);
-      session.stats = { rounds: 0, failures: 0, outages: 0 };
-    }).catch(error => emit(session, 'warn', '记录收益日报失败：' + error.message));
   }
 
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
@@ -384,7 +385,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       throw new Error('连接已取消');
     }
     session.player = response.playerInfo || null;
+    watchResidentRefreshes(client,usageFor(session),session.player);
     client.send('LoginFinishRequest', {});
+    try {
+      const samePrefix = loadStore().accounts.filter(a => a.id.slice(0,8) === account.id.slice(0,8));
+      const recovered = recoverPirateHunts(client, session.player, usageFor(session), account.id,
+        samePrefix.length === 1 ? TRACE_PATH : null);
+      for (const result of recovered) emit(session,'info','已核对首杀战报 '+result.reportId+'，已结算汽油并释放历史首杀占用');
+    } catch (error) { emit(session,'warn','首杀历史战果待核对：'+error.message); }
+
+    try {await checkFleetSettlement(client,session.player,usageFor(session));}
+    catch(error){emit(session,'warn','舰队历史占用待核对：'+error.message);}
     persistIdentity(account, session.player);
     const role = describeRole(session.player);
     emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知角色'}（${role?.level ?? '?'} 级）`);
@@ -425,7 +436,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       state: session.client?.snapshot?.().state ?? 'IDLE',
       busy: session.busy,
       looping: session.loop.running,
-      recovering: Boolean(session.recovery?.timer),
     };
   }
 
@@ -439,24 +449,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   // ---- 只读汇总 -------------------------------------------------------------
 
-  // The login snapshot can lag far behind the server, so read power the way the game's
-  // player info popup does. A failed read keeps the last known value.
-  async function refreshPlayerPower(session, instance) {
-    if (!session.player?.playerId) return;
-    try {
-      const reply = await instance.request('OtherPlayerInfoRequest', { playerId: uidText(session.player.playerId) }, 'OtherPlayerInfoResponse', 8000);
-      if (session.client === instance && session.player && toNumber(reply.power) > 0) session.player.power = reply.power;
-    } catch (error) {
-      emit(session, 'warn', `总览：未能读取最新战力：${error.message}`, { diagnostic: 'OtherPlayerInfoRequest' });
-    }
-  }
-
   async function overview(session, account) {
     const instance = await ensureConnected(session, account);
-    const [{ ok, failed }] = await Promise.all([
-      collectState(instance, protocol, { queries: overviewQueries, signals: [], timeout: 8000 }),
-      refreshPlayerPower(session, instance),
-    ]);
+    const { ok, failed } = await collectState(instance, protocol, { queries: overviewQueries, signals: [], timeout: 8000 });
     const sections = { AllResourceRequest: '资源', AllItemRequest: '仓库', AllHeroRequest: '英雄', MainTaskInfoRequest: '主线任务',
       DailyTaskInfoRequest: '每日任务', AchievementInfoRequest: '成就', EmailBoxRequest: '邮件', AfkInfoRequest: '挂机收益',
       OnWaterRequest: '海面建筑', MyResFieldsRequest: '资源田', MonthCardRequest: '月卡' };
@@ -464,11 +459,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const config = loadConfigSafe();
     const view = summarize({ ok }, { config });
     const daily = view.daily;
+    const inventory=normalize(ok.AllItemRequest)?.items;
+    const worldResources=['种子','公会科技点','汽油'].map(id=>{
+      const quantities=Array.isArray(inventory)?inventory.filter(item=>item.itemId===id).map(item=>item.num):null;
+      const total=quantities?.reduce((sum,n)=>sum+n,0);
+      const amount=quantities?.every(n=>Number.isSafeInteger(n)&&n>=0)&&Number.isSafeInteger(total)?total:null;
+      return {res:id,name:displayMaterial(config,id),amount,sources:config?.materialSources(id),icon:itemIcon(id)};
+    });
     return {
       account: describeAccount(account, { active: account.id === loadStore().activeId }),
       status: accountStatus(session),
       player: describeRole(session.player),
-      resources: view.resources.map((entry) => ({ ...entry, sources: config?.materialSources(entry.res), icon: resourceIcon(entry.res) })),
+      weekCalendar: await readWeekCalendar(instance).then(items=>({items})).catch(error=>({items:[],error:error.message})),
+      resources: [...view.resources.map((entry) => ({ ...entry, sources: config?.materialSources(entry.res), icon: resourceIcon(entry.res) })), ...worldResources],
       items: {
         ...view.items,
         top: view.items.top.map((item) => ({ itemId: item.itemId, name: displayMaterial(config, item.itemId), num: item.num, sources: config?.materialSources(item.itemId), icon: itemIcon(item.itemId) })),
@@ -496,20 +499,27 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   async function tasks(session, account) {
     const instance = await ensureConnected(session, account);
-    const survey = await surveyTasks(instance, protocol, { config: loadConfigSafe(), player: session.player });
+    const survey = selectTaskSettings(await surveyTasks(instance, protocol, { config: loadConfigSafe(), player: session.player }), session.preferences);
     return { ...survey, text: formatTaskPlan(survey) };
   }
 
-  async function world(session, account) {
+  async function world(session, account, allowAccelerators = false) {
     const instance = await ensureConnected(session, account);
     const config = loadConfigSafe();
-    const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo });
-    const plan = planWorld(survey, { config });
+    const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo || needsCargoDemand(session.preferences) });
+    const settings = session.preferences;
+    const usage = usageFor(session).snapshot();
+    const extra = settings ? await surveyBaseAutomation(instance, protocol, config, session.player, settings, survey) : null;
+    const plan = planWorld(survey, { config, settings, usage, extraDemand: extra ? baseDemands(extra, config, settings) : [],
+      allowSpeedUp: allowAccelerators && (!settings || session.loop.tasks.speedUp),
+      ...(settings ? { enabled: kind => session.loop.tasks[worldTaskKey(kind)] === true, allowReroll: settings.resident.reroll, minOrderExp: settings.resident.minExp } : {}) });
+    plan.actions = plan.actions.filter(step => allowAccelerators || !(step.costs ?? []).some(cost => cost.id === '加速器' && cost.num > 0));
     // Manual preview and idle execution can use different toggles. The order
     // table describes what the account's idle loop can actually deliver.
     const autoOrders = survey.orders.length ? planWorld(survey, {
       config, enabled: kind => session.loop.tasks[worldTaskKey(kind)] === true,
       allowReroll: session.loop.tasks.denyOrder, minOrderExp: null,
+      settings, usage,
     }).orderDecisions : [];
     let map = null, mapError;
     try {
@@ -517,12 +527,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     } catch (error) {
       mapError = error.message;
     }
-    const fields = { ...survey.resFields, text: formatFieldReport(survey, map, mapError) };
+    let guilds=null;try{guilds=(await instance.request('AllGuildAbstractionRequest',{},'AllGuildAbstractionResponse')).guilds;}catch{/*主城动态等级读取失败时显示未同步。*/}
+    const fields = { ...survey.resFields, text: formatFieldReport(survey, map, mapError), rows:resourceFieldRows(config,session.player,survey.resFields,guilds) };
+    fields.totals=resourceFieldTotals(survey.resFields,fields.rows);
     const typeNames = new Map(config?.tables?.BuildingCfg?.data.map(row => [row.buildingType, row.name]));
     const now = Date.now() / 1000;
     return {
+      serverNow:survey.serverNow,
       population: `${survey.population}/${survey.maxPopulation}`,
-      futurePopulation: survey.futurePopulation > survey.population ? survey.futurePopulation : null,
       farms: survey.buildings.filter(b => b.type === '农田').map(b => ({
         plot: b.buildingId,
         status: !b.level ? (b.buildFinishTime ? '建造中' : '未建成') : !b.farm?.productId ? '空闲'
@@ -533,6 +545,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         ...order,
         workerIcon: workerIcon(order.workerId),
         decision: autoOrders.find(row => row.index === order.index),
+        manualRefresh:{allowed:!!order.orderKey&&!order.refreshTime&&!order.refreshPending&&order.requirements.length>0&&session.player?.level>=12,reason:order.refreshPending?'上次换单待确认':order.refreshTime?'等待新订单':session.player?.level<12?'角色12级开放':!order.orderKey?'订单身份待确认':!order.requirements.length?'订单需求未同步':''},
         manualDecision: order.orderKey ? planWorld({ ...survey, orders: [order] }, {
           config, enabled: kind => kind === 'finishOrder',
         }).orderDecisions[0] : { status: 'unknown', reason: '无法确认这条居民订单，请刷新后再试' },
@@ -549,7 +562,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       })),
       idleRunning: session.loop.running && !session.loop.controller?.signal.aborted,
       autoDeliverOrders: session.loop.tasks.finishOrder,
-      stock: [...survey.stock].filter(([, num]) => num > 0).sort((a, b) => b[1] - a[1]).map(([id, num]) => ({ id, name: displayMaterial(config, id), num, sources: config?.materialSources(id), icon: materialIcon(id) })),
+      stock: [...survey.stock].filter(([, num]) => num > 0).sort((a, b) => b[1] - a[1]).map(([id, num]) => ({ id, name: displayMaterial(config, id), num, category:config?.tables?.ItemCfg?.data?.find(row=>row.id===id)?.type||(config?.tables?.ResourceCfg?.data?.some(row=>row.id===id)?'基础资源':'其他'), sources: config?.materialSources(id), icon: materialIcon(id) })),
       resFields: fields,
       plan: plan.actions,
       notes: [...survey.notes, ...plan.notes],
@@ -568,7 +581,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     }
     const config = loadConfigSafe();
     if (!config) throw new Error('没有配置表，算不出英雄养成计划');
-    const plan = planHeroes({ config, heroes: heroList.heroes ?? [], itemNum: (id) => counts.get(id) ?? 0, playerLevel: describeRole(session.player)?.level ?? 1 });
+    const plan = planHeroes({ config, heroes: heroList.heroes ?? [], itemNum: (id) => counts.get(id) ?? 0, playerLevel: describeRole(session.player)?.level ?? 1, settings: session.preferences });
     return {
       steps: plan.steps,
       notes: plan.notes,
@@ -581,8 +594,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   async function dailies(session, account) {
     const instance = await ensureConnected(session, account);
-    const survey = await surveyDailies(instance, protocol, { config: loadConfigSafe(), player: session.player });
-    return { tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, gift: survey.gift, ruby: survey.ruby, text: formatSurvey(survey) };
+    const survey = await surveyDailies(instance, protocol, { config: loadConfigSafe(), player: session.player, settings: session.preferences });
+    return { ...addDailyOptions(survey, session.dailySingle), text: formatSurvey(survey) };
   }
 
   // ---- 从电脑微信采集登录 ---------------------------------------------------
@@ -614,7 +627,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       await ensureConnected(session, account);
       emit(null, 'info', `${title} 的角色信息已读取（游戏那边会被顶下线一次，重进即可）`);
       if (created && account.automation.enabled) startLoop(session, account, { rounds: 0 });
-      else if (!session.loop.running && !session.stages.view().running) {
+      else if (!session.loop.running && !session.stages.view().running && !session.mutualAid.view().running && ![...session.trials.values()].some(task => task.view().running)) {
         session.client?.stop();
         session.client = null;
         session.player = null;
@@ -662,6 +675,217 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         res.end(PAGE);
         return;
       }
+      if (parsed.pathname.startsWith('/api/settings') && body.length > 262144) throw new SettingsError({ import: '配置文件不能超过 256 KB' });
+      if (route === 'GET /api/settings') {
+        const { session } = scoped_(parsed);
+        json(settingsView(session));
+        return;
+      }
+      if (route === 'GET /api/settings/players') {
+        const { session } = scoped_(parsed);
+        if (!session.client?.connected || session.paused) throw new Error('请先连接当前账号，再读取盟友名单');
+        const client = session.client;
+        const members = await enqueue(session, async () => {
+          if (session.client !== client || !client.connected || session.paused) throw new Error('账号连接已变化，请重新读取盟友名单');
+          return readGuildMembers(client, loadConfigSafe(), session.player);
+        });
+        json(members);
+        return;
+      }
+      if (route === 'POST /api/settings/validate') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const options = { catalog: settingsCatalog(loadConfigSafe()) };
+        const settings = payload.document ? importAutomationSettings(payload.document, options) : validateSettings(payload.settings, options);
+        json({ settings, revision: session.preferencesRevision });
+        return;
+      }
+      if (route === 'GET /api/settings/export') {
+        const { session } = scoped_(parsed);
+        res.setHeader('content-disposition', "attachment; filename*=UTF-8''" + encodeURIComponent('疯狂水世界-游戏配置.json'));
+        json(exportAutomationSettings(settingsView(session).settings));
+        return;
+      }
+      if (route === 'POST /api/settings') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const current = settingsView(session);
+        if (!current.revision && payload.baseRevision !== current.baseRevision) throw new SettingsError({ revision: '现有挂机开关已变化，请重新载入后再保存' });
+        const entry = saveAutomationSettings(session.id, payload.settings, { revision: payload.revision, catalog: current.catalog });
+        adoptPreferences(session, entry);
+        if (session.client) for (const task of automationTasks) rewardSchedule(session.client).clearTask(task.key);
+        emit(session, 'info', '游戏配置已保存。正在运行的任务从下次检查开始使用新配置。');
+        json(settingsView(session));
+        return;
+      }
+      if (route === 'POST /api/settings/preview') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const config = loadConfigSafe();
+        if (!config) throw new Error('缺少游戏配置表，暂时不能预览');
+        const settings = validateSettings(payload.settings ?? settingsView(session).settings, { catalog: settingsCatalog(config) });
+        const category = payload.category ?? 'base';
+        if (!['base', 'world', 'heroes', 'daily', 'runtime', 'cityWar', 'forge', 'activity', 'radar', 'pirateHunt', 'fleetDispatch','worldBoss','pirateSweep'].includes(category)) throw new Error('不支持的预览分类');
+
+        if (category === 'runtime') {
+          json({ checkedAt: new Date().toISOString(), usage: usageFor(session).snapshot(), actions: [], counts: {}, viewOnly: true, scopeLabel: '运行安排（仅查看，不执行）',
+            notes: [`当前${session.loop.running ? '正在挂机' : '未在挂机'}；配置轮数${settings.loop.rounds === 0 ? '持续运行' : settings.loop.rounds}，间隔${settings.loop.everySeconds}秒。`,
+              '已启用：' + automationTasks.filter(task => nativeTaskValues(settings, session.loop.tasks)[task.key]).map(task => task.label).join('、'),
+              '运行安排不是游戏动作计划。基地、英雄、日常、活动、联盟/城战和锻造请在范围中分别选择。'] }); return;
+        }
+        if (!session.client?.connected || session.paused) throw new Error('请先连接当前账号，再读取真实游戏状态');
+        const result = await enqueue(session, async () => {
+          const client = session.client;
+          const usage = usageFor(session).snapshot();
+          const output = (plan, counts, scopeLabel) => ({ checkedAt: new Date().toISOString(), usage, pendingUsage:usageFor(session).pendingCounters(), counts, scopeLabel,
+            actions: plan.actions.map(step => ({ label: step.label, kind: step.kind, costs: (step.costs ?? []).map(item => ({ name: displayMaterial(config, item.id), num: item.num })) })),
+            notes: [...new Set(plan.notes ?? [])],
+          });
+          // 草稿预览的预留结果仅在本请求使用，绝不写入运行中的调度缓存。
+          let previewCityReserved=[];
+          if(['radar','pirateHunt','worldBoss'].includes(category)&&settings.cityWar.enabled&&settings.cityWar.reserveDuringWar){
+            const war=await readCityWar(client,protocol,config,session.player,settings.cityWar);
+            previewCityReserved=war.reason?[...settings.cityWar.fleetIds]:cityWarReservedFleets(war,settings);
+          }
+          if(category==='fleetDispatch'){
+            const own=await client.request('MyFleetsRequest',{},'MyFleetsResponse');
+            if(!Array.isArray(own.fleets))throw Error('舰队状态未同步');
+            const table=fleetDispatchView(client,settings,usageFor(session),own.fleets,exactAutomationId(session.player.worldId));
+            return {...output({actions:[],notes:['任务顺序：'+settings.fleetDispatch.priority.map(k=>dispatchLabels[k]).join(' → '),'意向仅表示配置允许；派遣前仍核对目标和费用，正在执行的任务不抢占。']},{fleets:table.length},'舰队调度'),viewOnly:true,dispatch:{fleets:table.map(f=>({name:f.buildingId,reason:[f.reason,...f.reserved.map(r=>'预留给'+r),'允许顺序：'+(f.intents.map(i=>i.label).join(' → ')||'无'),'当前目标：'+(f.targetGrid??'主城')].filter(Boolean).join('；')}))}};
+          }
+          if(category==='pirateSweep'){
+            const state=await readPirateSweeps(client,config,session.player,settings),notes=[state.name+' · 今日已用 '+(state.used??'未同步')+'/'+(state.limit??'未同步')+' 次，剩余 '+(state.left??'未同步')+' 次'];
+            if(state.reason)notes.push(state.reason);if(!settings.schedule.pirate)notes.push('海盗日常扫荡开关未开启');
+            notes.push('三种海盗共用每日次数，不派遣舰队，不消耗汽油、耐久或钻石。');
+            return output({actions:!state.reason&&settings.schedule.pirate?[{kind:'pirateSweep',label:'扫荡'+state.name+' '+state.level+'级（本次最多使用剩余 '+state.left+' 次；逐次回读确认）',costs:[]}]:[],notes},{remaining:state.left},'海盗日常扫荡');
+          }
+          if(category==='worldBoss'){
+            const state=await readWorldBoss(client,config,session.player,settings,usageFor(session),{cityReservedFleetIds:previewCityReserved});
+            const plan={actions:[],notes:[state.reason||'当前可执行每日首战派遣']};
+            if(!settings.worldBoss.enabled)plan.notes.push('世界Boss自动首战未开启');
+            else if(!state.reason)plan.actions.push({kind:'worldBoss',label:state.fleets.find(f=>!f.reason).buildingId+' → 世界Boss '+state.boss.bossId,costs:[{id:'汽油',num:state.cost}]});
+            return {...output(plan,{fleets:state.fleets.length},'世界Boss首战'),dispatch:{fleets:state.fleets,fuel:state.fuel,pending:pendingPetrol(usageFor(session))}};
+          }
+          if (category === 'radar') {
+            const state=await readAllianceRadar(client,config,session.player),ledger=usageFor(session);
+            const plan=planRadarPreview(state,settings,ledger,client,{cityReservedFleetIds:previewCityReserved});
+            return {...output(plan,{fleets:state.fleets.length,targets:state.events.length},'联盟情报'),dispatch:{fleets:plan.fleets,fuel:state.fuel,pending:pendingPetrol(ledger)}};
+          }
+          if (category === 'pirateHunt') {
+            const snapshot=await inspectHunt(client,config,session.player),ledger=usageFor(session);
+            for(const fleet of snapshot.view.fleets??[])fleet.reason ||= (!settings.pirateHunt.fleetIds.includes(fleet.buildingId)?'未选择此舰队':'')|| fleetRecordReason(ledger.keyRecords(),fleet.buildingId,exactAutomationId(session.player.worldId))||(previewCityReserved.includes(fleet.buildingId)?'城战时段预留':dispatchReservationReason(client,settings,'pirateHunt',fleet.buildingId,{ignoreOwners:['cityWar']}));
+            const selection=selectPirateAdvance(snapshot,settings.pirateHunt,{spent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0,pendingFuel:pendingPetrol(ledger)});
+            const plan={actions:selection.reason?[]:[{kind:'pirateFirst',label:selection.fleet.name+' → '+selection.target.name+' '+selection.target.level+'级',costs:[{id:'汽油',num:selection.cost}]}],notes:[selection.reason||'首杀需在挂机页单独启动；此处只预览下一次派遣']};
+            return {...output(plan,{fleets:snapshot.view.fleets?.length??0,targets:snapshot.view.targets?.length??0},'海盗首杀'),dispatch:{fleets:snapshot.view.fleets,fuel:snapshot.view.fuel,pending:pendingPetrol(ledger)}};
+          }
+          if (category === 'cityWar') {
+            const state = await readCityWar(client, protocol, config, session.player, settings.cityWar);
+            const ledger = usageFor(session), pending = ledger.pendingCounters();
+            const plan = planCityWar(state, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) + (pending.worldBossPetrol ?? 0) });
+            const online = await readWorldOnlineReward(client, config, session.player);
+            if (!settings.schedule.worldOnlineRewards) plan.notes.push('城战在线奖励自动领取未开启');
+            else if (online.ready && worldOnlineRewardKey(session.player, online)) {
+              if (ledger.hasKey(worldOnlineRewardKey(session.player, online))) plan.notes.push('本档在线奖励已发送，等待计数确认，不重复领取');
+              else plan.actions.push({ kind: 'worldOnlineReward', label: `领取城战在线奖励第 ${online.stage} 档`, costs: [] });
+            }
+            if (online.reason) plan.notes.push('城战在线奖励：' + online.reason);
+            if (settings.schedule.guildWelfare) {
+              const guild = await readGuild(client, config, session.player);
+              if (guild.welfareCount > 0) plan.actions.push({ kind: 'guildWelfare', label: `领取联盟福利礼包（${guild.welfareCount}份）`, costs: [] });
+              else plan.notes.push('联盟福利：' + (guild.reason || (guild.welfareCount === 0 ? '当前无待领礼包' : '待领数量未确认')));
+            }
+            return { ...output(plan, { fleets: state.fleets.length, targets: state.targets.length }, '联盟/城战'), onlineReward: online, cityWar: {
+              fleets: plan.fleets, targets: plan.targets, nativeLimit: state.nativeLimit, startTime: state.startTime,
+              endTime: state.endTime, inWindow: state.inWindow, fuel: state.fuel, reservedFleetIds: plan.reservedFleetIds } };
+          }
+          if (category === 'activity') {
+            const state = await activityView(client, client.festivals ?? [], config);
+            return { ...output({ actions: [], notes: ['此范围只读取活动开放状态，不推算充值、抽奖、消耗道具或付费动作。',
+              ...(state.activities?.length ? state.activities.map(row => row.name + (row.endTime ? '：截至' + new Date(row.endTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '：开放时间未确认')) : ['当前未读到开放活动']),
+              ...(state.lotteryError ? ['周抽奖状态未确认：' + state.lotteryError] : []), ...(state.orderError ? ['周订单状态未确认：' + state.orderError] : [])] }, { activities: state.activities?.length ?? 0 }, '活动状态（只读）'), viewOnly: true };
+          }
+          if (category === 'forge') {
+            const state = await readEquipmentForge(client, protocol, config, session.player);
+            const plan = planEquipmentForge(state, config, settings, { usage, keys: usageFor(session).keyRecords() });
+            return { ...output(plan, { factories: state.buildings.length }, '装备锻造'), forge: {
+              factories: plan.factories, gold: state.gold, season: state.season, forgeLevel: state.forgeLevel } };
+          }
+          if (category === 'world') {
+            const snapshot = await readTreasureLoot(client, protocol, config, session.player, { preferences: settings.treasure });
+            const ledger = usageFor(session);
+            const pending = ledger.pendingCounters();
+            let reservedFleetIds = [];
+            if (cityWarEnabled(settings)) {
+              const war = await readCityWar(client, protocol, config, session.player, settings.cityWar);
+              reservedFleetIds = planCityWar(war, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) }).reservedFleetIds;
+            }
+            const plan = planTreasureLoot(snapshot, config, settings, { usage, keys: ledger.keyRecords(), pendingFuel: (pending.treasurePetrol ?? 0) + (pending.cityWarPetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0), reservedFleetIds });
+            return { ...output(plan, plan.counts, '万吨巨轮'), treasure: { targets: plan.targets, fleets: plan.fleets, fuel: snapshot.fuel,
+              fuelPerFleet: snapshot.fuelPerFleet, todayRewardTimes: snapshot.todayRewardTimes, rewardLimit: snapshot.rewardLimit,
+              participationMode: settings.treasure.participationMode, nextRefreshTime: snapshot.nextRefreshTime } };
+          }
+          if (category === 'heroes') {
+            const list = normalize(await client.request('AllHeroRequest', {}, 'AllHeroResponse'));
+            const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+            const stock = new Map((bag.items ?? []).map(item => [item.itemId, Number(item.num)]));
+            const plan = planHeroes({ config, heroes: list.heroes ?? [], itemNum: id => stock.get(id) ?? 0, playerLevel: session.player?.level ?? 1, settings });
+            const actions = plan.steps.map(step => ({ ...step, label: step.kind === 'level' ? `${step.heroId} 从 ${step.from} 级升至 ${step.to} 级` : step.kind === 'star' ? `${step.heroId} 升至 ${step.to} 星` : `${step.heroId} 技能 ${step.slot + 1} 升至 ${step.to} 级` }));
+            const checked = budgetPreview(actions, stock, settings, usage);
+            return output({ ...checked, notes: [...plan.notes, ...checked.notes, ...(settings.loop.heroes ? [] : ['英雄养成未加入挂机，可在英雄页手动按本配置执行'])] }, { heroes: list.heroes?.length ?? 0 }, '英雄养成');
+          }
+          if (category === 'daily') {
+            const flags = nativeTaskValues(settings, session.loop.tasks);
+            const daily = await surveyDailies(client, protocol, { config, player: session.player, settings });
+            const tasks = selectTaskSettings(await surveyTasks(client, protocol, { config, player: session.player }), settings);
+            const actions = [...tasks.plan];
+            const trialNotes = [];
+            for (const entry of daily.tasks) for (const action of entry.actions ?? []) {
+              const key = dailyTaskKey(entry.task.id, action);
+              if (!key || !flags[key] || !nativePreferenceEnabled(settings, key)) continue;
+              actions.push({ ...action, kind: 'daily', label: `${entry.task.title}：${action.note ?? '执行一次'}` });
+            }
+            if (settings.dailies.enabled) {
+              if (settings.dailies.claimTasks) for (const task of daily.daily?.dailyTask ?? []) if (task.progress >= task.targetProgress && !task.rewardClaimed) actions.push({ kind: 'reward', label: `领取每日任务 ${task.id} 奖励` });
+              for (const action of daily.chests?.actions ?? []) if (action.request === 'DrawWeeklyRewardRequest' ? settings.dailies.claimWeeklyChest : settings.dailies.claimDailyChest) actions.push({ ...action, kind: 'reward', label: action.note });
+              if (settings.dailies.claimGift) for (const action of daily.gift?.actions ?? []) actions.push({ ...action, kind: 'reward', label: action.note });
+            }
+            if (settings.trials.paid || settings.trials.ads) {
+              const account = scoped_(parsed).account, ledger = usageFor(session);
+              let plannedDiamonds = usage.counters?.trialDiamonds ?? 0;
+              for (const id of settings.trials.raidIds) {
+                const state = await readTrialSweeps(client, protocol, config, session.player, settings, Number(id), {
+                  channel:{clientInfo:account.login?.eworldClientInfo,language:account.login?.language},usage,records:ledger.keyRecords(),pendingDiamonds:ledger.pendingCounters().diamonds ?? 0 });
+                for (const mode of ['ad','paid']) {
+                  if (!(mode==='paid'?settings.trials.paid:settings.trials.ads)) continue;
+                  const option=state[mode], label=state.name+(mode==='paid'?'钻石扫荡':'免广告扫荡');
+                  if (!option.allowed) { trialNotes.push(label+'：'+option.reason); continue; }
+                  if (mode==='paid' && plannedDiamonds+option.cost>settings.trials.dailyDiamondBudget) { trialNotes.push(label+'：会超过试炼每日钻石预算'); continue; }
+                  actions.push({kind:mode==='paid'?'trialPaidSweep':'trialAdSweep',label,costs:mode==='paid'?[{id:'RUBY',num:option.cost}]:[]});
+                  if (mode==='paid') plannedDiamonds+=option.cost;
+                }
+              }
+            }
+            const checked = budgetPreview(actions, new Map([['RUBY', daily.ruby]]), settings, usage);
+            return output({ ...checked, notes: [...tasks.notes, ...trialNotes, ...daily.tasks.filter(entry => entry.reason).map(entry => entry.task.title + '：' + entry.reason), ...checked.notes,
+              '此处预览日常任务与领奖。限时活动、挑战的开放状态可在对应页面查看。'] }, { dailyTasks: daily.tasks.length }, '日常与任务奖励');
+          }
+          const survey = await surveyWorld(client, protocol, { config, player: session.player, includeCargo: settings.cargo.enabled || settings.factory.demandPriority.includes('cargo') });
+          const extra = await surveyBaseAutomation(client, protocol, config, session.player, settings, survey);
+          const flags = nativeTaskValues(settings, session.loop.tasks);
+          const worldPlan = planWorld(survey, { config, settings, usage, extraDemand: baseDemands(extra, config, settings),
+            enabled: kind => flags[worldTaskKey(kind)] === true, allowSpeedUp: flags.speedUp, allowReroll: settings.resident.reroll, minOrderExp: settings.resident.minExp });
+          const extraPlan = planBaseAutomation(extra, config, settings, usage);
+          const nativePlan = await previewNativeAutomation(client, config, session.player, settings, flags, survey, usage);
+          const plan = budgetPreview([...worldPlan.actions, ...extraPlan.actions, ...nativePlan.actions], survey.stock, settings, usage);
+          return { checkedAt: new Date().toISOString(), usage, scopeLabel: '基地与点金',
+            actions: plan.actions.map(step => ({ label: step.label, kind: step.kind, setting:step.setting, costs: (step.costs ?? []).map(item => ({ name: displayMaterial(config, item.id), num: item.num })) })),
+            notes: [...new Set([...survey.notes, ...worldPlan.notes, ...extraPlan.notes, ...nativePlan.notes, ...plan.notes])],
+            counts: { buildings: survey.buildings.length, factories: survey.factories.length, orders: survey.orders.length, maps: extra.museum?.exploreStages?.length ?? 0 },
+          };
+        }, '读取配置执行计划');
+        json(result);
+        return;
+      }
       if (route === 'GET /api/art/index') {
         json(iconIndex());
         return;
@@ -678,6 +902,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         res.end(fs.readFileSync(found));
         return;
       }
+      if (route === 'POST /api/logs/clear') {
+        needConfirm(jsonBody());
+        const { session } = scoped_(parsed);
+        const cleared = { before: logId, at: Date.now() };
+        session.log.length = 0;
+        session.logClearBefore = cleared.before;
+        session.logClearAt = cleared.at;
+        for (const stream of streams) {
+          if (stream.account === session.id) stream.write(`event: logs-cleared\ndata: ${JSON.stringify(cleared)}\n\n`);
+        }
+        json(cleared);
+        return;
+      }
       if (route === 'GET /api/events') {
         res.writeHead(200, {
           'content-type': 'text/event-stream',
@@ -685,8 +922,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           connection: 'keep-alive',
         });
         res.account = parsed.searchParams.get('account');
-        const since = Number(req.headers['last-event-id'] ?? 0);
-        const entries = [...globalLog, ...(sessions.get(res.account)?.log ?? [])]
+        const logSession = sessions.get(res.account);
+        const since = Math.max(Number(req.headers['last-event-id'] ?? 0) || 0, logSession?.logClearBefore ?? 0);
+        if (logSession?.logClearAt) {
+          res.write(`event: logs-cleared\ndata: ${JSON.stringify({ before: logSession.logClearBefore, at: logSession.logClearAt })}\n\n`);
+        }
+        const entries = [...globalLog, ...(logSession?.log ?? [])]
           .sort((a, b) => a.id - b.id).slice(-LOG_LIMIT);
         for (const entry of entries) {
           if (entry.id > since) res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`);
@@ -759,9 +1000,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         removeAccount(store, account.id);
         saveStore(store);
         const removed = sessions.get(account.id);
-        if (removed) cancelRecovery(removed);
         removed?.loop.controller?.abort();
-        removed?.stages.stop('账号已删除');
+        removed?.pirateAdvance.stop('账号已删除'); removed?.stages.stop('账号已删除'); removed?.mutualAid.stop('账号已删除'); for (const task of removed?.trials.values() ?? []) task.stop('账号已删除');
         removed?.client?.stop();
         sessions.delete(account.id);
         emit(null, 'info', `已删除账号 ${describeAccount(account).title}`);
@@ -780,7 +1020,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           const generation = ++session.generation;
           if (paused) {
             stopLoop(session, '账号暂停，结束挂机');
-            session.stages.stop('账号已暂停');
+            session.stages.stop('账号已暂停'); session.mutualAid.stop('账号已暂停'); for (const task of session.trials.values()) task.stop('账号已暂停');
             session.client?.stop();
             session.worldClient?.stop();
             session.connecting = session.client = session.player = null;
@@ -805,7 +1045,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (route === 'POST /api/disconnect') {
         const { session } = scoped_(parsed);
         stopLoop(session, '账号已断开');
-        session.stages.stop('账号已断开');
+        session.stages.stop('账号已断开'); session.mutualAid.stop('账号已断开'); for (const task of session.trials.values()) task.stop('账号已断开');
         session.client?.stop();
         session.connecting = null;
         session.client = null;
@@ -853,6 +1093,37 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
 
       // ---- 只读视图 ----
+      if(route==='GET /api/gift-codes'){
+        const {session}=scoped_(parsed);
+        json(giftCodeStatus(session.id));return;
+      }
+      if(route==='POST /api/gift-codes/redeem'){
+        if(req.headers.origin && req.headers.origin!=='http://'+req.headers.host)throw Error('仅接受本地控制台的兑换请求');
+        const payload=jsonBody();needConfirm(payload);
+        const {session,account}=scoped_(parsed);
+        if(session.paused)throw Error('当前账号已暂停托管');
+        const generation=session.generation;
+        const job=startGiftCodes(session.id,payload.codes,action=>{
+          if(session.generation!==generation||session.paused)throw Error('原账号连接已变化');
+          return progressionJob(session,account,'gift-code-redeem',null,action);
+        });
+        job.done.then(()=>emit(session,'info','礼包兑换完成，请查看兑换记录'),()=>emit(session,'error','礼包兑换中断，请核对记录'));
+        json({accepted:true});return;
+      }
+      if(route==='GET /api/activity-statistics'){
+        const {account,session}=scoped_(parsed);
+        const result=await progressionJob(session,account,route,null,async client=>{
+          const cached=session.activityStatistics;
+          if(parsed.searchParams.get('refresh')!=='1'&&cached?.client===client&&Date.now()-cached.at<60000)return cached.value;
+          const value=await readActivityStatistics(client,loadConfigSafe(),session.player,usageFor(session));
+          session.activityStatistics={client,at:Date.now(),value};return value;
+        });json(result);return;
+      }
+      if(route==='GET /api/activity-ranks'||route==='GET /api/activity-ranks/view'){
+        const {account,session}=scoped_(parsed);
+        const result=await progressionJob(session,account,route+':'+(parsed.searchParams.get('key')||'catalog')+':'+(parsed.searchParams.get('page')||1),null,client=>route.endsWith('/view')?readActivityRanking(client,loadConfigSafe(),session.player,parsed.searchParams.get('key'),Number(parsed.searchParams.get('page')||1)):{tabs:activityRankCatalog(client,loadConfigSafe(),session.player).map(({key,label})=>({key,label}))});
+        json(result);return;
+      }
       if (route === 'GET /api/overview') {
         const { account, session } = scoped_(parsed);
         if (session.claiming) await session.claiming;
@@ -865,6 +1136,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(await heroes(session, account));
         return;
       }
+      if (route === 'GET /api/material-sources') {
+        const config = loadConfigSafe();
+        if (!config) throw new Error('缺少游戏材料配置');
+        json(config.tables.ItemJumpCfg.data.map(r => ({ name: displayMaterial(config, r.id), sources: config.materialSources(r.id) }))
+          .filter(r => r.name !== '未知材料' && r.sources.length));
+        return;
+      }
       if (route === 'GET /api/pirates') {
         const { account, session } = scoped_(parsed);
         const result = await progressionJob(session, account, route, null, client => pirateTracker(client, loadConfigSafe(), session.player));
@@ -872,55 +1150,41 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(result);
         return;
       }
-      if (route === 'GET /api/equipment/crafting') {
-        const { account, session } = scoped_(parsed);
-        json(await progressionJob(session, account, route, null, client => readEquipmentCrafting(client, loadConfigSafe(), session.player)));
-        return;
-      }
-      if (route === 'POST /api/equipment/crafting/start' || route === 'POST /api/equipment/crafting/collect') {
-        const { account, session } = scoped_(parsed);
-        const payload = jsonBody();
-        needConfirm(payload);
-        const craft = parsed.pathname.endsWith('/start') ? startEquipmentCraft : collectEquipmentCraft;
-        const key = JSON.stringify([route, payload.buildingId, payload.makeId, payload.previewKey]);
-        json(await progressionJob(session, account, key, operationLabels[parsed.pathname], async (client, enabled) => {
-          const result = await craft(client, loadConfigSafe(), session.player, { ...payload, enabled });
-          emit(session, 'info', result.label);
-          return result;
-        }));
-        return;
-      }
-      if (route === 'GET /api/pirates/board') {
-        const { account, session } = scoped_(parsed);
-        json(await progressionJob(session, account, route, null, client => pirateBoard(client, loadConfigSafe(), session.player)));
-        return;
-      }
-      if (route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
+      if (route === 'GET /api/guild/tech' || route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
         const { account, session } = scoped_(parsed);
         json(await progressionJob(session, account, route, null, async client => {
           const config = loadConfigSafe(), player = session.player;
+          if(route==='GET /api/guild/tech')return readGuildTech(client,config,player,{ledger:usageFor(session)});
           if (route === 'GET /api/equipment') return readHeroEquipment(client, config, player.level);
           if (route === 'GET /api/guild') {
             const guild = await readGuild(client, config, player);
+            guild.mutualAid = mutualView(session);
             if (guild.aidError) emit(session, 'warn', '读取联盟求助失败：' + guild.aidError);
+            if (guild.myAidError) emit(session, 'warn', '读取我的求助失败：' + guild.myAidError);
             return guild;
           }
           if (route === 'GET /api/fleets/formation') return readFleetFormations(client, config, player);
           if (route === 'GET /api/pirates/hunt') return pirateHuntOptions(client, config, player);
           const rows = await trialProgress(client, config, player.level);
+          for (const row of rows) row.task = session.trials.get(row.raidId)?.view() ?? { running: false, reason: '尚未开启', wins: 0, failures: 0 };
+          const sweepSettings = settingsView(session).settings, ledger = usageFor(session);
+          for (const row of rows) row.sweeps = await readTrialSweeps(client, protocol, config, player, sweepSettings, row.raidId, {
+            channel: { clientInfo: account.login?.eworldClientInfo, language: account.login?.language },
+            usage: ledger.snapshot(), records: ledger.keyRecords(), pendingDiamonds: ledger.pendingCounters().diamonds ?? 0 });
           for (const row of rows.filter(r => r.failed)) emit(session, 'warn', row.name + '：' + row.reason);
           return rows;
         }));
         return;
       }
-      if (route === 'POST /api/equipment/wear' || route === 'POST /api/equipment/enhance' || route === 'POST /api/guild/welfare' || route === 'POST /api/pirates/hunt' || route === 'POST /api/fleets/formation') {
+      if (route === 'POST /api/guild/tech/upgrade' || route === 'POST /api/equipment/wear' || route === 'POST /api/equipment/enhance' || route === 'POST /api/guild/welfare' || route === 'POST /api/guild/aid/claim' || route === 'POST /api/pirates/hunt' || route === 'POST /api/fleets/formation') {
         const { account, session } = scoped_(parsed);
         const payload = jsonBody();
         needConfirm(payload);
         const label = operationLabels[parsed.pathname];
-        const key = JSON.stringify([route, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
+        const key = JSON.stringify([route, payload.techId, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
         json(await progressionJob(session, account, key, label, async (client, enabled) => {
           const config = loadConfigSafe(), player = session.player;
+          if(route==='POST /api/guild/tech/upgrade'){const result=await upgradeGuildTech(client,config,player,{...payload,enabled,ledger:usageFor(session)});emit(session,'info',result.label);return result;}
           if (route === 'POST /api/equipment/wear') {
             const result = await equipHeroEmptySlots(client, config, player.level, payload.heroId, enabled);
             for (const line of result.lines) emit(session, 'info', line);
@@ -936,55 +1200,36 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             emit(session, 'info', result.skipped ? result.reason : result.label);
             return result;
           }
+          if (route === 'POST /api/guild/aid/claim') {
+            const result = await claimMyGuildAid(client, config, { player, enabled });
+            emit(session, result.ok ? 'info' : 'warn', result.label);
+            return result;
+          }
           if (route === 'POST /api/fleets/formation') {
             const result = await initializeFleetFormation(client, config, player, { ...payload, enabled });
             emit(session, 'info', result.label);
             return result;
           }
-          const result = await startPirateHunt(client, config, player, { ...payload, enabled, report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label, { pirateUpdated: true }) });
+          await refreshFleetReservations(session,settingsView(session).settings);
+          const result = await runSinglePirateHunt(client, config, player, { ...payload, enabled, getSettings:()=>settingsView(session).settings,ledger:usageFor(session),report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label) });
           emit(session, 'info', result.label);
           return result;
         }));
         return;
       }
-      if (route === 'GET /api/lineups') {
-        const { account, session } = scoped_(parsed);
-        json(await progressionJob(session, account, route, null, client => readLineups(client, loadConfigSafe(), session.player)));
-        return;
-      }
-      if (route === 'POST /api/lineups/apply') {
-        const { account, session } = scoped_(parsed);
-        const payload = jsonBody();
-        needConfirm(payload);
-        const key = JSON.stringify([route, payload.targetKey, payload.previewKey]);
-        json(await progressionJob(session, account, key, operationLabels[parsed.pathname], async (client, enabled) => {
-          const result = await applyLineup(client, loadConfigSafe(), session.player, { targetKey: payload.targetKey, previewKey: payload.previewKey, enabled });
-          emit(session, 'info', result.label);
-          return result;
-        }));
-        return;
-      }
-      if (route === 'POST /api/activities/run') {
-        const { account, session } = scoped_(parsed);
-        const payload = jsonBody();
-        needConfirm(payload);
-        if (payload.spinCount !== undefined && !validSpinCount(payload.spinCount)) throw new Error('抽奖券张数必须是 1 到 ' + maxCompassSpinCount + ' 的整数');
-        const key = JSON.stringify([route, payload.activityId, payload.taskKey]);
-        json(await progressionJob(session, account, key, '单次执行活动', (client, enabled) =>
-          runActivity(client, loadConfigSafe(), {
-            activityId: payload.activityId, taskKey: payload.taskKey, enabled, playerLevel: session.player?.level, player: session.player, spinCount: payload.spinCount ?? session.loop.compassSpinCount,
-            report: entry => emit(session, entry.error ? 'error' : 'info',
-              [entry.label, entry.error || entry.reason].filter(Boolean).join(' · ')),
-          })));
-        return;
+      if(route==='POST /api/week-order/buy'||route==='POST /api/week-order/submit'){
+        const payload=jsonBody();needConfirm(payload);
+        const {account,session}=scoped_(parsed),action=route.endsWith('/buy')?'buy':'submit';
+        const result=await progressionJob(session,account,route+':'+payload.orderKey+':'+String(payload.itemId||''),null,
+          (client,enabled)=>runWeekOrder(client,loadConfigSafe(),session.preferences,usageFor(session),enabled,action,payload));
+        emit(session,'info','周订单 · '+result.message);json(result);return;
       }
       if (route === 'GET /api/activities') {
         const { account, session } = scoped_(parsed);
         const client = await ensureConnected(session, account);
-        const view = await activityView(client, client.festivals, loadConfigSafe(), session.player);
-        view.vipLevel = session.player?.vip?.vipLevel ?? 0;
-        view.compassSpinCount = session.loop.compassSpinCount;
+        const view = await activityView(client, client.festivals, loadConfigSafe());
         view.newbie = newbieView(client);
+        if (view.newbie) view.activities.push({ name: '新手七日登录', taskKey: 'newbieLogin', endTime: view.newbie.end });
         try { view.fish = await fishView(client, loadConfigSafe()); }
         catch (error) { emit(session, 'error', '读取钓鱼图鉴失败：' + error.message); }
         if (view.order?.materials.length && !view.order.finished) {
@@ -1008,15 +1253,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         }
         if (view.lotteryError) emit(session, 'error', '读取周抽奖进度失败：' + view.lotteryError);
         if (view.orderError) emit(session, 'error', '读取周订单失败：' + view.orderError);
-        const activityTasks = new Set(['fishBook', 'vipDaily', 'campaignReports', 'openRankRewards', ...view.activities.flatMap(row => row.taskKeys)]);
-        view.eventTasks = automationTasks.filter(task => activityTasks.has(task.key)).map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
+        view.eventTasks = automationTasks.filter(task => task.group === '限时活动').map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
         view.serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
         json(view);
         return;
       }
       if (route === 'GET /api/dailies') {
         const { account, session } = scoped_(parsed);
-        json(await enqueue(session, () => dailies(session, account)));
+        json(await dailies(session, account));
         return;
       }
       if (route === 'GET /api/tasks') {
@@ -1024,13 +1268,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(await tasks(session, account));
         return;
       }
+      if(route==='GET /api/world/target'){
+        const {session}=scoped_(parsed);
+        if(!session.client?.connected||session.paused)throw Error('请先连接当前账号，再读取目标详情');
+        const result=await enqueue(session,()=>readWorldTarget(session.client,protocol,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{layer:parsed.searchParams.get('layer'),key:parsed.searchParams.get('key'),pirateSpent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0}));json(result);return;
+      }
+      if (route === 'GET /api/world/overview') {
+        const {session}=scoped_(parsed);
+        if(!session.client?.connected||session.paused)throw new Error('请先连接当前账号，再读取世界概览');
+        if(!session.mapRead) { const job=enqueue(session,()=>readWorldOverview(session.client,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{pirateSpent:session.pirateAdvance.view().spent??0})).finally(()=>{if(session.mapRead===job)session.mapRead=null;});session.mapRead=job; }
+        json(await session.mapRead);return;
+      }
       if (route === 'GET /api/world') {
         const { account, session } = scoped_(parsed);
-        session.worldRead ??= enqueue(session, () => world(session, account)).finally(() => { session.worldRead = null; });
+        const allowAccelerators = parsed.searchParams.get('speedUp') === 'true';
+        if (!session.worldRead || session.worldReadSpeedUp !== allowAccelerators) {
+          const job = enqueue(session, () => world(session, account, allowAccelerators)).finally(() => { if (session.worldRead === job) session.worldRead = null; });
+          session.worldRead = job; session.worldReadSpeedUp = allowAccelerators;
+        }
         json(await session.worldRead);
         return;
       }
-      if (route === 'POST /api/world/order/submit') {
+      if (route === 'POST /api/world/order/submit' || route === 'POST /api/world/order/reroll') {
         const { session } = scoped_(parsed);
         const payload = jsonBody();
         needConfirm(payload);
@@ -1038,18 +1297,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         if (!Number.isSafeInteger(index) || index < 0 || index > 2147483647 || typeof orderKey !== 'string' || !orderKey.length || orderKey.length > 512) {
           throw new Error('订单信息不完整，请刷新居民订单');
         }
-        const key = index + ':' + orderKey;
+        const isReroll=route.endsWith('/reroll');
+        const key = route+':'+index + ':' + orderKey;
         let job = session.residentJobs.get(key);
         if (!job) {
           const client = session.client, generation = session.generation;
           const enabled = () => client?.connected && session.client === client && !session.paused && session.generation === generation;
           job = enqueue(session, async () => {
             if (!enabled()) throw new Error('账号连接已变化，请刷新居民订单');
-            const result = await submitResidentOrder(client, protocol, { index, orderKey, enabled,
+            const result = await (isReroll?rerollResidentOrder:submitResidentOrder)(client, protocol, { index, orderKey, enabled, ledger:usageFor(session),
               config: loadConfigSafe(), player: session.player, cargoEnabled: () => session.loop.tasks.cargo });
             emit(session, 'info', result.label, { worldUpdated: true });
             return { ok: true, ...result };
-          }, '手动提交居民订单 #' + index).finally(() => session.residentJobs.delete(key));
+          }, (isReroll?'手动换单 #':'手动提交居民订单 #') + index).finally(() => session.residentJobs.delete(key));
           session.residentJobs.set(key, job);
         }
         json(await job);
@@ -1081,9 +1341,77 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
 
       // ---- 写操作 ----
+      if (route === 'GET /api/pirates/advance') {json(scoped_(parsed).session.pirateAdvance.view());return;}
+      if (route === 'POST /api/pirates/advance/start' || route === 'POST /api/pirates/advance/stop') {
+        const payload=jsonBody();needConfirm(payload);const {session,account}=scoped_(parsed);
+        if(route.endsWith('/stop')){json(session.pirateAdvance.stop());return;}
+        if(session.paused)throw new Error('账号已暂停，请先恢复托管');
+        const options=settingsView(session).settings.pirateHunt;
+        const generation=session.generation;
+        let lastReason='';
+        json(session.pirateAdvance.start(options,async()=>{
+          const client=await ensureConnected(session,account);
+          return {client,player:session.player,config:loadConfigSafe(),ledger:usageFor(session),getSettings:()=>settingsView(session).settings,
+            enabled:()=>!session.paused && session.generation===generation && session.client===client && client.connected,
+            prepareDispatch:()=>refreshFleetReservations(session,settingsView(session).settings),
+            schedule:work=>enqueue(session,work)};
+        },state=>{if(state.reason!==lastReason){emit(session,'info','海盗首杀 · '+state.reason+'（已首杀'+state.wins+'级，本次汽油'+state.spent+'）');lastReason=state.reason;}}));return;
+      }
+      if (route === 'GET /api/guild/mutual') { json(mutualView(scoped_(parsed).session)); return; }
+      if (route === 'GET /api/guild/mutual/options') {
+        const {session,account}=scoped_(parsed);
+        json(await progressionJob(session,account,route,null,client=>readMutualOptions(client,loadConfigSafe(),session.player)));return;
+      }
+      if (route === 'POST /api/guild/mutual/start' || route === 'POST /api/guild/mutual/stop') {
+        const payload=jsonBody();needConfirm(payload);const {session,account}=scoped_(parsed);
+        if(route.endsWith('/stop')){json(session.mutualAid.stop());return;}
+        if(session.paused)throw new Error('账号已暂停，请先恢复托管');
+        const generation=session.generation;
+        json(session.mutualAid.start(payload,async()=>{
+          const client=await ensureConnected(session,account),player=session.player;
+          return {client,player,config:loadConfigSafe(),ledger:usageFor(session),schedule:work=>enqueue(session,work),
+            enabled:()=>!session.paused && session.generation===generation && session.client===client && session.player===player && client.connected};
+        },state=>emit(session,state.failed||state.pending?'warn':'info',`联盟互助 · ${state.reason}（本轮发起${state.published}条，已确认赠送${state.sent}次，领取${state.received}份）`)));
+        return;
+      }
+      if (route === 'POST /api/trials/sweep') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { session, account } = scoped_(parsed);
+        if (!['paid','ad'].includes(payload.mode) || !payload.expected || !Number.isSafeInteger(payload.expected.cost)) throw new Error('请刷新试炼状态并核对扫荡方式与费用');
+        if (session.trials.get(payload.raidId)?.view().running) throw new Error('该副本正在连续推关，请先停止后再扫荡');
+        json(await progressionJob(session, account, JSON.stringify([route,payload.raidId,payload.mode,payload.expected]), '试炼扫荡', async (client, enabled) => {
+          const initial = settingsView(session).settings;
+          const result = await executeTrialSweep(client, protocol, loadConfigSafe(), session.player, payload.raidId, payload.mode, {
+            getSettings: () => session.preferences ?? initial, ledger: usageFor(session), enabled, expected: payload.expected, manual: true,
+            channel: { clientInfo: account.login?.eworldClientInfo, language: account.login?.language } });
+          emit(session, result.ok || result.skipped ? 'info' : 'error', `试炼 · ${result.title || '扫荡'}：${result.note || result.reason || result.error}`);
+          return result;
+        })); return;
+      }
+      if (route === 'GET /api/trials/tasks') {
+        json(Object.fromEntries([...scoped_(parsed).session.trials].map(([id, task]) => [id, task.view()]))); return;
+      }
+      if (route === 'POST /api/trials/start' || route === 'POST /api/trials/stop') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { session, account } = scoped_(parsed), config = loadConfigSafe();
+        const raid = config?.tables?.TrialRaidCfg?.data?.find(r => r.raidId === payload.raidId);
+        if (!raid) throw new Error('请选择有效试炼副本');
+        if (route.endsWith('/stop')) { json(session.trials.get(payload.raidId)?.stop() ?? { running: false }); return; }
+        if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+        let task = session.trials.get(payload.raidId);
+        if (!task) { task = createTrialTask(payload.raidId); session.trials.set(payload.raidId, task); }
+        const generation = session.generation;
+        json(task.start(payload, async () => {
+          const client = await ensureConnected(session, account);
+          return { client, player: session.player, config, schedule: work => enqueue(session, work),
+            enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected };
+        }, state => emit(session, state.failed ? 'error' : 'info', `试炼 · ${raid.title}：${state.reason}（通过${state.wins}关，连续失败${state.failures}次）`)));
+        return;
+      }
       if (route === 'POST /api/trials/challenge') {
         const { session, account } = scoped_(parsed);
         const { raidId, stageId } = jsonBody();
+        if (session.trials.get(raidId)?.view().running) throw new Error('该试炼正在连续推关，请先停止再单次挑战');
         const message = await progressionJob(session, account, JSON.stringify([route, raidId, stageId]), '试炼挑战', async (client, enabled) => {
           const message = await challengeTrial(client, loadConfigSafe(), session.player?.level ?? 0, raidId, stageId, enabled);
           emit(session, 'info', message);
@@ -1123,9 +1451,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           const instance = await ensureConnected(session, account);
           emit(session, 'info', '开始一键领取');
           const results = await claimRewards(instance, protocol, loadConfigSafe(), ({ label, ok, error }) =>
-            emit(session, ok ? 'info' : 'error', ok ? `领取 · ${label}` : `领取 · ${label}失败：${error}`), undefined, undefined, undefined, session.player);
-          const failed = results.filter((entry) => !entry.ok).length;
-          const summary = `本轮完成 ${results.length - failed} 项，失败 ${failed} 项`;
+            emit(session, ok ? 'info' : 'error', ok ? `领取 · ${label}` : `领取 · ${label}失败：${error}`), undefined, undefined, undefined, session.player, { settings: session.preferences });
+          try { await claimReportRewards(instance,loadConfigSafe(),{enabled:()=>!session.paused&&instance.connected,ledger:usageFor(session),report:entry=>{results.push(entry);emit(session,entry.ok||entry.skipped?'info':'error','战报 · '+(entry.reason||entry.error||entry.label));}}); }
+          catch(error){results.push({label:'战报奖励',ok:false,error:error.message});}
+          const failed = results.filter((entry) => !entry.ok&&!entry.skipped).length;
+          const summary = `本轮确认成功 ${results.filter(entry=>entry.ok).length} 项，跳过 ${results.filter(entry=>entry.skipped).length} 项，失败或待确认 ${failed} 项`;
           emit(session, failed ? 'warn' : 'info', summary);
           return { results, summary };
         }, '一键领取').finally(() => { session.claiming = null; });
@@ -1141,9 +1471,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           const plan = await heroes(session, account);
           const started = Date.now();
           const steps = [];
+          const guard = actionGuard(session, instance);
           const results = await runHeroPlan(instance, protocol, plan, {
             allowMutate: true,
             timeout: 8000,
+            enabled: () => !session.paused && instance.connected,
+            getSettings: () => session.preferences, beforeAction: guard.before, afterAction: guard.after,
             onStep: (entry) => {
               const step = entry.step;
               const label = step.kind === 'level' ? `${step.heroId} 升级请求 · 目标 ${entry.targetLevel} 级` : step.kind === 'star' ? `${step.heroId} 升到 ${step.to} 星` : `${step.heroId} 技能 ${step.slot + 1}`;
@@ -1164,17 +1497,32 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(await session.heroJob);
         return;
       }
+      if (route === 'POST /api/dailies/single') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (typeof payload.token !== 'string') throw new Error('请先刷新日常并选择一项操作');
+        const { account, session } = scoped_(parsed);
+        json(await progressionJob(session, account, route + ':' + payload.token, '完成单项日常', async (client, enabled) => {
+          const result = await runDailySingle(client, protocol, { state: session.dailySingle, token: payload.token, paid: payload.paid === true,
+            config: loadConfigSafe(), player: session.player, settings: session.preferences, guard: actionGuard(session, client), enabled });
+          emit(session, result.ok ? 'info' : 'warn', result.label);
+          return result;
+        }));
+        return;
+      }
       if (route === 'POST /api/dailies/run') {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
         const instance = await ensureConnected(session, account);
         const config = loadConfigSafe();
-        const survey = await surveyDailies(instance, protocol, { config, player: session.player });
+        const survey = await surveyDailies(instance, protocol, { config, player: session.player, settings: session.preferences });
         const started = Date.now();
+        const guard = actionGuard(session, instance);
         const results = await runDailies(instance, protocol, survey, {
           allowMutate: true,
           allowPaid: payload.paid === true,
+          settings: session.preferences, beforeAction: guard.before, afterAction: guard.after,
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `日常「${entry.title}」跳过：${entry.reason}`);
             else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `日常「${entry.title}」${entry.note}` : `日常「${entry.title}」${entry.note ?? ''}失败：${entry.error}`,
@@ -1187,7 +1535,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const claimed = results
           .filter((entry) => entry.ok && (entry.request === 'DrawDailyTaskRewardRequest' || entry.id === 'activityChest' || entry.id === 'freeDailyPack'))
           .map((entry) => entry.note);
-        json({ results, claimed, ms: Date.now() - started, tasks: after.tasks, chests: after.chests, gift: after.gift, ruby: after.ruby });
+        json({ results, claimed, ms: Date.now() - started, ...addDailyOptions(after, session.dailySingle) });
         return;
       }
       if (route === 'POST /api/tasks/run') {
@@ -1198,6 +1546,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const survey = await tasks(session, account);
         const results = await runTasks(instance, protocol, survey, {
           allowMutate: true,
+          settings: session.preferences,
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `任务「${entry.step.label}」跳过：${entry.error}`);
             else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `领取 ${entry.step.label}` : `领取 ${entry.step.label} 失败：${entry.error}`);
@@ -1211,15 +1560,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (route === 'POST /api/world/run') {
         const payload = jsonBody();
         needConfirm(payload);
+        const allowAccelerators = payload.speedUp === true;
         const { account, session } = scoped_(parsed);
         const generation = session.generation;
         const instance = await ensureConnected(session, account);
         const config = loadConfigSafe();
-        const protectCargo = session.loop.tasks.cargo;
+        const protectCargo = session.loop.tasks.cargo || needsCargoDemand(session.preferences);
         const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: protectCargo });
-        const plan = planWorld(survey, { config, allowSpeedUp: payload.speedUp === true, allowReroll: payload.reroll === true });
+        const settings = session.preferences;
+        const usage = usageFor(session).snapshot();
+        const extra = settings ? await surveyBaseAutomation(instance, protocol, config, session.player, settings, survey) : null;
+        const plan = planWorld(survey, { config, settings, usage, extraDemand: extra ? baseDemands(extra, config, settings) : [],
+          allowSpeedUp: allowAccelerators && (!settings || session.loop.tasks.speedUp), allowReroll: settings ? settings.resident.reroll : payload.reroll === true,
+          ...(settings ? { enabled: kind => session.loop.tasks[worldTaskKey(kind)] === true, minOrderExp: settings.resident.minExp } : {}) });
+        plan.actions = plan.actions.filter(step => allowAccelerators || !(step.costs ?? []).some(cost => cost.id === '加速器' && cost.num > 0));
+        const guard = actionGuard(session, instance);
         const { results } = await runWorldRound(instance, protocol, plan, {
           config, player: session.player, allowMutate: true,
+          settings, getSettings: () => session.preferences, getUsage: () => usageFor(session).snapshot(),
+          beforeStep: step => {
+            if (!allowAccelerators && (step.costs ?? []).some(cost => cost.id === '加速器' && cost.num > 0)) throw new AutomationSkip('本轮未允许花加速器');
+            return guard.before(step);
+          }, afterStep: guard.after, cancelStep: guard.cancel,
           cargoEnabled: () => protectCargo || session.loop.tasks.cargo,
           enabled: kind => generation === session.generation && !session.paused &&
             (!['finishOrder', 'denyOrder'].includes(kind) || protectCargo || !session.loop.tasks.cargo),
@@ -1232,7 +1594,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         let after;
         try {
           if (generation !== session.generation || session.paused) throw new Error('账号托管状态已变更');
-          after = await world(session, account);
+          after = await world(session, account, allowAccelerators);
         } catch (error) {
           emit(session, 'warn', '海面操作已结束，刷新状态失败：' + error.message);
           after = { refreshError: error.message };
@@ -1272,6 +1634,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // 循环：开启后立刻返回，进度走 /api/loop 与事件流。
       if (route === 'GET /api/loop') {
         const { session } = scoped_(parsed);
+        await refreshTreasureRewards(session);
+        const client=session.client;
+        if(client?.connected && session.player && (!client.freeRecruitTimes || !Number.isSafeInteger(client.freeRecruitTimes.hero) || !Number.isSafeInteger(client.freeRecruitTimes.antique))
+          && Date.now()-(client.recruitTimeAttempt||0)>60000){
+          client.recruitTimeAttempt=Date.now();
+          await enqueue(session,async()=>{
+            if(session.client!==client || !client.connected)return;
+            try {const r=await client.request('RecruitInfoRequest',{},'RecruitInfoResponse',8000);
+              client.freeRecruitTimes={hero:r.hero?.freeEndTimeSeconds,antique:r.antique?.freeEndTimeSeconds};
+            }catch { /* 未取到时间时沿用已有的实际观察，不推算冷却。 */ }
+          });
+        }
         json(loopView(session));
         return;
       }
@@ -1279,7 +1653,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
-        cancelRecovery(session);
         startLoop(session, account, { rounds: payload.rounds ?? 0, everySeconds: payload.everySeconds });
         json(loopView(session));
         return;
@@ -1293,59 +1666,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         return;
       }
 
-      if (route === 'POST /api/loop/reconnect') {
-        const { session } = scoped_(parsed);
-        const reconnect = parseReconnect(jsonBody());
-        saveAutomation(session.id, { reconnect });
-        session.loop.reconnect = reconnect;
-        if (!reconnect.enabled && cancelRecovery(session)) {
-          saveAutomation(session.id, { enabled: false });
-          emit(session, 'info', '已关闭自动重连，取消等待中的重连');
-        } else emit(session, 'info', '自动重连设置已保存');
-        json(loopView(session));
-        return;
-      }
-      if (route === 'GET /api/notify') {
-        json({ settings: loadNotifySettings(), events: notifyEvents, formats: webhookFormats });
-        return;
-      }
-      if (route === 'POST /api/notify/save') {
-        const settings = parseNotifySettings(jsonBody());
-        saveNotifySettings(settings);
-        emit(null, 'info', '通知设置已保存');
-        json({ settings });
-        return;
-      }
-      if (route === 'POST /api/notify/test') {
-        const result = await notifier.test();
-        if (result.failures.length) throw new Error(result.failures.join('；'));
-        emit(null, 'info', '测试通知已发送');
-        json(result);
-        return;
-      }
-      if (route === 'GET /api/income') {
-        json(incomeView(scoped_(parsed).session.id));
-        return;
-      }
-      if (route === 'POST /api/loop/compass-spin-count') {
-        const { session } = scoped_(parsed);
-        const { compassSpinCount } = jsonBody();
-        if (!validSpinCount(compassSpinCount)) throw new Error('抽奖券张数必须是 1 到 ' + maxCompassSpinCount + ' 的整数');
-        saveAutomation(session.id, { compassSpinCount });
-        session.loop.compassSpinCount = compassSpinCount;
-        emit(session, 'info', '风水罗盘每次最多使用 ' + compassSpinCount + ' 张抽奖券');
-        json({ compassSpinCount });
-        return;
-      }
       if (route === 'POST /api/loop/fishing-reserve') {
         const { session } = scoped_(parsed);
         const { fishingGoldReserve } = jsonBody();
         if (!Number.isSafeInteger(fishingGoldReserve) || fishingGoldReserve < 0) throw new Error('预留金币必须是非负整数');
-        saveAutomation(session.id, { fishingGoldReserve });
+        if (session.preferences) {
+          const next = structuredClone(settingsView(session).settings);
+          next.gather.fishingGoldReserve = fishingGoldReserve;
+          adoptPreferences(session, saveAutomationSettings(session.id, next, { revision: session.preferencesRevision }));
+        } else saveAutomation(session.id, { fishingGoldReserve });
         session.loop.fishingGoldReserve = fishingGoldReserve;
         emit(session, 'info', '钓具强化将保留 ' + fishingGoldReserve.toLocaleString('zh-CN') + ' 金币');
         json({ fishingGoldReserve });
         return;
+      }
+      if (route === 'POST /api/loop/control') {
+        const payload=jsonBody();needConfirm(payload);const {session}=scoped_(parsed);
+        const current=settingsView(session);
+        if(payload.revision!==current.revision) throw new SettingsError({revision:'配置已变化，请刷新挂机设置后再操作'});
+        const next=setAutomationControl(current.settings,payload.key,payload.enabled);
+        adoptPreferences(session,saveAutomationSettings(session.id,next,{revision:current.revision,catalog:current.catalog}));
+        if(session.client) for(const task of automationTasks) rewardSchedule(session.client).clearTask(task.key);
+        emit(session,'info','挂机设置已保存，下次检查使用新设置');json(loopView(session));return;
       }
       if (route === 'POST /api/loop/task') {
         const payload = jsonBody();
@@ -1354,11 +1696,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const task = automationTasks.find(item => item.key === payload.key);
         if (!task || typeof payload.enabled !== 'boolean') throw new Error('无效的自动任务设置');
         const tasks = { ...session.loop.tasks, [task.key]: payload.enabled };
-        saveAutomation(session.id, { tasks });
-        session.loop.tasks = tasks;
+        if (session.preferences) {
+          const current = settingsView(session);
+          const next = applyNativeTask(current.settings, task.key, payload.enabled);
+          adoptPreferences(session, saveAutomationSettings(session.id, next, { revision: current.revision }));
+        } else {
+          saveAutomation(session.id, { tasks });
+          session.loop.tasks = tasks;
+        }
         if (session.client && payload.enabled) rewardSchedule(session.client).clearTask(task.key);
-        if (!Object.values(tasks).some(Boolean)) stopLoop(session, '全部自动项目已暂停');
-        emit(session, 'info', task.label + (payload.enabled ? '已启用' : '已暂停'));
+        if (!Object.values(session.loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences)) stopLoop(session, '全部自动项目已暂停');
+        emit(session, 'info', task.label + (payload.enabled ? nativePreferenceEnabled(session.preferences, task.key) ? '已启用' : '已保存为开启，当前分组总开关仍暂停此动作' : '已暂停'));
         json(loopView(session));
         return;
       }
@@ -1366,7 +1714,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       json({ error: 'not found' }, 404);
     } catch (error) {
       const entry = emit(scoped, 'error', (operationLabels[parsed.pathname] ?? '控制台操作') + '失败：' + error.message, { diagnostic: route });
-      json({ error: error.message, log: entry }, 400);
+      json({ error: error.message, ...(error.fields ? { fields: error.fields } : {}), log: entry }, 400);
     } finally {
       releaseWrite?.();
       if (scoped && scoped.busy === route) scoped.busy = null;
@@ -1382,10 +1730,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   function stopLoop(session, reason) {
-    if (cancelRecovery(session)) {
-      if (!session.paused) saveAutomation(session.id, { enabled: false });
-      emit(session, 'info', reason);
-    }
+    session.pirateAdvance?.stop(reason);
     const loop = session.loop;
     if (!loop.running || loop.controller.signal.aborted) return;
     if (!session.paused) saveAutomation(session.id, { enabled: false });
@@ -1399,25 +1744,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     if (loop.running) throw new Error('这个账号的挂机已在运行');
     if (!Number.isSafeInteger(rounds) || rounds < 0) throw new Error('轮数必须是非负整数');
     if (!Number.isSafeInteger(everySeconds) || everySeconds < 1 || everySeconds > 86400) throw new Error('间隔秒数需要为 1–86400 的整数');
-    if (!Object.values(loop.tasks).some(Boolean)) throw new Error('请至少启用一个自动项目');
+    if (!Object.values(loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !cityWarEnabled(session.preferences) && !forgeEnabled(session.preferences)) throw new Error('请至少启用一个自动项目');
     // Persist only continuous runs for restart. Reserve this account before login awaits.
     saveAutomation(account.id, { enabled: rounds === 0, everySeconds });
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
       history: [], error: null, controller: new AbortController() });
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，每 ${everySeconds} 秒检查一次`);
-    let credentialFailed = false, retryReason = null;
     loop.job = (async () => {
       try {
         const client = await ensureConnected(session, account);
         if (signal.aborted) return;
-        if (session.recovery && !session.recovery.connected) {
-          session.recovery.connected = true;
-          emit(session, 'info', '已自动重连，继续挂机');
-          if (session.recovery.attempts >= OUTAGE_ALERT_ATTEMPT || session.recovery.kind === 'kicked') {
-            alert(session, 'recovered', '已恢复挂机', '重连 ' + session.recovery.attempts + ' 次后恢复。');
-          }
-        }
         const { appId, channelId, originVersion } = account.login?.eworldClientInfo ?? {};
         await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
           adChannel: { clientInfo: { appId, channelId, originVersion }, language: account.login?.language },
@@ -1425,10 +1762,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           schedule: work => enqueue(session, work),
           isEnabled: key => loop.tasks[key] === true,
           getFishingGoldReserve: () => loop.fishingGoldReserve,
-          getCompassSpinCount: () => loop.compassSpinCount,
-          isStageBusy: () => session.stages.view().running,
+          getSettings: () => session.preferences,
+          onFishBookComplete: () => {
+            const saved=loadAutomationSettings(session.id);
+            if(!saved.settings.gather.fishBook || session.client!==client)return;
+            saved.settings.gather.fishBook=false;
+            adoptPreferences(session,saveAutomationSettings(session.id,saved.settings,{revision:saved.revision}));
+            emit(session,'info','大鱼图鉴已集齐，已关闭满仓开拓');
+          },
+          usageLedger: usageFor(session),
+          getEveryMs: () => loop.everyMs,
+          onMaintenance:view=>{loop.fleetMaintenance=view;},
           onRound(summary) {
-            trackRound(session, summary);
             if (summary.world.factories?.length) {
               try {
                 fs.writeFileSync(factoryReportFile(session.id), JSON.stringify({ time: new Date().toLocaleString('zh-CN'), lines: summary.world.factories }));
@@ -1440,52 +1785,97 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             emit(session, 'info', formatLoopRound(summary), summary.world.population ? { worldUpdated: true } : undefined);
           },
           onStep(entry) {
-            const production = entry.ok && !entry.skipped && entry.step?.kind === 'startProduce';
+            const statusKey = (entry.step?.request==='SetFactoryAutoProduceRequest'?'nativeProduce':null) || entry.taskKey || (['万吨巨轮','城战接续','装备锻造','联盟情报'].includes(entry.category)?entry.category:null) || (entry.step?.kind ? worldTaskKey(entry.step.kind) : null) || entry.category || entry.title || entry.label;
+            loop.controlStatus ??= new Map();
+            const previous=loop.controlStatus.get(statusKey);
+            const text=entry.reason||entry.error||entry.note||(entry.ok?'最近执行成功':'等待检查');
+            loop.controlStatus.set(statusKey,{text,state:entry.status==='unknown'||entry.status==='pending'?'pending':entry.skipped?'waiting':entry.ok?'ok':'error',checkedAt:Math.floor(Date.now()/1000)});
+            if(previous?.state==='error'&&(entry.ok||entry.skipped)&&!['pending','unknown'].includes(entry.status)) emit(session,'info',(entry.title||entry.label||entry.step?.label||'任务')+'已恢复');
+            const production = entry.ok && !entry.skipped && entry.step?.request === 'StartFactoryProduceRequest';
             const batch = production ? JSON.stringify([entry.round, entry.step.body.buildingId, entry.step.body.productId]) : undefined;
-            emit(session, entry.skipped || entry.ok ? 'info' : 'error', formatLoopStep(entry),
-              batch ? { batch, factory: entry.step.displayFactory, product: entry.step.displayProduct }
+            emit(session, entry.skipped || entry.ok || ['pending','unknown'].includes(entry.status) ? 'info' : 'error', formatLoopStep(entry),
+              entry.skipped&&!['pending','unknown'].includes(entry.status) ? { waitKey: String(statusKey)+':'+text } : batch ? { batch, factory: entry.step.displayFactory, product: entry.step.displayProduct }
                 : entry.request && entry.ok === false ? { request: entry.request, way: entry.way } : undefined);
           },
         });
       } catch (error) {
         if (!signal.aborted) {
           loop.error = error.message;
-          if (error.loginResponse) credentialFailed = true;
-          else if (rounds === 0 && loop.reconnect.enabled) retryReason = error.message;
-          else {
-            saveAutomation(account.id, { enabled: false });
-            alert(session, 'loopError', '挂机异常停止', error.message);
-          }
-          emit(session, retryReason ? 'warn' : 'error', `自动挂机中止：${error.message}`);
+          saveAutomation(account.id, { enabled: false });
+          emit(session, 'error', `自动挂机中止：${error.message}`);
         }
       } finally {
         loop.running = false;
         loop.controller = null;
         loop.job = null;
         emit(session, 'info', '自动挂机结束');
-        if (credentialFailed) {
-          cancelRecovery(session);
-          saveAutomation(account.id, { enabled: false });
-          emit(session, 'error', '服务器拒绝登录，凭证可能已失效。请在账号页重新采集后再开始挂机');
-          alert(session, 'credential', '登录凭证可能已失效', '服务器拒绝登录，挂机已停止。请重新采集账号凭证。');
-        } else if (retryReason) requestRecovery(session, session.recovery?.kind === 'kicked' ? 'kicked' : 'network', retryReason);
       }
     })();
   }
 
+  function mutualView(session) {
+    const ledger=usageFor(session),usage=ledger.snapshot();
+    return { ...session.mutualAid.view(), day:usage.day, dailyUsed:usage.counters.guildAidGifts ?? 0,
+      pendingGifts:ledger.pendingCounters().guildAidGifts ?? 0 };
+  }
+
+  // 活动统计与自动参与的真实回包也会刷新此连接的当日领奖数。
+  const treasureRewards = new WeakMap();
+  const rewardClock = client => Date.now() + (client.serverClockOffsetMs || 0);
+  function recordTreasureRewards(client, stats) {
+    const limit = loadConfigSafe()?.tables?.TreasureLootParamCfg?.data?.find(row => row.paramName === '每日宝藏奖励次数')?.paramValue;
+    const total = stats?.todayRewardTimes;
+    const at = rewardClock(client);
+    const text = Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(limit) && limit > 0
+      ? '今日奖励 ' + total + '/' + limit : '今日奖励未同步';
+    treasureRewards.set(client, { at, day: beijingDay(at), text });
+  }
+  async function refreshTreasureRewards(session) {
+    const client = session.client;
+    if (!client?.connected || !session.player) return;
+    const at = rewardClock(client);
+    const cached = treasureRewards.get(client);
+    if (cached?.day === beijingDay(at) && at >= cached.at && at - cached.at < 60000) return;
+    const level = loadConfigSafe()?.tables?.ModuleOpenCfg?.data?.find(row => row.moduleId === '世界宝藏')?.playerLevel;
+    if (!Number.isSafeInteger(level) || !(session.player.level >= level)) return;
+    treasureRewards.set(client, { at, day: beijingDay(at), text: '今日奖励未同步' });
+    try {
+      await enqueue(session, async () => {
+        if (session.client !== client || !client.connected) return;
+        const stats = await client.request('TreasureLootStatsRequest', {}, 'TreasureLootStatsResponse', 8000);
+        recordTreasureRewards(client, stats);
+      });
+    } catch { /* 保留未同步状态，下一分钟重试。 */ }
+  }
   function loopView(session) {
     const loop = session.loop;
     const rewards = session.client ? rewardSchedule(session.client) : null;
+    const displayUsage=usageFor(session).snapshot();
+    const observedReward = session.client?.connected ? treasureRewards.get(session.client) : null;
+    const treasureReward = observedReward && observedReward.day === displayUsage.day ? observedReward.text : '今日奖励未同步';
     return {
+      runVersion: RUN_VERSION,
+      fleetMaintenance:{...(loop.fleetMaintenance??{rows:[],reason:'等待首次检查'}),enabled:loop.running&&!!session.client?.connected&&fleetMaintenanceEnabled(settingsView(session).settings)},
+      singleTasks: {pirate:session.pirateAdvance.view(), stages:session.stages?.view?.(), mutual:session.mutualAid?.view?.()},
+      pirateAdvance: session.pirateAdvance.view(),
+      controls: automationControlView(settingsView(session).settings).map(control=>{
+        const aliases={'factory.produce':'startProduce','factory.cooperateNative':'nativeProduce','factory.gain':'collect','factory.speedUp':'speedUp','building.build':'build','building.upgrade':'upgrade','building.finish':'finishUpgrade','resident.enabled':'finishOrder','resident.reroll':'denyOrder','farm.enabled':'farm','radar.enabled':'联盟情报','treasure.enabled':'万吨巨轮','cityWar.enabled':'城战接续','forge.enabled':'装备锻造','dailies.claimTasks':'dailyRewards','dailies.claimDailyChest':'chests','dailies.claimWeeklyChest':'chests','dailies.claimGift':'gift','resident.rewards':'orderDaily','trials.paid':'trialPaidSweep','trials.ads':'trialAdSweep'};
+        const key=control.taskKey||aliases[control.key]||({'worldBoss.enabled':'worldBoss','gather.fishing':'autoFish','gather.upgradeFishing':'fishEnhance','gather.diving':'autoDive','gather.salvage':'autoSalvage','gather.upgradeDiving':'diveEnhance','gather.upgradeSalvage':'salvageEnhance','gather.floaters':'floaters','gather.antiqueFloaters':'antiqueFloaters','cargo.enabled':'cargo','building.collect':'collect','building.supply':'buildSupply','building.speedUp':'speedUp','gold.enabled':'paidGold'})[control.key]||control.key;
+        const recorded=loop.controlStatus?.get(key),observed=rewards?.status(key);
+        let state=(observed?.checkedAt??0)>(recorded?.checkedAt??0)?observed:recorded||observed;
+        if(state?.checkedAt && beijingDay(state.checkedAt*1000)!==displayUsage.day)state=null;
+        state??={text:control.group==='总控制'?'控制项，不单独执行':control.key.endsWith('.enabled')&&['building','factory','heroes','pet'].includes(control.key.split('.')[0])?'分组控制，具体动作状态见下方子项':'本次连接尚无检查结果',state:'unseen',checkedAt:null};
+        if(control.key==='events.enabled'&&session.client){const events=watchBasePushes(session.client);state={text:events.choiceObserved?'已同步 '+events.choices.size+' 条事件（等待匹配可处理选项）':'未同步：本次连接尚未收到随机事件状态',state:events.choiceObserved?'waiting':'pending'};}
+        return {...control,observation:state,...runtimeProgress(control,state,displayUsage,{running:loop.running,connected:!!session.client?.connected,treasureReward,freeTimes:session.client?.freeRecruitTimes,now:Date.now()+(session.client?.serverClockOffsetMs||0)}),nextCheck:loop.running&&session.client?.connected&&control.enabled&&!control.blockedBy.length?rewards?.nextCheck(key)??null:null,stale:!loop.running||!session.client?.connected};
+      }),
       running: loop.running,
       stopping: !!loop.controller?.signal.aborted,
       tasks: automationTasks.map(({ key, label, group }) => ({
-        key, label, group, enabled: loop.tasks[key], nextCheck: loop.tasks[key] ? rewards?.nextCheck(key) : null,
+        key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(session.preferences, key),
+        nextCheck: loop.tasks[key] && nativePreferenceEnabled(session.preferences, key) ? rewards?.nextCheck(key) : null,
       })),
       fishingGoldReserve: loop.fishingGoldReserve,
-      reconnect: loop.reconnect,
-      recovery: session.recovery ? { kind: session.recovery.kind, attempts: session.recovery.attempts,
-        nextAt: session.recovery.nextAt, reason: session.recovery.reason } : null,
+      settingsRevision: session.preferencesRevision,
       rounds: loop.rounds,
       completed: loop.completed,
       everyMs: loop.everyMs,
@@ -1495,6 +1885,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   const server = http.createServer((req, res) => {
+    req.setEncoding('utf8');
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
@@ -1519,9 +1910,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }),
     close: () => {
       for (const session of sessions.values()) {
-        cancelRecovery(session);
         session.loop.controller?.abort();
-        session.stages.stop('控制台已关闭');
+        session.pirateAdvance.stop('控制台已关闭'); session.stages.stop('控制台已关闭'); session.mutualAid.stop('控制台已关闭'); for (const task of session.trials.values()) task.stop('控制台已关闭');
         session.client?.stop();
       }
       return new Promise((resolve) => server.close(resolve));

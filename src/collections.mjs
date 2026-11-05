@@ -12,7 +12,8 @@ export async function fishView(client, config) {
   const catalog = config?.tables.FishBaseCfg?.data;
   const stages = config?.tables.FishStageCfg?.data;
   if (!catalog || !stages) throw new Error('缺少钓鱼图鉴配置');
-  const ids = new Set(fish.fishList ?? []);
+  if(!Array.isArray(fish.fishList))throw Error('鱼种记录未同步');
+  const ids = new Set(fish.fishList);
   const collected = catalog.filter(row => ids.has(row.fishId));
   const claimed = fish.rewardId ?? 0;
   const next = stages.filter(row => row.stage > claimed).sort((a, b) => a.stage - b.stage)[0];
@@ -35,16 +36,34 @@ export function newbieView(client) {
 }
 
 const deniedUntil = new WeakMap();
-export async function collectFloaters(client, config, floaters, enabled, report) {
+export async function collectFloaters(client, config, floaters, enabled, report, { settings = null, dryRun = false } = {}) {
   const until = deniedUntil.get(client) ?? new Map();
   deniedUntil.set(client, until);
   const types = new Set(config?.tables.GarbageProductionCfg?.data.filter(r => r.type === '拾取').map(r => r.id));
   const ids = [];
+  let capacity = Infinity;
+  const projected = new Map();
+  if (settings && !settings.gather.continueWhenFull) {
+    const effects = normalize(await client.request('GameEffectRequest', {}, 'GameEffectResponse'));
+    capacity = effects.effects?.find(effect => effect.id === 16)?.value;
+    if (!(capacity > 0)) { report({ label: '海面漂浮物', skipped: true, reason: '未能确认原料仓储上限' }); return; }
+    const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+    if (!Array.isArray(bag.items)) { report({ label: '海面漂浮物', skipped: true, reason: '未能确认当前库存' }); return; }
+    for (const item of bag.items) projected.set(item.itemId, Number(item.num ?? 0));
+  }
   for (const f of floaters ?? []) {
     if (!types.has(f.floaterId) || (until.get(f.floaterId) ?? 0) > now(client)) continue;
-    for (let i = 0; i < f.num && ids.length < 40; i++) ids.push(f.floaterId);
+    const production = config?.tables.GarbageProductionCfg?.data.find(row => row.id === f.floaterId)?.production;
+    for (let i = 0; i < f.num && ids.length < 40; i++) {
+      if (Number.isFinite(capacity)) {
+        if (!production || (projected.get(production[0]) ?? 0) >= capacity) break;
+        projected.set(production[0], (projected.get(production[0]) ?? 0) + Number(production[1]));
+      }
+      ids.push(f.floaterId);
+    }
   }
   if (!ids.length || !enabled('floaters')) return;
+  if (dryRun) { report({ planned: true, action: { kind: 'floaters', label: '打捞当前可拾取的 ' + ids.length + ' 个漂浮物', costs: [] } }); return; }
   const reply = await client.request('PickUpFloaterRequest', { floaterId: ids }, 'PickUpFloaterResponse');
   const denied = reply.deniedFloaterIds ?? [];
   for (const id of denied) until.set(id, now(client) + 1800);

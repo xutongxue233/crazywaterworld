@@ -16,9 +16,8 @@ const promptLabels = new Map([
   ['no claimable afk reward', '目前没有可领取的挂机奖励'],
   ['upgrade condition unmet', '尚未满足升级条件'],
   ['no chance left', '可用次数已用完'],
-  ['not in challenge list', '该对手已不在当前竞技场挑战名单中'],
-  ['cannot sweep', '该海盗当前不可扫荡，请检查同类海盗的首杀进度和剩余扫荡次数'],
   ['too early', '尚未到可执行时间'],
+  ['breed queue full', '海兽培育队列已满，等待完成并领取后再培育'],
 ]);
 
 const connectionLabels = new Map([

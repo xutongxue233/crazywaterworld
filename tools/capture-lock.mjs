@@ -5,8 +5,6 @@ import { createHash } from 'node:crypto';
 
 // All capture entry points for this user contend for the same IPC listener,
 // independent of the proxy port or checkout. Windows drops the pipe on exit.
-// Keep the legacy namespace across the repository rename so older checkouts
-// still share this lock and cannot start a second capture for the same user.
 const user = createHash('sha256').update(os.userInfo().homedir.toLowerCase()).digest('hex').slice(0, 24);
 const address = process.platform === 'win32'
   ? `\\\\.\\pipe\\crazywaterword-capture-${user}`

@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { once } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { runOpenSsl } from './mitm-ca.mjs';
 
 const TIMEOUT_MS = 5000;
@@ -225,8 +226,13 @@ try {
   } finally { await release(); }
   await (await acquireCaptureLock(lockAddress))();
 
-  // Exercise the real signing path with an isolated user profile.
-  const caModule = new URL('./mitm-ca.mjs', import.meta.url).href;
+  // Reproduce the portable directory layout without touching the installed CA.
+  const testTools = path.join(tempDir, 'repo', 'tools');
+  fs.mkdirSync(testTools, { recursive: true });
+  for (const file of ['mitm-ca.mjs', 'import-user-root.cs']) {
+    fs.copyFileSync(new URL('./' + file, import.meta.url), path.join(testTools, file));
+  }
+  const caModule = pathToFileURL(path.join(testTools, 'mitm-ca.mjs')).href;
   if (process.platform === 'win32') {
     const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command',
@@ -239,7 +245,7 @@ try {
     import fs from 'node:fs';
     import path from 'node:path';
     import { CA_DIR, initCa, prepareLeaf, installCa, caThumbprint, verifyRootView } from ${JSON.stringify(caModule)};
-    assert.equal(CA_DIR, path.join(process.argv[1], '.cw-ca'));
+    assert.equal(CA_DIR, path.join(process.argv[1], 'certificates'));
     if (process.platform === 'win32') {
       // No certificate exists: the native helper must fail before opening the store.
       await assert.rejects(installCa(), { code: 'CW_CA_TRUST' });

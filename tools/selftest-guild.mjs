@@ -26,6 +26,7 @@ export async function testGuild() {
       case 'GuildAidListRequest':
         assert.deepEqual(body, { type: 0 });
         return { askItems: [aid(2), aid(10), { ...aid(3), endTime: now - 1 }] };
+      case 'MyGuildAidRequest': return { aids: [] };
       case 'GotGuildWelfarePackRequest':
         assert.equal(responseName, 'GotGuildWelfarePackResponse');
         assert.deepEqual(body, {});
@@ -37,13 +38,13 @@ export async function testGuild() {
   assert.equal(view.name, '测试联盟');
   assert.equal(view.welfareCount, 1);
   assert.deepEqual(view.requests, [{ requester: '居民2', quantity: 1, material: '小麦', endTime: now + 60 }]);
-  assert.deepEqual(calls, ['GuildInfoRequest', 'GuildAidListRequest'], '互助列表只读，不能捐材料');
+  assert.deepEqual(calls, ['GuildInfoRequest', 'GuildAidListRequest', 'MyGuildAidRequest'], '互助列表只读，不能捐材料');
   const claimed = await claimGuildWelfare(client, config, { player: member });
   assert.match(claimed.label, /钻石 ×8/);
   assert(claimed.ok);
   assert((await claimGuildWelfare(client, config, { player: member })).skipped);
   assert.equal(calls.filter(name => name === 'GotGuildWelfarePackRequest').length, 1, '同连接重复点击不能重领旧礼包');
-  assert(calls.every(n => ['GuildInfoRequest', 'GuildAidListRequest', 'GotGuildWelfarePackRequest'].includes(n)));
+  assert(calls.every(n => ['GuildInfoRequest', 'GuildAidListRequest', 'MyGuildAidRequest', 'GotGuildWelfarePackRequest'].includes(n)));
 
   let deadline = 0;
   const scheduler = { now: () => now, due: () => deadline <= now, defer: (key, until) => {

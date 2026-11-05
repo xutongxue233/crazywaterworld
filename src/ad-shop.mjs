@@ -19,7 +19,7 @@ function versionAtLeast(version, minimum) {
   return true;
 }
 
-function channelUnavailable(tables, player, clientInfo, language) {
+export function channelUnavailable(tables, player, clientInfo, language) {
   const channel = String(clientInfo?.channelId ?? '');
   if (!apps.has(channel) || String(clientInfo?.appId) !== apps.get(channel) || language !== 'zh_CN'
     || (player?.channelId && String(player.channelId) !== channel)
@@ -32,7 +32,7 @@ function channelUnavailable(tables, player, clientInfo, language) {
   return null;
 }
 
-async function hasSkipPrivilege(client, tables, player) {
+export async function hasSkipPrivilege(client, tables, player) {
   const vip = tables?.VipLevelCfg?.data?.find(row => row.level === player?.vip?.vipLevel);
   if (vip?.effects?.some(([name, value]) => name === '免广告' && Number(value) > 0)) return true;
   const state = await client.request('FirstChargeRequest', {}, 'FirstChargeResponse');

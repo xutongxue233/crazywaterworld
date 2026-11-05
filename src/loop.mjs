@@ -1,3 +1,14 @@
+import {checkFleetSettlement} from './fleet-settlement.mjs';
+import { militaryRewards, riverActivity, compassActivity, beautyActivity } from './seasonal-activities.mjs';
+import { merchantActivity } from './merchant-activity.mjs';
+import {runPirateSweeps} from './pirate-sweeps.mjs';
+import {claimGuildTitleReward} from './guild-title-rewards.mjs';
+import {runWorldBoss,claimWorldBossDamage} from './world-boss.mjs';
+import { claimOpenRank, claimFestivalActive, claimReportRewards, claimLeagueCollect, claimLeaguePass, claimWeekSupply } from './missing-rewards.mjs';
+import { dispatchOrder, reserveDispatch, dispatchReservationReason } from './fleet-availability.mjs';
+import { runAllianceRadar } from './alliance-radar.mjs';
+import { claimVipDaily, claimLimitedFree, claimWeekHeroStar, claimLinkageFree, recruitWithSkipAds } from './extra-free-rewards.mjs';
+import { collectAntiqueFloaters } from './antique-floaters.mjs';
 // 自动循环：每轮依次跑 任务领取 → 日常（含任务奖励与活跃度宝箱） → 海面（收成品/竣工/建造/交单/排产/升级）。
 //
 // 循环是显式开的：必须同时给 --loop 与 --yes，且每轮都是「先只读探测，再算计划，再执行」，
@@ -9,13 +20,11 @@ import { serviceCargo } from './cargo.mjs';
 import { serviceBoats } from './boats.mjs';
 import { sweepTrials } from './trials.mjs';
 import { claimGuildWelfare } from './guild.mjs';
-import { serviceGuildOrders } from './guild-orders.mjs';
-import { serviceRadar } from './radar.mjs';
-import { serviceEquipmentCrafting } from './equipment-automation.mjs';
-import { serviceMuseum } from './museum.mjs';
-import { servicePetBreeding } from './pet-breeding.mjs';
+import { claimWorldOnlineReward } from './world-online-rewards.mjs';
+import { runExtraTrialSweeps } from './trial-sweeps.mjs';
 import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
+import { serviceHeroRecruitRewards } from './hero-recruit-rewards.mjs';
 import { serviceAntiqueRecruit } from './antique-recruit.mjs';
 import { claimAdShop } from './ad-shop.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
@@ -23,22 +32,25 @@ import { normalize } from './worlds.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorldRound, displayBuilding } from './world.mjs';
+import { createActionGuard, nativePreferenceEnabled, needsCargoDemand, exactAutomationId } from './automation-policy.mjs';
+import { surveyBaseAutomation, planBaseAutomation, runBaseAutomation, baseDemands } from './base-automation.mjs';
+import { hasExtraWork } from './automation-settings.mjs';
+import { treasureAutomationEnabled, runTreasureLoot } from './treasure-loot.mjs';
+import {watchTreasureTravel,matchesFollowDeparture} from './treasure-follow.mjs';
+import {watchFleetMaintenance,fleetMaintenanceEnabled,fleetMaintenanceInterval,runFleetMaintenance} from './fleet-maintenance.mjs';
+import { cityWarEnabled, cityWarReservedFleets, runCityWar } from './city-war.mjs';
+import { forgeEnabled, runEquipmentForge } from './equipment-forge.mjs';
+import { planHeroes, runHeroPlan } from './heroes.mjs';
 
 import { setTimeout as pause } from 'node:timers/promises';
 import { claimRewards } from './claim-rewards.mjs';
-import { claimWeekly, runLinkage, readWeekOrder, weekSchedule } from './activities.mjs';
-import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys } from './free-rewards.mjs';
-import { claimCampaignReports, claimOpenRanks } from './pirate-board.mjs';
-import { claimExtraRewards, extraRewardKeys } from './extra-rewards.mjs';
-import { serviceGuildAid } from './guild-aid.mjs';
-import { serviceHeroGrowth, serviceStageAuto } from './progress-automation.mjs';
-import { serviceTreasureLoot } from './treasure-loot.mjs';
+import { claimWeekly, runLinkage } from './activities.mjs';
 import { automationTasks, dailyTaskKey, defaultFishingGoldReserve, worldTaskKey } from './automation.mjs';
 
 const defaultSleep = (ms, signal) => pause(ms, undefined, { signal });
 const dailyActionKeys = {
   1002: ['freeRecruit', 'ticketRecruit'], 1005: ['arena'], 1006: ['freeGold', 'paidGold'],
-  1007: ['shop'], 1010: ['pirate'],
+  1007: ['shop'],
 };
 
 function nextFactoryCheck(buildings, offset, collect) {
@@ -68,59 +80,186 @@ export async function runLoop(client, protocol, {
   stop = { aborted: false },
   isEnabled,
   getFishingGoldReserve = () => defaultFishingGoldReserve,
-  getCompassSpinCount = () => undefined,
-  isStageBusy = () => false,
+  getSettings = () => null, onFishBookComplete,
+  usageLedger = null,
+  getEveryMs = () => everyMs,
   schedule = work => work(),
   onRound,
   onStep,
+  onMaintenance,
 } = {}) {
   if (!allowMutate) throw new Error('循环会持续改变账号状态，需要 --yes');
   const rejected = { tasks: new Set(), world: new Set() };
   const history = [];
   const rewards = isEnabled ? rewardSchedule(client) : null;
-  let dailyWait = new Map();
+  let lastRecruitWait;
   let lastFishWait;
   let lastFishUpgradeWait;
   let lastGuildWait;
-  const serviceWait = new Map();
   const antiqueWait = new Map();
   let residentWait = new Map();
+  let treasureAt = 0;
+  let lastTreasureNotes = '';
+  let radarAt=0;
+  let cityWarAt = 0, forgeAt = 0, lastCityWarNotes = '', lastForgeNotes = '';
+  let cityWarState = null, cityWarPreference = null, forgePreference = null, cityFuelCeiling = null;
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
   const total = rounds > 0 ? rounds : Infinity;
-
+  const travel=watchTreasureTravel(client);
+  let followWake=null,followPending=false,followVersion=0;
+  let maintenanceAt=0,maintenancePending=false,maintenanceVersion=0;
+  const unsubscribeFollow=travel.subscribe(fleet=>{
+    const preferences=getSettings()?.treasure;
+    if(stop.aborted||!client.connected||!treasureAutomationEnabled(getSettings())||!matchesFollowDeparture(fleet,preferences,exactAutomationId(player?.playerId),travel.current()))return;
+    treasureAt=0;followPending=true;followVersion++;followWake?.();
+  });
+  const unsubscribeMaintenance=watchFleetMaintenance(client).subscribe(()=>{
+    if(stop.aborted||!client.connected||!fleetMaintenanceEnabled(getSettings()))return;
+    maintenanceAt=0;maintenancePending=true;maintenanceVersion++;followWake?.();
+  });
+  // 出发推送只唤醒现有调度，不在消息回调中并发发协议或绕过舰队优先级。
+  async function waitWithFollow(ms,signal){
+    if(followPending||maintenancePending){followPending=false;maintenancePending=false;return true;}
+    const controller=new AbortController(),abort=()=>controller.abort(signal?.reason);
+    if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
+    let wake;const changed=new Promise(resolve=>{wake=()=>resolve(true);followWake=wake;});
+    try{return await Promise.race([Promise.resolve(sleep(ms,controller.signal)).then(()=>false),changed]);}
+    finally{if(followWake===wake)followWake=null;controller.abort();signal?.removeEventListener('abort',abort);}
+  }
+  try{
   for (let round = 1; round <= total; round += 1) {
     if (stop.aborted) break;
     const empty = () => ({ planned: 0, results: [] });
     const summary = { round, startedAt: Math.floor(Date.now() / 1000), tasks: empty(), dailies: empty(), world: empty() };
-    const enabled = key => !stop.aborted && (!isEnabled || (isEnabled(key) && rewards.due(key)));
-    // A module may schedule its next check while finishing this one. Keep the
-    // user's current switch separate from the due-time gate during execution.
-    const active = key => !stop.aborted && Boolean(isEnabled?.(key));
+    const settings = getSettings();
+    const enabled = key => !stop.aborted && nativePreferenceEnabled(getSettings(), key) && (!isEnabled || (isEnabled(key) && rewards.due(key)));
+    const guard = createActionGuard(client, getSettings, usageLedger, { enabled: () => !stop.aborted && client.connected });
+    const usage = () => usageLedger?.snapshot() ?? { counters: {} };
+    let extraDemand = [];
+    let diveCompleted = false;
     const groupEnabled = group => automationTasks.some(task => task.group === group && enabled(task.key));
-    const stepLog = phase => entry => onStep?.({ round, phase, ...entry });
+    const stepLog = phase => entry => {
+      const key=entry.taskKey||entry.key||entry.step?.setting||(entry.step?.kind?worldTaskKey(entry.step.kind):null);
+      if(key){rewards?.observe(key,entry.reason||entry.error||entry.note||(entry.ok?'执行成功 · '+(entry.title||entry.label||'本次动作'):entry.title||entry.label||'已检查'),entry.status==='unknown'||entry.status==='pending'?'pending':entry.skipped?'waiting':entry.ok?'ok':'error');rewards?.expect(key,rewards.now()+Math.ceil(getEveryMs()/1000));}
+      onStep?.({ round, phase, ...entry,taskKey:key||entry.taskKey });
+    };
+    async function observed(keys,work){
+      const active=keys.filter(enabled),before=new Map(active.map(k=>[k,rewards?.status(k)]));
+      try {const value=await work();for(const key of active){if(rewards?.status(key)===before.get(key))rewards?.observe(key,'已检查，当前没有新增可执行动作');rewards?.expect(key,rewards.now()+Math.ceil(getEveryMs()/1000));}return value;}
+      catch(error){for(const key of active)rewards?.observe(key,error.message,'error');throw error;}
+    }
     let afkDeadline;
     let factoryDeadline;
     const rememberDeadline = time => { afkDeadline = time; };
-    const logReward = (entry, category = '领奖') => stepLog('tasks')({ title: entry.label, ...entry, category });
-    const allowDaily = (id, action) => enabled(dailyTaskKey(id, action));
+    const logReward = (entry, category = '领奖') => stepLog('tasks')({ title: entry.label, ...entry, taskKey:entry.taskKey||entry.key, category });
+    const allowDaily = (id, action) => !(getSettings() && action.request === 'ClickGoldRequest' && !action.body.free) && enabled(dailyTaskKey(id, action));
     const allowWorld = kind => enabled(worldTaskKey(kind));
     const attemptedOrders = new Set();
-    const harvestOptions = { config, player, attemptedOrders, cargoEnabled: () => !!isEnabled && enabled('cargo'),
-      finishEnabled: () => allowWorld('finishOrder') };
+    const harvestOptions = { config, player, attemptedOrders, cargoEnabled: () => (!!isEnabled && enabled('cargo')) || needsCargoDemand(getSettings()),
+      finishEnabled: () => allowWorld('finishOrder'), getSettings, getUsage: usage,
+      beforeStep: guard.before, afterStep: guard.after, cancelStep: guard.cancel };
     function phaseFailure(phase, title, error) {
       if (!client.connected) throw error;
-      const entry = { title, ok: false, error: error.message };
+      const entry = { title,taskKey:({'万吨巨轮检查':'万吨巨轮','城战接续检查':'城战接续','装备锻造检查':'装备锻造','联盟情报':'联盟情报','世界Boss首战':'worldBoss','钓具养成':'fishEnhance','自动钓鱼':'autoFish','贸易港':'cargo'})[title], ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true, reason: error.message } : {}), error: error.message };
       summary[phase].results.push(entry);
       stepLog(phase)(entry);
     }
-    const serviceReport = (phase, category) => entry => {
-      summary[phase].results.push(entry);
-      if (!entry.skipped) summary[phase].planned++;
-      const key = entry.key || category;
-      if (!entry.skipped || serviceWait.get(key) !== entry.reason) stepLog(phase)({ ...entry, category });
-      if (entry.skipped) serviceWait.set(key, entry.reason);
-      else serviceWait.delete(key);
-    };
+    async function checkDispatch() {
+      if(stop.aborted)return;
+      if(usageLedger)await checkFleetSettlement(client,player,usageLedger);
+      await checkMaintenance();
+      // 城战时间窗先核实；其余任务按配置检查，空闲且无预留的舰队可共享。
+      if(getSettings()?.cityWar.reserveDuringWar)await checkCityWar();
+      for (const task of dispatchOrder(getSettings())) {
+        if (task === 'cityWar') await checkCityWar();
+        if (task === 'radar') await checkRadar();
+        if (task === (getSettings()?.treasure.follow?'follow':'treasure')) await checkTreasure();
+        if (task === 'worldBoss'&&getSettings()?.worldBoss.enabled) await checkBoss();
+      }
+    }
+    async function checkMaintenance(){
+      if(stop.aborted||!fleetMaintenanceEnabled(getSettings())){watchFleetMaintenance(client).hold([]);onMaintenance?.({enabled:false,rows:[],reason:'现有自动维修未开启'});return;}
+      if(Date.now()<maintenanceAt)return;
+      const version=maintenanceVersion;maintenancePending=false;
+      try{await runFleetMaintenance(client,player,{getSettings,ledger:usageLedger,enabled:()=>!stop.aborted&&client.connected&&fleetMaintenanceEnabled(getSettings()),
+        onView:onMaintenance,onStep:entry=>{summary.world.planned++;summary.world.results.push(entry);stepLog('world')({...entry,category:'战后维修',taskKey:'舰队战后维修'});}});}
+      catch(error){onMaintenance?.({enabled:true,rows:[],reason:error.message});phaseFailure('world','战后维修',error);}
+      finally{maintenanceAt=version!==maintenanceVersion?0:Date.now()+fleetMaintenanceInterval(getSettings());}
+    }
+    async function checkBoss(){
+      if(stop.aborted||!getSettings()?.worldBoss.enabled||!rewards?.due('worldBoss'))return;
+      try{await runWorldBoss(client,config,player,{getSettings,ledger:usageLedger,enabled:()=>!stop.aborted&&client.connected&&getSettings().worldBoss.enabled,report:entry=>{summary.world.results.push(entry);stepLog('world')({...entry,title:entry.label,taskKey:'worldBoss'});}});}
+      catch(error){phaseFailure('world','世界Boss首战',error);}
+      finally{rewards?.defer('worldBoss',rewards.now()+Math.ceil(getEveryMs()/1000));}
+    }
+    async function checkTreasure() {
+      if (stop.aborted || !treasureAutomationEnabled(getSettings()) || Date.now() < treasureAt) return;
+      const checkedFollowVersion=followVersion;followPending=false;
+      if(getSettings()?.cityWar.reserveDuringWar)await checkCityWar();
+      try {
+        await runTreasureLoot(client, protocol, config, player, { getSettings, ledger: usageLedger,
+          reservedFleetIds: cityWarReservedFleets(cityWarState,getSettings(),(Date.now()+(client.serverClockOffsetMs||0))/1000), petrolCeiling: cityFuelCeiling,
+          canUseFleet: id => {
+            if (dispatchReservationReason(client,getSettings(),getSettings()?.treasure.follow?'follow':'treasure',id)) return false;
+            const current = getSettings(), pref = current?.cityWar;
+            if (pref?.enabled && pref.reserveDuringWar && pref.fleetIds.includes(id) && cityWarPreference !== pref) return false;
+            return !cityWarReservedFleets(cityWarState, current, (Date.now() + (client.serverClockOffsetMs || 0)) / 1000).includes(id);
+          },
+          enabled: () => !stop.aborted && client.connected && treasureAutomationEnabled(getSettings()),
+          onStep(entry) { summary.world.planned++; summary.world.results.push(entry); stepLog('world')({ ...entry, category: '万吨巨轮',taskKey:'万吨巨轮' }); },
+          onNotes(notes) {
+            const text = notes.join('；');rewards?.observe('万吨巨轮',text||'本次已核对，没有待执行的巨轮动作');
+            if (text && text !== lastTreasureNotes) stepLog('world')({ title: '巨轮检查', category: '万吨巨轮', skipped: true, reason: text });
+            lastTreasureNotes = text;
+          },
+        });
+      } catch (error) { phaseFailure('world', '万吨巨轮检查', error); }
+      finally { rewards?.expect('万吨巨轮',rewards.now()+(getSettings()?.treasure?.checkEverySeconds??15));treasureAt = followVersion!==checkedFollowVersion?0:Date.now() + (getSettings()?.treasure?.checkEverySeconds ?? 15) * 1000; cityFuelCeiling = null; }
+    }
+
+    async function checkCityWar() {
+      if (stop.aborted || !cityWarEnabled(getSettings())) { cityWarState = null; reserveDispatch(client,'cityWar',[]); return; }
+      if (Date.now() < cityWarAt && cityWarPreference === getSettings().cityWar) return;
+      cityWarPreference = getSettings().cityWar;
+      try {
+        cityWarState = await runCityWar(client, protocol, config, player, { getSettings, ledger: usageLedger,canUseFleet:id=>!watchFleetMaintenance(client).held().includes(id)&&(getSettings().cityWar.reserveDuringWar||!dispatchReservationReason(client,getSettings(),'cityWar',id)),
+          enabled: () => !stop.aborted && client.connected && cityWarEnabled(getSettings()),
+          onStep(entry) { summary.world.planned++; summary.world.results.push(entry); stepLog('world')({ ...entry, category: '城战接续' }); },
+        });
+        cityFuelCeiling = cityWarState.remainingFuel;
+        reserveDispatch(client,'cityWar',cityWarState.reason ? getSettings().cityWar.fleetIds : cityWarState.reservedFleetIds ?? [], Date.now()+Math.max(60000,getSettings().cityWar.checkEverySeconds*2000));
+        const text = (cityWarState.notes ?? []).join('；');rewards?.observe('城战接续',text||'本次已核对，城战动作结果见日志');
+        if (text && text !== lastCityWarNotes) stepLog('world')({ title: '城战接续检查', category: '城战接续', skipped: true, reason: text });
+        lastCityWarNotes = text;
+      } catch (error) { phaseFailure('world', '城战接续检查', error); cityWarState = { reservedFleetIds: [...getSettings().cityWar.fleetIds] }; reserveDispatch(client,'cityWar',getSettings().cityWar.fleetIds); }
+      finally {
+        rewards?.expect('城战接续',rewards.now()+(getSettings()?.cityWar?.checkEverySeconds??15));
+        cityWarAt = Date.now() + (getSettings()?.cityWar?.checkEverySeconds ?? 15) * 1000;
+        const opening = (cityWarState?.startTime ?? 0) * 1000 - (client.serverClockOffsetMs || 0);
+        if (opening > Date.now()) cityWarAt = Math.min(cityWarAt, opening);
+      }
+    }
+
+    async function checkRadar(){
+      if(stop.aborted || !getSettings()?.radar.enabled || Date.now()<radarAt)return;
+      try{await runAllianceRadar(client,config,player,{getSettings,ledger:usageLedger,canUseFleet:id=>!dispatchReservationReason(client,getSettings(),'radar',id),enabled:()=>!stop.aborted&&client.connected,report(entry){summary.world.results.push(entry);if(!entry.skipped)summary.world.planned++;stepLog('world')({...entry,title:entry.label,category:'联盟情报'});}});}
+      catch(error){phaseFailure('world','联盟情报',error);}
+      finally{rewards?.expect('联盟情报',rewards.now()+(getSettings()?.radar.checkEverySeconds??30));radarAt=Date.now()+(getSettings()?.radar.checkEverySeconds??30)*1000;}
+    }
+    async function checkForge() {
+      if (stop.aborted || !forgeEnabled(getSettings()) || (Date.now() < forgeAt && forgePreference === getSettings().forge)) return;
+      forgePreference = getSettings().forge;
+      try {
+        const result = await runEquipmentForge(client, protocol, config, player, { getSettings, ledger: usageLedger,
+          enabled: () => !stop.aborted && client.connected && forgeEnabled(getSettings()),
+          onStep(entry) { summary.world.planned++; summary.world.results.push(entry); stepLog('world')({ ...entry, category: '装备锻造' }); },
+        });
+        const text = (result.notes ?? []).join('；');rewards?.observe('装备锻造',text||'本次已核对，锻造动作结果见日志');
+        if (text && text !== lastForgeNotes) stepLog('world')({ title: '装备锻造检查', category: '装备锻造', skipped: true, reason: text });
+        lastForgeNotes = text;
+      } catch (error) { phaseFailure('world', '装备锻造检查', error); }
+      finally { rewards?.expect('装备锻造',rewards.now()+(getSettings()?.forge?.checkEverySeconds??30));forgeAt = Date.now() + (getSettings()?.forge?.checkEverySeconds ?? 30) * 1000; }
+    }
 
     await schedule(async () => {
       if (stop.aborted) return;
@@ -129,22 +268,20 @@ export async function runLoop(client, protocol, {
           const survey = await surveyTasks(client, protocol, { config, player });
           summary.tasks.planned = survey.plan.length;
           summary.tasks.results = await runTasks(client, protocol, survey, {
-            allowMutate, enabled: () => enabled('tasks'), onStep: stepLog('tasks'),
+            allowMutate, enabled: () => enabled('tasks'), onStep: stepLog('tasks'), settings,
           });
         } catch (error) { phaseFailure('tasks', '任务检查', error); }
       }
       if (groupEnabled('日常')) {
         try {
           const includeTask = id => !isEnabled || dailyActionKeys[id]?.some(enabled);
-          const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled, idle: !!isEnabled });
-          const waiting = survey.tasks.filter(({ task, status, reason }) => reason && (
-            (task.id === 1002 && status === 'waiting') ||
-            ([1005, 1010].includes(task.id) && ['waiting', 'blocked'].includes(status))
-          ));
-          for (const { task, reason } of waiting) {
-            if (dailyWait.get(task.id) !== reason) stepLog('dailies')({ title: task.title, skipped: true, reason });
+          const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled, idle: !!isEnabled, settings });
+          for (const entry of survey.tasks) for (const key of dailyActionKeys[entry.task.id]??[]) rewards?.observe(key, entry.reason || (Number.isFinite(entry.task.progress)&&Number.isFinite(entry.task.targetProgress)?entry.task.progress+'/'+entry.task.targetProgress+(entry.task.progress>=entry.task.targetProgress?' · 今日目标已完成':' · 等待执行'):'已读取任务状态'));
+          const recruit = survey.tasks.find(entry => entry.task.id === 1002 && entry.status === 'waiting');
+          if (recruit && recruit.reason !== lastRecruitWait) {
+            stepLog('dailies')({ title: recruit.task.title, skipped: true, reason: recruit.reason });
           }
-          dailyWait = new Map(waiting.map(entry => [entry.task.id, entry.reason]));
+          lastRecruitWait = recruit?.reason;
           summary.dailies.planned = survey.tasks.reduce((n, entry) =>
             n + (entry.actions ?? []).filter(action => allowDaily(entry.task.id, action)).length, 0);
           if (!isEnabled) summary.dailies.planned += (survey.chests?.actions.length ?? 0) + (survey.gift?.actions.length ?? 0);
@@ -152,9 +289,10 @@ export async function runLoop(client, protocol, {
             summary.dailies.results = await runDailies(client, protocol, survey, {
               allowMutate, allowPaid: isEnabled ? true : allowPaid, claimRewards: !isEnabled, config,
               allowAction: allowDaily, onStep: stepLog('dailies'),
+              settings, beforeAction: guard.before, afterAction: guard.after,
             });
           }
-          for (const { task, reason } of waiting) summary.dailies.results.push({ id: task.id, skipped: true, reason });
+          if (recruit) summary.dailies.results.push({ id: 1002, skipped: true, reason: recruit.reason });
           if (rewards) {
             for (const { task } of survey.tasks) {
               if (!(task.targetProgress > 0 && task.progress >= task.targetProgress)) continue;
@@ -164,49 +302,104 @@ export async function runLoop(client, protocol, {
             rewards.defer('freeGold', survey.freeGoldAt);
             for (const entry of summary.dailies.results) {
               if (entry.ok && entry.request === 'RecruitStartRequest') {
+                rewards.clear('heroRecruitRewards');
                 rewards.defer('freeRecruit', entry.body?.recruitData?.freeEndTimeSeconds);
               }
             }
           }
         } catch (error) { phaseFailure('dailies', '日常检查', error); }
       }
+      if(isEnabled&&enabled('pirate')){
+        try{await runPirateSweeps(client,config,player,{getSettings,ledger:usageLedger,enabled:()=>enabled('pirate'),scheduler:rewards,report:entry=>{summary.dailies.results.push(entry);if(!entry.skipped)summary.dailies.planned++;stepLog('dailies')({...entry,title:entry.label,taskKey:'pirate'});}});}
+        catch(error){const entry={title:'海盗日常扫荡',taskKey:'pirate',ok:false,error:error.message};summary.dailies.results.push(entry);stepLog('dailies')(entry);}
+      }
       if (isEnabled && groupEnabled('领奖')) {
-        const results = await claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player);
+        const results = await observed(['tasks','dailyRewards','chests','gift','mail','afk'],()=>claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player, { settings }));
         summary.tasks = { planned: results.length, results };
       }
       if (isEnabled && enabled('adShop')) {
-        await claimAdShop(client, config, { ...adChannel, player, enabled: () => enabled('adShop'),
+        await observed(['adShop'],()=>claimAdShop(client, config, { ...adChannel, player, enabled: () => enabled('adShop'),
           schedule: rewards, report(entry) {
             summary.tasks.results.push(entry);
             if (!entry.skipped) summary.tasks.planned++;
-            logReward(entry, '领奖');
-          } });
+            logReward({...entry,taskKey:'adShop'}, '领奖');
+          } }));
       }
       if (isEnabled && enabled('trialSweep')) {
         await sweepTrials(client, config, player?.level ?? 0, () => enabled('trialSweep'), entry => {
           summary.dailies.planned++;
           summary.dailies.results.push(entry);
-          stepLog('dailies')({ ...entry, category: '试炼' });
+          stepLog('dailies')({ ...entry, taskKey:'trialSweep', category: '试炼' });
         }, rewards);
       }
       if (isEnabled && enabled('guildWelfare')) {
+        // 联盟福利仍按原设置独立检查。
         try {
           const entry = await claimGuildWelfare(client, config, { player, enabled: () => enabled('guildWelfare'), scheduler: rewards });
           summary.tasks.results.push(entry);
           if (!entry.skipped) summary.tasks.planned++;
-          if (!entry.skipped || lastGuildWait !== entry.reason) logReward(entry, '联盟');
+          if (!entry.skipped || lastGuildWait !== entry.reason) logReward({...entry,taskKey:'guildWelfare'}, '联盟');
+          rewards?.observe('guildWelfare',entry.reason||entry.error||entry.label||'已检查',entry.ok?'ok':entry.skipped?'waiting':'error');rewards?.expect('guildWelfare',rewards.now()+Math.ceil(getEveryMs()/1000));
           lastGuildWait = entry.reason;
         } catch (error) { phaseFailure('tasks', '联盟福利礼包', error); }
       } else if (!isEnabled?.('guildWelfare')) lastGuildWait = undefined;
+      if (isEnabled && (enabled('trialPaidSweep') || enabled('trialAdSweep'))) {
+        await runExtraTrialSweeps(client, protocol, config, player, { getSettings, ledger: usageLedger, channel: adChannel,
+          enabled: mode => enabled(mode === 'paid' ? 'trialPaidSweep' : 'trialAdSweep'), report(entry) {
+            summary.dailies.results.push(entry); if (!entry.skipped) summary.dailies.planned++; stepLog('dailies')({ ...entry, category: '试炼' });
+          } });
+      }
+      if (isEnabled && enabled('worldOnlineRewards')) {
+        try {
+          const entry = await claimWorldOnlineReward(client, config, player, { ledger: usageLedger, enabled: () => enabled('worldOnlineRewards'), scheduler: rewards });
+          summary.tasks.results.push(entry);
+          if (!entry.skipped) summary.tasks.planned++;
+          logReward({...entry,taskKey:'worldOnlineRewards'}, '联盟/城战');
+        } catch (error) { phaseFailure('tasks', '城战在线奖励', error); }
+      }
+      if (isEnabled) {
+        const extraReport=entry=>{summary.tasks.results.push(entry);if(!entry.skipped)summary.tasks.planned++;logReward(entry,'免费领奖');};
+        for(const [key,service] of [['vipDailyGift',claimVipDaily],['guildTitleReward',claimGuildTitleReward],['limitedFreeGifts',claimLimitedFree],['weekHeroStar',claimWeekHeroStar],['pirateRankRewards',(c,f,o)=>claimOpenRank(c,f,o,3)],['warRankRewards',(c,f,o)=>claimOpenRank(c,f,o,4)],['festivalActiveRewards',claimFestivalActive],['battleReportRewards',claimReportRewards],['leagueCollect',claimLeagueCollect],['leaguePassRewards',claimLeaguePass],['weekSupplyFree',claimWeekSupply],['worldBossRewards',claimWorldBossDamage]]) {
+          if(enabled(key))try{let reports=0;await service(client,config,{player,enabled:()=>enabled(key),ledger:usageLedger,report:entry=>{reports++;extraReport({...entry,taskKey:key});}});if(!reports)extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,skipped:true,reason:'已检查，当前没有新增可执行的领取动作'});}catch(error){extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,ok:false,error:error.message});}
+        }
+        const activityServices = { armsRaceRewards:militaryRewards, riverScore:riverActivity, riverPass:riverActivity,
+          riverHelp:riverActivity, compassDaily:compassActivity, compassSpin:compassActivity, compassReward:compassActivity,
+          merchantTrade:merchantActivity, merchantRewards:merchantActivity, beautyVotes:beautyActivity, beautyGift:beautyActivity };
+        for (const [key,service] of Object.entries(activityServices)) {
+          if (!enabled(key)) continue;
+          const label=automationTasks.find(task=>task.key===key).label;
+          let reported=false;
+          const report=entry=>{
+            reported=true;
+            const result={...entry,taskKey:key};
+            summary.tasks.results.push(result);
+            if (!entry.skipped) summary.tasks.planned++;
+            logReward(result,'活动');
+          };
+          try {
+            await service(client,config,{...adChannel,player,key,label,ledger:usageLedger,settings:getSettings,enabled:()=>enabled(key),report});
+            if (!reported) report({label,skipped:true,reason:'已检查，当前没有可领取的新增奖励'});
+          } catch(error) {report({label,ok:false,error:error.message});}
+        }
+        if(enabled('festivalSign')||enabled('festivalFreeGift'))try{await observed(['festivalSign','festivalFreeGift'],()=>claimLinkageFree(client,config,{player,enabled,ledger:usageLedger,report:extraReport}));}catch(error){phaseFailure('tasks','酆都免费奖励',error);}
+        if(enabled('heroAdRecruit')||enabled('antiqueAdRecruit'))try{await observed(['heroAdRecruit','antiqueAdRecruit'],()=>recruitWithSkipAds(client,config,{...adChannel,player,enabled,ledger:usageLedger,report:extraReport,scheduler:rewards}));}catch(error){phaseFailure('tasks','免广告招募',error);}
+      }
+      if (isEnabled && enabled('heroRecruitRewards')) {
+        await serviceHeroRecruitRewards(client, config, { player, enabled, scheduler: rewards, report(entry) {
+          summary.tasks.results.push(entry);
+          if (!entry.skipped) summary.tasks.planned++;
+          logReward({...entry,taskKey:'heroRecruitRewards'}, '英雄招募');
+        } });
+      }
       if (isEnabled && groupEnabled('藏品')) {
         try {
-          await serviceAntiqueRecruit(client, config, { player, enabled, scheduler: rewards, report(entry) {
+          await observed(['freeAntiqueRecruit','antiqueRecruitRewards'],()=>serviceAntiqueRecruit(client, config, { player, enabled, scheduler: rewards, report(entry) {
             summary.tasks.results.push(entry);
             if (!entry.skipped) summary.tasks.planned++;
             if (!entry.skipped || antiqueWait.get(entry.key) !== entry.reason) logReward(entry, '藏品');
             if (entry.skipped) antiqueWait.set(entry.key, entry.reason);
             else antiqueWait.delete(entry.key);
-          } });
+          } }));
         } catch (error) { phaseFailure('tasks', '藏品招募检查', error); }
       }
       for (const key of antiqueWait.keys()) if (!isEnabled(key)) antiqueWait.delete(key);
@@ -216,89 +409,85 @@ export async function runLoop(client, protocol, {
           const entry = await upgradeFishingOnce(client, config, {
             playerLevel: player?.level, reserveGold: reserve,
             enabled: () => enabled('fishEnhance') && reserve === getFishingGoldReserve(),
+            targetLevel: settings?.gather.targetLevel ?? Infinity,
+            beforeAction: guard.before, afterAction: guard.after,
           });
           summary.tasks.results.push(entry);
           if (!entry.skipped) summary.tasks.planned++;
-          if (!entry.skipped || entry.reason !== lastFishUpgradeWait) logReward(entry, '钓鱼');
+          if (!entry.skipped || entry.reason !== lastFishUpgradeWait) logReward({...entry,taskKey:'fishEnhance'}, '钓鱼');
+          rewards?.observe('fishEnhance',entry.reason||entry.error||entry.label||'已检查',entry.ok?'ok':entry.skipped?'waiting':'error');rewards?.expect('fishEnhance',rewards.now()+Math.ceil(getEveryMs()/1000));
           lastFishUpgradeWait = entry.reason;
         } catch (error) { phaseFailure('tasks', '钓具养成', error); }
       } else lastFishUpgradeWait = undefined;
       if (isEnabled && enabled('autoFish')) {
         try {
-          const entry = await fishOnce(client, config, () => enabled('autoFish'));
+          const bookMode = !!getSettings()?.gather.fishBook;
+          const entry = await fishOnce(client, config, () => enabled('autoFish') && (!bookMode || getSettings()?.gather.fishBook), {fishBook:bookMode,onBookComplete:onFishBookComplete});
           summary.tasks.results.push(entry);
           if (!entry.skipped) summary.tasks.planned++;
-          if (!entry.skipped || entry.reason !== lastFishWait) logReward(entry, '钓鱼');
+          if (!entry.skipped || entry.reason !== lastFishWait) logReward({...entry,taskKey:'autoFish'}, '钓鱼');
+          rewards?.observe('autoFish',entry.reason||entry.error||entry.label||'已检查',entry.ok?'ok':entry.skipped?'waiting':'error');rewards?.expect('autoFish',rewards.now()+Math.ceil(getEveryMs()/1000));
           lastFishWait = entry.reason;
         } catch (error) { phaseFailure('tasks', '自动钓鱼', error); }
       } else lastFishWait = undefined;
       for (const [key, label] of [['fishBook', '钓鱼图鉴'], ['newbieLogin', '新手七日登录']]) {
         if (!isEnabled || !enabled(key)) continue;
         try {
-          await claimCollection(client, config, key, enabled, entry => {
+          await observed([key],()=>claimCollection(client, config, key, enabled, entry => {
             summary.tasks.planned++;
             summary.tasks.results.push(entry);
-            logReward(entry, key === 'newbieLogin' ? '活动' : '领奖');
-          }, rewards);
+            logReward({...entry,taskKey:key}, key === 'newbieLogin' ? '活动' : '领奖');
+          }, rewards));
         } catch (error) { phaseFailure('tasks', label, error); }
       }
-      if (isEnabled && ['evilExpel', 'compassReward', 'edict'].some(enabled)) {
-        await runLinkage(client, config, enabled, entry => {
+      if (isEnabled && ['evilExpel', 'edict'].some(enabled)) {
+        await observed(['evilExpel','edict'],()=>runLinkage(client, config, key=>key!=='compassReward'&&enabled(key), entry => {
           if (!entry.skipped) summary.tasks.planned++;
           summary.tasks.results.push(entry);
           logReward(entry, '活动');
-        });
-      }
-      if (isEnabled) {
-        const rewardReport = group => entry => {
-          if (!entry.skipped) summary.tasks.planned++;
-          summary.tasks.results.push(entry);
-          logReward(entry, group);
-        };
-        if (festivalRewardKeys.some(enabled)) await claimFestivalRewards(client, config, enabled, rewardReport('活动'), rewards, undefined, { spinCount: getCompassSpinCount() });
-        if (weeklyRewardKeys.some(enabled)) {
-          try {
-            await claimWeeklyRewards(client, config, await weekSchedule(client), enabled, rewardReport('周期活动'), { scheduler: rewards, readOrder: readWeekOrder, player });
-          } catch (error) { phaseFailure('tasks', '周活动奖励', error); }
-        }
-        if (enabled('vipDaily')) await claimVipDaily(client, config, player, enabled, rewardReport('领奖'), rewards);
-        if (extraRewardKeys.some(enabled)) await claimExtraRewards(client, config, player, enabled, serviceReport('tasks', '领奖'), rewards, active);
-        for (const [key, label, claim] of [['campaignReports', '战报奖励', claimCampaignReports], ['openRankRewards', '开服冲榜', claimOpenRanks]]) {
-          if (!enabled(key)) continue;
-          try { await claim(client, config, player, enabled, rewardReport('领奖'), rewards); }
-          catch (error) { phaseFailure('tasks', label, error); }
-        }
+        }));
       }
       if (isEnabled && groupEnabled('船只')) {
         try {
-          await serviceBoats(client, config, enabled, entry => {
+          await observed(['autoDive','diveEnhance','autoSalvage','salvageEnhance'],()=>serviceBoats(client, config, enabled, entry => {
+            if (entry.key === 'autoDive' && entry.ok) diveCompleted = true;
             if (!entry.skipped) summary.tasks.planned++;
             summary.tasks.results.push(entry);
             logReward(entry, '船只');
-          });
+          }, { settings, beforeAction: guard.before, afterAction: guard.after }));
         } catch (error) { phaseFailure('tasks', '船只检查', error); }
       }
       if (isEnabled && ['weekPass', 'weekGift', 'weekTimes'].some(enabled)) {
         try {
-          await claimWeekly(client, config, enabled, entry => {
+          await observed(['weekPass','weekGift','weekTimes'],()=>claimWeekly(client, config, enabled, entry => {
             if (!entry.skipped) summary.tasks.planned++;
             summary.tasks.results.push(entry);
             logReward(entry, '周期活动');
-          }, player?.level, rewards);
+          }, player?.level, rewards));
         } catch (error) { phaseFailure('tasks', '周活动检查', error); }
       }
       if (groupEnabled('海面')) {
         const usesOrders = allowWorld('finishOrder') || allowWorld('denyOrder');
         const survey = await surveyWorld(client, protocol, { config, player,
-          includeCargo: !!isEnabled && enabled('cargo') && (allowWorld('startProduce') || usesOrders),
-          includeWeekOrder: usesOrders || allowWorld('startProduce') || allowWorld('weekFactory') || allowWorld('farm') || allowWorld('upgrade') });
+          includeCargo: needsCargoDemand(settings) || (!!isEnabled && enabled('cargo') && (allowWorld('startProduce') || usesOrders)),
+          includeWeekOrder: needsCargoDemand(settings) || usesOrders || allowWorld('startProduce') || allowWorld('weekFactory') || allowWorld('farm') || allowWorld('upgrade') });
+        if (settings && ((allowWorld('startProduce') && settings.factory.demandFirst) || settings.factory.speedUpSources.length > 0)) {
+          const extra = await surveyBaseAutomation(client, protocol, config, player, settings, survey);
+          extraDemand = baseDemands(extra, config, settings);
+        }
         if (isEnabled && (enabled('collect') || enabled('startProduce')))
           factoryDeadline = nextFactoryCheck(survey.factories, client.serverClockOffsetMs || 0, enabled('collect'));
         const plan = planWorld(survey, { config, enabled: allowWorld,
+          settings, usage: usage(), extraDemand,
           allowSpeedUp: isEnabled ? enabled('speedUp') : allowSpeedUp,
           allowReroll: isEnabled ? enabled('denyOrder') : allowReroll,
-          minOrderExp: isEnabled && enabled('denyOrder') ? null : 0,
+          minOrderExp: settings ? settings.resident.minExp : isEnabled && enabled('denyOrder') ? null : 0,
         });
+        for(const key of ['collect','finishUpgrade','build','buildSupply','upgrade','finishOrder','startProduce','weekFactory','farm','speedUp','denyOrder'])if(enabled(key)){
+          const actions=plan.actions.filter(a=>worldTaskKey(a.kind)===key);
+          rewards?.observe(key,actions.length?'本次计划 '+actions.length+' 项，执行结果见日志':'已读取基地状态，当前无符合设置的可执行动作');
+          rewards?.expect(key,rewards.now()+Math.ceil(getEveryMs()/1000));
+        }
         summary.world = { planned: plan.actions.length, population: survey.population + '/' + survey.maxPopulation,
           notes: [...survey.notes, ...plan.notes], results: [] };
         const nextWait = new Map();
@@ -314,14 +503,21 @@ export async function runLoop(client, protocol, {
         }
         residentWait = nextWait;
         if (isEnabled && enabled('upgrade') && plan.upgradeReasons.length)
-          stepLog('world')({ title: '建筑暂不能升级：' + plan.upgradeReasons.join('；'), ok: true });
+          stepLog('world')({ taskKey:'upgrade',title:'建筑升级检查',reason:plan.upgradeReasons.join('；'),skipped:true });
+        if (isEnabled && enabled('antiqueFloaters')) {
+          try {
+            await collectAntiqueFloaters(client,config,{enabled:()=>enabled('antiqueFloaters'),ledger:usageLedger,report(entry){
+              summary.world.results.push(entry);if(!entry.skipped)summary.world.planned++;stepLog('world')({...entry,title:entry.label});
+            }});
+          } catch(error){phaseFailure('world','海面藏品宝箱打捞',error);}
+        }
         if (isEnabled && enabled('floaters')) {
           try {
-            await collectFloaters(client, config, survey.floaters, enabled, entry => {
+            await observed(['floaters'],()=>collectFloaters(client, config, survey.floaters, enabled, entry => {
               summary.world.planned++;
               summary.world.results.push(entry);
-              stepLog('world')({ ...entry, title: entry.label });
-            });
+              stepLog('world')({ ...entry,taskKey:'floaters', title: entry.label });
+            }, { settings }));
           } catch (error) { phaseFailure('world', '漂浮物拾取', error); }
         }
         if (plan.actions.length) {
@@ -375,15 +571,16 @@ export async function runLoop(client, protocol, {
                   : '正在生产 ' + count + ' 格，空闲 ' + Math.max(0, survey.factorySlots - count) + ' 格';
                 const title = displayBuilding(config, b) + '：' + queue + (reasons.length ? '。' + [...new Set(reasons)].join('；') : '');
                 summary.world.factories.push(title);
-                if (count !== before || count !== survey.factorySlots) stepLog('world')({ title, ok: true });
+                if (count !== before || count !== survey.factorySlots) stepLog('world')({ title,taskKey:'startProduce',skipped:true,reason:title });
               }
             }
           } catch (error) { phaseFailure('world', '核对海面建筑状态', error); }
         }
         if (isEnabled && enabled('cargo') && player?.level >= (config?.tables?.CargoUnlockCfg?.data[0]?.playerLevel ?? 9)) {
           try {
-            await serviceCargo(client, config, { enabled: () => enabled('cargo'), log(title) {
-              const entry = { title, ok: true };
+            await serviceCargo(client, config, { enabled: () => enabled('cargo'), getSettings, ledger: usageLedger,
+              beforeAction: guard.before, afterAction: guard.after, log(title, details) {
+              const entry = { title, ok: !details?.skipped, ...details };
               summary.world.planned++;
               summary.world.results.push(entry);
               stepLog('world')(entry);
@@ -391,56 +588,40 @@ export async function runLoop(client, protocol, {
           } catch (error) { phaseFailure('world', '贸易港', error); }
         }
       }
-      // Existing sea orders and production get first use of their materials.
-      // Each new service reads fresh state inside the same per-account queue.
-      if (isEnabled && enabled('guildOrders')) {
+      const latest = getSettings();
+      if (latest && (hasExtraWork(latest) || (latest.loop.dailies && latest.gold.enabled))) {
         try {
-          await serviceGuildOrders(client, protocol, config, { player, enabled: () => active('guildOrders'),
-            scheduler: rewards, report: serviceReport('dailies', '联盟订单') });
-        } catch (error) { phaseFailure('dailies', '联盟订单检查', error); }
+          const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: false });
+          const extra = await surveyBaseAutomation(client, protocol, config, player, latest, survey);
+          const plan = planBaseAutomation(extra, config, latest, usage(), { diveCompleted });
+          for(const [group,fields]of Object.entries(latest))for(const [field,value]of Object.entries(fields??{})){
+            const key=group+'.'+field;if(value!==true||!['pet','museum','events','gold'].includes(group))continue;
+            const actions=plan.actions.filter(a=>a.setting===key);
+            rewards?.observe(key,actions.length?'本次计划 '+actions.length+' 项':'已核对，当前无符合条件的动作'+(plan.notes.length?'：'+plan.notes.join('；'):''));rewards?.expect(key,rewards.now()+Math.ceil(getEveryMs()/1000));
+          }
+          const results = await runBaseAutomation(client, protocol, config, plan, { getSettings, ledger: usageLedger,
+            enabled: () => !stop.aborted && client.connected, onStep: stepLog('world') });
+          summary.world.planned += plan.actions.length;
+          summary.world.results.push(...results);
+          summary.world.notes = [...(summary.world.notes ?? []), ...plan.notes];
+        } catch (error) { phaseFailure('world', '基地设置执行', error); }
       }
-      if (isEnabled && enabled('guildAidHelp')) {
-        await serviceGuildAid(client, protocol, config, { player, enabled: () => active('guildAidHelp'),
-          scheduler: rewards, report: serviceReport('dailies', '联盟互助') });
-      }
-      if (isEnabled && ['equipmentCollect', 'equipmentCraft'].some(enabled)) {
+      if (getSettings()?.loop.heroes && getSettings().heroes.enabled && !stop.aborted) {
         try {
-          await serviceEquipmentCrafting(client, config, { player, enabled: active,
-            scheduler: rewards, report: serviceReport('world', '装备制造') });
-        } catch (error) { phaseFailure('world', '装备厂检查', error); }
+          const list = normalize(await client.request('AllHeroRequest', {}, 'AllHeroResponse'));
+          const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+          const inventory = new Map((bag.items ?? []).map(item => [item.itemId, Number(item.num)]));
+          rewards?.observe('loop.heroes','已读取英雄与库存，检查养成条件');rewards?.expect('loop.heroes',rewards.now()+Math.ceil(getEveryMs()/1000));
+          const plan = planHeroes({ config, heroes: list.heroes ?? [], itemNum: id => inventory.get(id) ?? 0, playerLevel: player?.level ?? 1, settings: getSettings() });
+          const results = await runHeroPlan(client, protocol, plan, { allowMutate, getSettings, beforeAction: guard.before, afterAction: guard.after,
+            enabled: () => !stop.aborted && client.connected && getSettings()?.loop.heroes,
+            onStep: entry => stepLog('tasks')({ ...entry, category: '英雄', title: `${entry.step.heroId} ${entry.step.kind === 'level' ? '升级' : entry.step.kind === 'star' ? '升星' : '技能升级'}` }) });
+          summary.tasks.planned += results.length;
+          summary.tasks.results.push(...results);
+        } catch (error) { phaseFailure('tasks', '自动英雄养成', error); }
       }
-      if (isEnabled && ['radarAuto', 'radarRepair'].some(enabled)) {
-        try {
-          await serviceRadar(client, protocol, config, { player, enabled: active,
-            scheduler: rewards, report: serviceReport('dailies', '联盟情报') });
-        } catch (error) { phaseFailure('dailies', '联盟情报检查', error); }
-      }
-      if (isEnabled && enabled('treasureLoot')) {
-        await serviceTreasureLoot(client, config, { player, enabled: () => active('treasureLoot'),
-          scheduler: rewards, report: serviceReport('dailies', '世界宝藏') });
-      }
-      if (isEnabled && ['museumCollect', 'museumExplore'].some(enabled)) {
-        try {
-          await serviceMuseum(client, protocol, config, { player, enabled: active,
-            scheduler: rewards, report: serviceReport('dailies', '博物馆') });
-        } catch (error) { phaseFailure('dailies', '博物馆探险检查', error); }
-      }
-      if (isEnabled && ['petCollect', 'petBreed'].some(enabled)) {
-        try {
-          await servicePetBreeding(client, protocol, config, { player, enabled: active,
-            scheduler: rewards, report: serviceReport('world', '海兽培育') });
-        } catch (error) { phaseFailure('world', '海兽培育检查', error); }
-      }
-      // 先养成再推图，这样同一轮提升的战力能立刻用上。
-      if (isEnabled && enabled('heroGrowth')) {
-        await serviceHeroGrowth(client, protocol, config, { player, enabled: () => active('heroGrowth'),
-          scheduler: rewards, report: serviceReport('dailies', '成长') });
-      }
-      if (isEnabled && enabled('stageAuto')) {
-        await serviceStageAuto(client, config, { player, enabled: () => active('stageAuto'), isBusy: isStageBusy,
-          scheduler: rewards, report: serviceReport('dailies', '成长') });
-      }
-      for (const key of serviceWait.keys()) if (!active(key)) serviceWait.delete(key);
+      await checkForge();
+      await checkDispatch();
     });
     if (stop.aborted) break;
 
@@ -450,18 +631,26 @@ export async function runLoop(client, protocol, {
     if (round < total && !stop.aborted) {
       try {
         const signal = typeof stop.addEventListener === 'function' ? stop : undefined;
-        const nextRound = Date.now() + everyMs;
+        const nextRound = Date.now() + getEveryMs();
         let upgradeAt = Date.now() + 30_000;
         while (isEnabled && !stop.aborted) {
           const afkAt = enabled('afk') ? (afkDeadline ?? Date.now() + 60_000) : Infinity;
           const factoryAt = enabled('collect') || enabled('startProduce') ? factoryDeadline ?? Infinity : Infinity;
-          const wakeAt = Math.min(afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity);
+          const treasureNext = treasureAutomationEnabled(getSettings()) ? treasureAt : Infinity;
+          const cityNext = cityWarEnabled(getSettings()) ? cityWarAt : Infinity;
+          const forgeNext = forgeEnabled(getSettings()) ? forgeAt : Infinity;
+          const radarNext=getSettings()?.radar.enabled?radarAt:Infinity;
+          const maintenanceNext=fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity;
+          const wakeAt = Math.min(maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext);
           if (wakeAt >= nextRound) break;
-          await sleep(Math.max(0, wakeAt - Date.now()), signal);
+          await waitWithFollow(Math.max(0, wakeAt - Date.now()), signal);
           if (Date.now() >= nextRound) break;
+          if (Math.min(maintenanceNext,fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity,radarNext,cityNext,treasureNext,treasureAutomationEnabled(getSettings())?treasureAt:Infinity)<=Date.now()) await schedule(checkDispatch);
+          if (forgeNext <= Date.now() && forgeEnabled(getSettings())) await schedule(checkForge);
+
           if (afkAt <= Date.now() && enabled('afk')) {
             afkDeadline = undefined;
-            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player));
+            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player, { settings: getSettings() }));
             if (!afkDeadline || afkDeadline <= Date.now()) afkDeadline = Date.now() + 60_000;
           }
           const checkUpgrade = enabled('upgrade') && upgradeAt <= Date.now();
@@ -470,8 +659,8 @@ export async function runLoop(client, protocol, {
               if (!enabled('collect') && !enabled('startProduce') && !enabled('upgrade')) return;
               try {
                 const holdForOrders = enabled('startProduce') || enabled('finishOrder') || checkUpgrade;
-                const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: holdForOrders,
-                  includeCargo: enabled('cargo') && holdForOrders });
+                const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: holdForOrders || needsCargoDemand(getSettings()),
+                  includeCargo: (enabled('cargo') && holdForOrders) || needsCargoDemand(getSettings()) });
                 const orderRead = !survey.notes.some(note => note.startsWith('本轮未能读取周订单'));
                 const allow = kind => {
                   if (kind === 'gainFactory') return enabled('collect');
@@ -479,8 +668,10 @@ export async function runLoop(client, protocol, {
                   if (kind === 'upgrade') return checkUpgrade && enabled('upgrade') && orderRead;
                   return kind === 'startProduce' && enabled('startProduce') && orderRead;
                 };
-                const plan = planWorld(survey, { config, enabled: allow });
-                const result = await runWorldRound(client, protocol, plan, { ...harvestOptions, allowMutate, enabled: allow, onStep: stepLog('world') });
+                const plan = planWorld(survey, { config, enabled: allow, settings: getSettings(), usage: usage(), extraDemand });
+                const freshGuard = createActionGuard(client, getSettings, usageLedger, { enabled: () => !stop.aborted && client.connected });
+                const result = await runWorldRound(client, protocol, plan, { ...harvestOptions, allowMutate, enabled: allow, onStep: stepLog('world'),
+                  beforeStep: freshGuard.before, afterStep: freshGuard.after, cancelStep: freshGuard.cancel });
                 summary.world.planned += result.results.length;
                 summary.world.results.push(...result.results);
                 const state = plan.actions.some(a => allow(a.kind)) ? normalize(await client.request('OnWaterRequest', {})).building : survey.factories;
@@ -494,11 +685,12 @@ export async function runLoop(client, protocol, {
             if (checkUpgrade) upgradeAt = Date.now() + 30_000;
           }
         }
-        if (!stop.aborted) await sleep(Math.max(0, nextRound - Date.now()), signal);
+        while(!stop.aborted&&Date.now()<nextRound){const changed=await waitWithFollow(Math.max(0,nextRound-Date.now()),signal);if(changed)await schedule(checkDispatch);else break;}
       }
       catch (error) { if (!stop.aborted) throw error; }
     }
   }
+  }finally{unsubscribeFollow();unsubscribeMaintenance();watchFleetMaintenance(client).hold([]);followWake=null;}
 
   return { history, rejected };
 }
@@ -508,11 +700,14 @@ export function formatLoopStep(entry) {
   const title = entry.step?.label || entry.title || entry.label;
   const action = [title, entry.note && entry.note !== title ? entry.note : null].filter(Boolean).join(' · ') || '检查任务';
   const message = category + ' · ' + action;
+  if (entry.status==='pending'||entry.status==='unknown') return message+'等待确认：'+(entry.reason||'保留记录，不重复提交');
   if (entry.skipped) {
     const reason = entry.reason || entry.error;
+    if(reason===title)return category+' · '+reason+'（等待）';
     return message + '已跳过' + (reason ? '：' + reason : '');
   }
   if (entry.ok === false) return message + '失败：' + (entry.error || '未返回原因');
+  if(entry.status==='confirmed')return message+'（已确认）';
   if ('sent' in entry) return message + '（已发送）';
   return message;
 }
@@ -520,10 +715,12 @@ export function formatLoopStep(entry) {
 export function formatLoopRound(summary) {
   const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
   const skipped = results.filter(entry => entry.skipped).length;
-  const failed = results.filter(entry => !entry.skipped && entry.ok === false).length;
+  const failed = results.filter(entry => !entry.skipped && entry.ok === false && !['unknown','pending'].includes(entry.status)).length;
   const sent = results.filter(entry => !entry.skipped && entry.ok && 'sent' in entry).length;
   const done = results.filter(entry => !entry.skipped && entry.ok && !('sent' in entry)).length;
+  const pending=results.filter(entry=>['pending','unknown'].includes(entry.status)).length;
   const counts = [];
+  if(pending)counts.push('待确认 '+pending+' 项');
   if (done) counts.push('完成 ' + done + ' 项');
   if (sent) counts.push('已发送 ' + sent + ' 项');
   if (skipped) counts.push('跳过 ' + skipped + ' 项');

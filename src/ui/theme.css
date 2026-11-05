@@ -19,35 +19,200 @@
 [data-slot=button], [data-slot=switch], [data-slot=checkbox], [data-slot=input], [data-slot=native-select] {
   appearance:none; border:1px solid transparent; font-family:inherit;
 }
-[data-slot=button] { font-size:14px; line-height:1; font-weight:550; border-radius:8px; box-shadow:none; transition:background-color .15s,color .15s,border-color .15s }
+[data-slot=button] { font-size:13px; line-height:1; font-weight:550; border-radius:6px; box-shadow:none; transition:background-color .15s,color .15s,border-color .15s }
 [data-slot=button][data-variant=outline], [data-slot=input], [data-slot=native-select], [data-slot=checkbox] { border-color:#ccd9d9 }
 [data-slot=button][data-variant=outline] { color:#2c5054; background:white }
 [data-slot=button][data-variant=outline]:hover:enabled { background:#edf5f3; border-color:#a3bcbb }
 [data-slot=button][data-variant=destructive] { color:#9a3833; background:#fbefed; border-color:#edcfca }
 [data-slot=button][data-variant=destructive]:hover:enabled { background:#f7dfda }
 [data-slot=button]:disabled { opacity:.48 }
-.activity-controls [data-activity-run] { color:#fff; background:#136779; border-color:#136779 }
-.activity-controls [data-activity-run]:hover:enabled { color:#fff; background:#105868; border-color:#105868 }
 [data-slot=button]:focus-visible, [data-slot=switch]:focus-visible { outline:2px solid #168183; outline-offset:2px }
-[data-slot=card] { min-width:0; border:1px solid #d7e2e1; border-radius:14px; padding-block:19px; gap:13px; box-shadow:0 2px 5px #16394306 }
-[data-slot=card-title] { font-size:16px; line-height:1.35; color:#173c43 }
-[data-slot=card-header], [data-slot=card-content] { padding-inline:20px; min-width:0 }
-.rail [data-tab] { width:100%; height:38px; padding:0 10px; gap:9px; justify-content:flex-start; border:0; border-radius:8px; color:#c3d8d7; background:transparent }
-.rail [data-tab]:hover { color:#fff; background:#ffffff14 }
-.rail [data-tab][aria-current=page] { color:#fff; background:#1d6472; font-weight:700 }
-.rail [data-tab] svg { width:17px; height:17px; stroke-width:1.7 }
-.rail [data-tab]:focus-visible { outline-color:#ffbd77 }
-.topbar .connection select { background:white; color:#29494e; height:32px; padding-block:0 }
-.topbar .connection #connect:disabled:has(+ #disconnect:enabled), .topbar .connection #disconnect:disabled { display:none }
-#log-close { margin-inline-start:-4px; color:#4a6266 }
-#log-close:hover { background:#edf3f2 }
+[data-slot=card] { min-width:0; border:1px solid #d7e2e1; border-radius:8px; padding-block:12px; gap:8px; box-shadow:0 2px 5px #16394306 }
+[data-slot=card-title] { font-size:14px; line-height:1.35; color:#173c43 }
+[data-slot=card-header], [data-slot=card-content] { padding-inline:12px; min-width:0 }
+[data-slot=input], [data-slot=native-select] { font-size:13px; min-height:30px }
+header [data-tab] { position:relative; height:34px; padding:0 8px; gap:5px; border:0; border-radius:0; color:#51676c; background:transparent }
+header [data-tab]:hover { color:#115f68; background:#f1f7f6 }
+header [data-tab][aria-current=page] { color:#096873; background:transparent; font-weight:700 }
+header [aria-current=page]::after { content:""; position:absolute; bottom:0; inset-inline:10px; height:3px; background:#117783; border-radius:3px 3px 0 0 }
+header [data-tab] svg { width:16px; height:16px; stroke-width:1.7 }
+header .connection select { background:white; color:#29494e; height:30px; padding-block:0 }
+header .connection #connect:disabled:has(+ #disconnect:enabled), header .connection #disconnect:disabled { display:none }
 .log-filter { width:fit-content; padding:3px; gap:2px; border-radius:9px; background:#edf3f2 }
 .log-filter [data-slot=button] { border:0; background:transparent; color:#4a6266; height:28px; font-size:12px; border-radius:6px }
-.log-filter [aria-pressed=true] { background:white; color:#155960; box-shadow:0 1px 3px #17485124 }
-@media(max-width:800px) { .rail [data-tab] { flex:none; width:auto } }
+.log-filter [aria-pressed=true],.guild-tabs [aria-selected=true] { background:white; color:#155960; box-shadow:0 1px 3px #17485124 }
+#tab-overview > .grid { grid-template-columns:minmax(0,1fr); align-items:start; gap:6px }
+#tab-overview [data-slot=card] { padding-block:8px; gap:5px }
+#tab-overview [data-slot=card-title] { font-size:13px }
+#tab-overview [data-slot=card-header], #tab-overview [data-slot=card-content] { padding-inline:10px }
+#overview-task-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(185px,1fr)); gap:0 12px }
+#overview-task-groups details[open] { grid-column:1/-1 }
+#overview-task-summary { margin:4px 0 }
 @media(max-width:640px) {
-  [data-slot=card-header], [data-slot=card-content] { padding-inline:15px }
+  header [data-tab] { min-height:32px; padding-inline:7px }
+  [data-slot=card-header], [data-slot=card-content] { padding-inline:10px }
 }
+@media(pointer:coarse) { [data-slot=button], header [data-tab] { min-height:44px } }
 @media(prefers-reduced-motion:reduce) { [data-slot=button], [data-slot=switch-thumb] { transition:none } }
 [data-slot=table-cell] { white-space:normal }
-#m-ack[data-state=checked]::after { content:"✓"; display:block; font-size:12px; line-height:1 }
+
+
+.trial-section-header { display:flex; flex-direction:row; align-items:center; justify-content:space-between; gap:8px }
+#stage-view { padding:5px 0; margin:0; min-height:0; line-height:1.35; font-size:12px; background:transparent }
+#trial-view .trial-run-controls { margin-top:4px; gap:5px }
+#trial-view .trial-counts,#trial-view .trial-next,#trial-view .trial-task-status { margin:3px 0; line-height:1.35; font-size:12px }
+#stage-failures { width:165px; flex:0 0 165px; max-width:100% }
+#trial-view .trial-run-controls input { width:100px; flex:0 0 100px }
+.trial-single-action { display:inline-flex }
+.activity-rank-table { max-height:280px; overflow:auto }
+.activity-rank-table table { width:100%; font-size:12px }
+.activity-rank-table th { position:sticky; top:0; background:white }
+#activity-rank-mine { margin:4px 0 }
+#config-usage { line-height:1.45 }
+
+#trial-view .trial-run-controls [data-slot=button] { padding-inline:7px }
+.heading-status { font-size:12px; font-weight:400; margin-left:6px; overflow-wrap:anywhere }
+.idle-schedule[data-slot=card] { padding-block:8px; gap:5px }
+.idle-schedule .bar { margin-block:0; row-gap:5px }
+.activity-statistics-scroll { overflow:auto; max-height:420px }
+.activity-statistics-scroll > div { overflow:visible }
+.activity-statistics-scroll table { min-width:820px; width:100%; font-size:12px }
+.activity-statistics-scroll th,.activity-statistics-scroll td:nth-child(2),.activity-statistics-scroll td:nth-child(4) { white-space:nowrap }
+.activity-statistics-scroll th { position:sticky; top:0; background:white; z-index:2 }
+.activity-statistics-scroll th:first-child,.activity-statistics-scroll td:first-child { position:sticky; left:0; min-width:105px; background:white; z-index:1 }
+.activity-statistics-scroll th:first-child { z-index:3 }
+.activity-statistics-scroll td { vertical-align:top }
+.fleet-summary table { width:100%; font-size:12px }
+.fleet-summary td,.fleet-summary th { padding:5px 6px }
+.fleet-summary th:first-child,.fleet-summary td:first-child,.fleet-summary td:nth-child(3) { white-space:nowrap }
+.inventory-search { margin-block:8px }
+.inventory-search input { width:200px; max-width:100% }
+.inventory-category { padding-block:5px; border-bottom:1px solid #e1e9e8 }
+.inventory-category summary { cursor:pointer; padding-block:4px; font-weight:550 }
+.inventory-category .icons { margin-block:5px }
+.world-refresh-setting { display:inline-flex; align-items:center; gap:4px; margin-left:auto; font-size:12px; font-weight:400 }
+#world-map-refresh-seconds { width:52px }
+.world-city-facts { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:5px 14px; margin:8px 0; font-size:12px }
+.world-city-facts dt { color:#49656c }
+.world-city-facts dd { margin:0; overflow-wrap:anywhere }
+.world-fuel-summary { display:flex; gap:8px 20px; flex-wrap:wrap; padding:6px 0; font-size:12px }
+.world-fuel-summary strong { margin-left:6px; font-variant-numeric:tabular-nums }
+.world-map-state-legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:11px; color:#49656c }
+.world-map-state-legend span { display:inline-flex; align-items:center; gap:4px }
+.world-map-state-legend svg { width:18px; height:18px; flex:none }
+.world-journey { font-size:12px; font-variant-numeric:tabular-nums }
+.world-nearby-list { max-height:160px; overflow:auto; margin-top:6px }
+
+/* 本批地图控件及信息折叠，保留触屏点击范围。 */
+.panel-toggle{margin-left:auto;font-size:11px;height:24px;min-height:24px;padding:2px 7px}
+[data-slot="card-content"][hidden]{display:none!important}
+.world-refresh-controls{margin-left:auto;display:flex;align-items:center;flex-wrap:wrap;gap:5px;font-weight:400}
+.world-refresh-controls button,.world-map-toolbar button{font-size:11px;height:24px;min-height:24px;padding:2px 7px;gap:3px}
+.world-map-toolbar{margin-block:6px;gap:4px}
+.world-map-toolbar input{width:85px;min-height:24px;padding:0}
+
+.guild-tech-table{overflow:auto}
+.guild-tech-table td{vertical-align:top;white-space:normal;min-width:70px}
+.guild-tech-table td:first-child{min-width:105px}
+.guild-tech-table .dim{display:block;font-size:11px}
+@media(pointer:coarse){.world-refresh-controls button,.world-map-toolbar button,.panel-toggle{min-height:44px}}
+
+.page-heading[hidden]{display:none}
+.guild-tech-group{margin-block:10px}
+.guild-tech-group>summary{font-weight:600;cursor:pointer;padding-block:4px}
+
+.farm-grid td{padding:5px 8px}
+.farm-grid .farm-plot{font-size:12px;line-height:1.25}
+.farm-grid .farm-status{font-size:11px;line-height:1.25;margin-top:2px}
+.idle-module-actions{display:flex;align-items:center;gap:12px;flex:none}
+.idle-module-actions a{font-size:11px;text-underline-offset:3px}
+.idle-module-grid{grid-template-columns:minmax(0,1fr)}
+.order-manual-actions{display:flex;flex-wrap:wrap;gap:4px}
+.order-refresh-time{display:block;font-variant-numeric:tabular-nums;font-size:11px;color:#49656c}
+.field-yield-summary{display:flex;flex-wrap:wrap;gap:4px 14px;margin:5px 0 10px;font-size:12px}
+.field-yield-summary span{white-space:nowrap}
+
+/* 全控制台共用的控件尺度，包括运行时插入的表单和弹窗。 */
+:root {
+  --control-height: 26px;
+  --control-font: 12px;
+  --control-pad: 7px;
+  --control-radius: 4px;
+}
+@media (pointer: coarse) {
+  :root { --control-height: 34px }
+}
+:root body button:not([role=switch], [role=checkbox], [data-slot=switch], [data-slot=checkbox], .help-tip, .inline-link) {
+  box-sizing: border-box;
+  height: auto;
+  min-height: var(--control-height);
+  padding: 2px var(--control-pad);
+  gap: 4px;
+  font-family: inherit;
+  font-size: var(--control-font);
+  line-height: 1.25;
+  border-radius: var(--control-radius);
+}
+:root body button[data-size^=icon], :root body .help-tip {
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+}
+:root body .inline-link { min-height: var(--control-height); padding: 0 2px; font-size: var(--control-font) }
+:root body :is(input:not([type]),input[type=text],input[type=search],input[type=number],input[type=password],input[type=url],input[type=email],select,textarea),
+:root body .config-multi {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: var(--control-height);
+  border: 1px solid #9db5b4;
+  border-radius: var(--control-radius);
+  padding: 2px var(--control-pad);
+  font-family: inherit;
+  font-size: var(--control-font);
+  line-height: 1.35;
+}
+:root body :is(input:not([type]),input[type=text],input[type=search],input[type=number],input[type=password],input[type=url],input[type=email],select:not([multiple]):not([size])) { height: var(--control-height) }
+:root body textarea { min-height: 50px; resize: vertical }
+:root body [data-slot=native-select] { padding-inline-end: 23px }
+:root body [data-slot=native-select-icon] { width: 13px; height: 13px; right: 6px }
+:root body .config-multi { padding: 0 }
+:root body .config-multi > summary {
+  min-height: calc(var(--control-height) - 2px);
+  padding: 0 var(--control-pad);
+  line-height: calc(var(--control-height) - 2px);
+  font-size: var(--control-font);
+}
+:root body .config-multi-panel { padding: 5px }
+:root body .config-option-list { margin-top: 4px }
+:root body .config-option { min-height: var(--control-height); gap: 5px; padding: 3px 4px; align-items: center; font-size: var(--control-font) }
+:root body input:is([type=checkbox],[type=radio]) { width: 14px; height: 14px; margin-block: 0; flex: none; accent-color: var(--teal) }
+:root body .config-switch { height: var(--control-height); min-height: var(--control-height); width: 36px }
+:root body .config-switch-track { width: 32px; height: 18px }
+:root body .config-switch-thumb { width: 14px; height: 14px }
+:root body .config-switch[data-state=checked] .config-switch-thumb { transform: translateX(14px) }
+:root body :is(input,textarea,select,button,.config-multi > summary):focus-visible { outline: 2px solid #168183; outline-offset: 1px }
+:root body .config-control [aria-invalid=true] { border-color: #ad3e35; outline-color: #ad3e35 }
+:root body button:not([class], [data-tab], [data-resource-tab], [role], [aria-selected], [aria-pressed]) {
+  border: 1px solid #ccd9d9;
+  background: white;
+  color: #2c5054;
+}
+:root body button:not([class], [data-tab], [data-resource-tab], [role], [aria-selected], [aria-pressed]):enabled:hover { background: #edf5f3 }
+
+/* 顶栏账号在空间不足时收窄，给连接与暂停按钮留位。 */
+header .connection #account { width:200px; min-width:0; max-width:min(200px,46vw) }
+#tab-stages #stage-view { display:inline; margin:0; padding:0; min-height:0 }
+#tab-stages #stage-failures { width:70px; flex-basis:70px }
+#tab-stages [data-slot=card]:first-child { padding-block:7px; gap:3px }
+#tab-stages [data-slot=card]:first-child .bar { margin-block:0 }
+#guild-view p,.guild-mutual-panel p { margin-block:2px }
+#guild-view .guild-tabs { margin-block:6px }
+#world-view:empty { display:none }
+
+.guild-welfare,.guild-aid { padding-block:5px; border-top:1px solid var(--line) }
+#guild-view h4 {margin:2px 0;font-size:13px}
+#guild-view .guild-mutual-panel {margin:3px 0;padding:3px 0}
+
+#account-details { border-top:1px solid var(--line); margin-top:6px; padding-top:4px }
+#account-details h4 { margin:6px 0 3px; font-size:12px }
+#account-details .bar { margin-block:4px }

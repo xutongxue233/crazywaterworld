@@ -10,7 +10,8 @@ const boats = [
 ];
 const floaters = { 塑料: '塑料垃圾1', 木材: '木材垃圾1', 碎布: '布垃圾1' };
 
-async function enhance(client, boat, info, cfg, next, buildingCount, enabled) {
+async function enhance(client, boat, info, cfg, next, buildingCount, enabled, options = {}) {
+  if (options.settings && info.level >= options.settings.gather.targetLevel) return { reason: '已达到设置的目标等级 ' + options.settings.gather.targetLevel };
   if (!next) return { reason: '已满级' };
   const promote = (info.enhance ?? 0) >= cfg.enhance;
   if (promote) {
@@ -22,15 +23,20 @@ async function enhance(client, boat, info, cfg, next, buildingCount, enabled) {
     if (!res.list?.some(item => item.res === 3 && item.amount >= cost)) return { reason: '金币不足，需要 ' + cost };
   }
   if (!enabled(boat.enhance)) return;
+  const action = { kind: boat.enhance, scope: 'base', setting: boat.enhance === 'diveEnhance' ? 'gather.upgradeDiving' : 'gather.upgradeSalvage',
+    costs: promote ? [] : [{ id: 'GOLD', num: cfg.cost[1] }], label: boat.name + '养成' };
+  if (options.dryRun) return { action: { ...action, label: boat.name + (promote ? '升级至 ' + next.level + ' 级' : '强化一次') } };
+  const ticket = await options.beforeAction?.(action);
   const reply = await client.request(boat.command + 'LevelUpRequest', {}, 'SC' + boat.command + 'LevelUpdate');
   const after = reply.levelInfo;
   if (!(after?.level > info.level || (after?.level === info.level && after.enhance > (info.enhance ?? 0)))) {
     throw new Error('未确认强化进度增加');
   }
+  await options.afterAction?.(action, ticket, { ok: true, body: reply });
   return '已' + (promote ? '升级' : '强化') + '，等级 ' + after.level + '，强化 ' + (after.enhance ?? 0);
 }
 
-async function gather(client, config, boat, cfg, capacity, enabled) {
+async function gather(client, config, boat, cfg, capacity, enabled, options = {}) {
   const threshold = config.tables[boat.param]?.data.find(row => row.paramName === boat.unlock)?.paramValue;
   if (!threshold || cfg.level < threshold) return { reason: boat.unlock + '需要玩法等级 ' + (threshold || '未知') };
   const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
@@ -44,6 +50,7 @@ async function gather(client, config, boat, cfg, capacity, enabled) {
   }
   if (!targets.length) return { reason: '原料没有可补空间' };
   if (!enabled(boat.collect)) return;
+  if (options.dryRun) return { action: { kind: boat.collect, label: boat.name + '采集一次（按当前库存空位安排）', costs: [] } };
   let reward;
   if (salvage) {
     await client.sendWatch('BeginSalvageRequest', {});
@@ -58,7 +65,7 @@ async function gather(client, config, boat, cfg, capacity, enabled) {
   return items.length ? '收获 ' + items.map(r => displayMaterial(config, r.id) + ' ×' + r.num).join('、') : '本次结算没有获得材料';
 }
 
-export async function serviceBoats(client, config, enabled, report) {
+export async function serviceBoats(client, config, enabled, report, options = {}) {
   const water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
   const resolve = makeTypeResolver(config);
   const buildings = (water.building ?? []).filter(b => b.level > 0);
@@ -77,11 +84,12 @@ export async function serviceBoats(client, config, enabled, report) {
       const label = boat.name + (key === boat.enhance ? '养成' : '采集');
       try {
         const result = !count || !cfg ? { reason: '建筑或玩法尚未解锁' } : key === boat.enhance
-          ? await enhance(client, boat, info, cfg, levels.find(r => r.level === info.level + 1), count, enabled)
-          : await gather(client, config, boat, cfg, capacity, enabled);
-        if (result?.reason) report({ label, skipped: true, reason: result.reason });
-        else if (result) report({ label: label + ' · ' + result, ok: true });
-      } catch (error) { report({ label, ok: false, error: error.message }); }
+          ? await enhance(client, boat, info, cfg, levels.find(r => r.level === info.level + 1), count, enabled, options)
+          : await gather(client, config, boat, cfg, capacity, enabled, options);
+        if (result?.reason) report({ key, label, skipped: true, reason: result.reason });
+        else if (result?.action) report({ key, label, planned: true, action: result.action });
+        else if (result) report({ key, label: label + ' · ' + result, ok: true });
+      } catch (error) { report({ key, label, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true, reason: error.message } : {}), error: error.message }); }
     }
   }
 }

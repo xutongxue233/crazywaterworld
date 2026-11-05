@@ -1,13 +1,20 @@
 import { readFileSync } from 'node:fs';
-import { automationTasks } from './automation.mjs';
+import { automationControls } from './automation-controls.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { iconEntry } from './art.mjs';
-import { rail, topbar, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
+import { chrome, journal, dialogs, templates, giftCodesPage, overviewPage, manualPage, inventoryPage, heroesPage, dailiesPage, guildPage, activitiesPage, accountPage, idlePanel, stagePanel, settingsPage } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
-const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
-const connectionScript = readFileSync(new URL('./ui/connection.js', import.meta.url), 'utf8');
+const settingsScript = readFileSync(new URL('./settings-ui.js', import.meta.url), 'utf8');
+const settingsCss = readFileSync(new URL('./settings.css', import.meta.url), 'utf8');
+const giftCodeScript=readFileSync(new URL('./gift-codes-ui.js',import.meta.url),'utf8');
+const rankingScript=readFileSync(new URL('./activity-rankings-ui.js',import.meta.url),'utf8');
+const activityStatisticsScript=readFileSync(new URL('./activity-statistics-ui.js',import.meta.url),'utf8');
+const inventoryScript=readFileSync(new URL('./inventory-ui.js',import.meta.url),'utf8');
+const worldMapScript=readFileSync(new URL('./world-map-ui.js',import.meta.url),'utf8');
+import {mapMotionPosition} from './world-map-geometry.mjs';
+const helpTipsScript = readFileSync(new URL('./help-tips.js', import.meta.url), 'utf8');
 
 export const PAGE = `<!doctype html>
 <html lang="zh-CN">
@@ -16,20 +23,24 @@ export const PAGE = `<!doctype html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect fill='%23102d39' width='40' height='40' rx='8'/%3E%3Cpath fill='%23ffbd77' d='m20 3 4 13 13 4-13 4-4 13-4-13-13-4 13-4z'/%3E%3C/svg%3E">
 <title>疯狂水世界</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} } ${componentCss}</style>
+<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} ${settingsCss} } ${componentCss}</style>
 </head>
 <body>
-<div class="app">
-${rail(iconEntry)}
-<div class="stage">
-${topbar()}
-<div class="deck" id="deck"><main>
+${chrome(iconEntry)}
+<div class="deck"><main>
+  <nav id="resource-tabs" class="resource-tabs" aria-label="资源与玩法分类" hidden>
+    <button type="button" data-resource-tab="dailies">日常</button><button type="button" data-resource-tab="guild">联盟</button><button type="button" data-resource-tab="inventory">仓库</button><button type="button" data-resource-tab="heroes">英雄与装备</button><button type="button" data-resource-tab="activities">材料与订单</button><button type="button" data-resource-tab="giftcodes">礼包兑换</button>
+  </nav>
   <section id="tab-overview">
     ${overviewPage()}
   </section>
 
   <section id="tab-idle" class="hidden">
-    ${idlePanel(automationTasks.filter(task => task.group !== '限时活动'))}
+    ${idlePanel(automationControls)}
+  </section>
+
+  <section id="tab-settings" class="hidden">
+    ${settingsPage()}
   </section>
 
   <section id="tab-manual" class="hidden">
@@ -38,6 +49,10 @@ ${topbar()}
 
   <section id="tab-stages" class="hidden">
     ${stagePanel()}
+  </section>
+
+  <section id="tab-inventory" class="hidden">
+    ${inventoryPage()}
   </section>
 
   <section id="tab-heroes" class="hidden">
@@ -51,13 +66,16 @@ ${topbar()}
     ${dailiesPage()}
   </section>
 
+  <section id="tab-guild" class="hidden">${guildPage()}</section>
+
+  <section id="tab-giftcodes" class="hidden">
+    ${giftCodesPage()}
+  </section>
   <section id="tab-account" class="hidden">
     ${accountPage()}
   </section>
-</main>
-${journal()}</div>
-</div>
-</div>
+</main></div>
+${journal()}
 ${dialogs()}
 ${templates()}
 
@@ -70,6 +88,8 @@ const operationNames = ${JSON.stringify(operationLabels)};
 let current = null;
 let accounts = [];
 let stream = null;
+let dailyAccount = null, dailyVersion = 0;
+const pendingDailyAccounts = new Set();
 
 function num(v) {
   if (v == null || typeof v !== 'object') return v;
@@ -100,6 +120,7 @@ async function call(path, options) {
     const data = await res.json();
     if (!res.ok) {
       const error = new Error(data.error || res.statusText);
+      if (data.fields) error.fields = data.fields;
       if (data.log && (!data.log.account || account === current)) appendLog(data.log);
       error.logged = true;
       if (!data.log && account === current) reportError(new Error(data.error || ('控制台返回 HTTP ' + res.status)), path);
@@ -185,41 +206,14 @@ function chip(status, text) {
 }
 
 // ---- 弹窗 ------------------------------------------------------------------
-// 抓包要改系统设置，所以确认做得重一点：先勾选，再等倒计时，两样都满足才能点。
-
-let modalTimer = null;
 function closeModal() {
   $('modal').close();
-  if (modalTimer) clearInterval(modalTimer);
-  modalTimer = null;
   $('m-ok').onclick = null;
-}
-function canConfirm(seconds) {
-  return isChecked($('m-ack')) && seconds <= 0;
 }
 function openConfirm(title, bodyNodes, onOk) {
   $('m-title').textContent = title;
   const body = clear($('m-body'));
   for (const node of bodyNodes) body.appendChild(node);
-  setAck(false);
-  $('m-ok').disabled = true;
-  let left = 3;
-  $('m-count').textContent = '请先勾选，' + left + ' 秒后可确认';
-  modalTimer = setInterval(() => {
-    left -= 1;
-    $('m-ok').disabled = !canConfirm(left);
-    $('m-count').textContent = left > 0 ? '请先勾选，' + left + ' 秒后可确认' : (isChecked($('m-ack')) ? '' : '还需要勾选上面的选项');
-    if (left <= 0) {
-      clearInterval(modalTimer);
-      modalTimer = null;
-    }
-  }, 1000);
-  $('m-ack').onclick = () => {
-    setAck(!isChecked($('m-ack')));
-    $('m-ok').disabled = !canConfirm(left);
-    if (left <= 0 && !isChecked($('m-ack'))) $('m-count').textContent = '还需要勾选上面的选项';
-    else if (left <= 0) $('m-count').textContent = '';
-  };
   $('m-ok').onclick = async () => {
     const run = onOk;
     closeModal();
@@ -231,17 +225,12 @@ function openConfirm(title, bodyNodes, onOk) {
     }
   };
   $('modal').showModal();
-  $('m-ack').focus();
+  $('m-cancel').focus();
 }
 $('m-cancel').onclick = closeModal;
 $('modal').oncancel = event => { event.preventDefault(); closeModal(); };
 function isChecked(control) {
   return control.getAttribute('aria-checked') === 'true';
-}
-function setAck(checked) {
-  const control = $('m-ack');
-  control.setAttribute('aria-checked', String(checked));
-  control.dataset.state = checked ? 'checked' : 'unchecked';
 }
 for (const control of document.querySelectorAll('[data-local-switch]')) {
   control.onclick = () => setTaskSwitch(control, !isChecked(control));
@@ -279,32 +268,52 @@ const logTime = new Intl.DateTimeFormat('zh-CN', {
 });
 let logAccount;
 let onlyIssues = false;
+let logCategory = 'all';
+let logReturnFocus;
+function openJournal() {
+  if ($('journal-dialog').open) return;
+  closeHelpTip(false); logReturnFocus = document.activeElement;
+  document.body.classList.add('has-log-dialog'); $('journal-dialog').showModal(); $('log-category').focus();
+}
+$('logs-open').onclick = openJournal;
+$('logs-close').onclick = () => $('journal-dialog').close();
+$('journal-dialog').addEventListener('close', () => { document.body.classList.remove('has-log-dialog'); (logReturnFocus?.isConnected ? logReturnFocus : $('logs-open')).focus(); });
+$('log-category').onchange = () => { logCategory = $('log-category').value; updateLogSummary(); };
+let logClearBefore = 0, logClearAt = 0;
+let guildRefreshTimer;
 function updateLogSummary() {
-  const issues = logEl.querySelectorAll('.error,.warn').length;
-  const count = onlyIssues ? issues : logEl.childElementCount;
-  $('log-toggle-count').hidden = !issues;
-  $('log-toggle-count').textContent = String(issues);
+  let count = 0;
+  for (const row of logEl.children) {
+    row.hidden = (onlyIssues && !row.classList.contains('error') && !row.classList.contains('warn')) || (logCategory !== 'all' && row.dataset.category !== logCategory);
+    if (!row.hidden) count++;
+  }
+  $('log-top-count').textContent = logEl.children.length;
   $('log-count').textContent = String(count);
   $('log-empty').hidden = count > 0;
-  $('log-empty').textContent = onlyIssues ? '没有警告或错误' : '还没有运行记录';
+  $('log-empty').textContent = logCategory !== 'all' ? '这个功能暂无符合筛选条件的记录' : onlyIssues ? '没有警告或错误' : '还没有运行记录';
 }
 function appendLog(entry) {
   if (entry.account && entry.account !== current) return;
+  if (entry.id ? entry.id <= logClearBefore : entry.t <= logClearAt) return;
   if (entry.id && seen.has(entry.id)) return;
   if (entry.id) seen.add(entry.id);
-  const atEnd = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30;
+  const atTop = logEl.scrollTop < 30;
+  const anchor = [...logEl.children].find(row => row.getBoundingClientRect().bottom > logEl.getBoundingClientRect().top);
+  const anchorTop = anchor?.getBoundingClientRect().top;
+  const waitKey=entry.extra?.waitKey;
+  const repeated=waitKey && [...logEl.children].find(row=>row.dataset.waitKey===waitKey);
+  if(repeated){repeated.logEntries.unshift(entry);if(repeated.logEntries.length>400){const dropped=repeated.logEntries.pop();seen.delete(dropped.id);}repeated.dataset.waitCount=String(Number(repeated.dataset.waitCount||1)+1);updateLogRow(repeated);logEl.prepend(repeated);updateLogSummary();return;}
   const batch = entry.extra?.batch;
-  const last = logEl.lastElementChild;
-  if (batch && last?.dataset.batch === batch && last.logIds.length < 32) {
-    last.logIds.push(entry.id);
-    const timestamp = logTime.format(entry.t);
-    last.querySelector('time').textContent = timestamp;
-    last.querySelector('.log-message').textContent = entry.extra.factory + '：连续安排生产' + entry.extra.product + '，共 ' + last.logIds.length + ' 次';
-    last.querySelector('.log-details').hidden = false;
-    last.querySelector('.log-detail-text').textContent += '\\n' + timestamp + ' ' + entry.message;
+  const first = logEl.firstElementChild;
+  const newer = (a, b) => a.t > b.t || (a.t === b.t && (a.id || Infinity) > (b.id || 0));
+  if (batch && first?.dataset.batch === batch && first.logEntries.length < 32 && newer(entry, first.logEntries[0])) {
+    first.logEntries.unshift(entry);
+    updateLogRow(first);
   } else {
     const row = el('div', 'row ' + entry.level);
-    row.logIds = entry.id ? [entry.id] : [];
+    row.dataset.category = entry.category || 'system';
+    if(waitKey){row.dataset.waitKey=waitKey;row.dataset.waitCount='1';}
+    row.logEntries = [entry];
     if (batch) row.dataset.batch = batch;
     const timestamp = logTime.format(entry.t);
     row.appendChild(el('time', 'ts', timestamp));
@@ -320,18 +329,49 @@ function appendLog(entry) {
       body.appendChild(details);
     }
     row.appendChild(body);
-    logEl.appendChild(row);
+    const next = [...logEl.children].find(item => newer(entry, item.logEntries[0]));
+    logEl.insertBefore(row, next || null);
   }
   while (logEl.childElementCount > 400) {
-    for (const id of logEl.firstChild.logIds) seen.delete(id);
-    logEl.firstChild.remove();
+    for (const item of logEl.lastChild.logEntries) seen.delete(item.id);
+    logEl.lastChild.remove();
   }
   updateLogSummary();
-  if (atEnd) logEl.scrollTop = logEl.scrollHeight;
+  if (atTop) logEl.scrollTop = 0;
+  else if (anchor?.isConnected) logEl.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
 }
-function logReport(message, detail) {
-  appendLog({ t: Date.now(), level: 'info', message, detail });
+function updateLogRow(row) {
+  const entry = row.logEntries[0];
+  row.querySelector('time').textContent = logTime.format(entry.t);
+  row.querySelector('.log-message').textContent = row.dataset.waitKey ? entry.message+'（累计 '+row.dataset.waitCount+' 次，时间为最后检查）' : row.logEntries.length > 1
+    ? entry.extra.factory + '：连续安排生产' + entry.extra.product + '，共 ' + row.logEntries.length + ' 次' : entry.message;
+  const details = row.querySelector('.log-details');
+  if (details) {
+    details.hidden = row.logEntries.length < 2 && !entry.detail;
+    row.querySelector('.log-detail-text').textContent = entry.detail || row.logEntries.map(item => logTime.format(item.t) + ' ' + item.message).join(String.fromCharCode(10));
+  }
 }
+function clearLogBefore(data) {
+  logClearBefore = Math.max(logClearBefore, data.before);
+  logClearAt = Math.max(logClearAt, data.at);
+  for (const row of [...logEl.children]) {
+    row.logEntries = row.logEntries.filter(entry => entry.id ? entry.id > logClearBefore : entry.t > logClearAt);
+    if (row.logEntries.length) updateLogRow(row); else row.remove();
+  }
+  seen.clear();
+  for (const row of logEl.children) for (const entry of row.logEntries) if (entry.id) seen.add(entry.id);
+  updateLogSummary();
+}
+$('log-clear').onclick = async () => {
+  if (!current) return;
+  const account = current, button = $('log-clear');
+  button.disabled = true;
+  try {
+    const data = await call('/api/logs/clear', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+    if (account === current) clearLogBefore(data);
+  } catch (error) { if (account === current) reportError(error); }
+  finally { button.disabled = false; }
+};
 function reportError(error, context) {
   if (error?.logged) return;
   const api = context?.startsWith('/api/');
@@ -352,42 +392,29 @@ for (const [id, filtered] of [['log-all', false], ['log-issues', true]]) {
     updateLogSummary();
   };
 }
-// 宽屏日志占一栏并记住开合，窄屏是抽屉，默认收起以免挡住内容。
-const wideLog = matchMedia('(min-width:1180px)');
-function savedLogOpen() {
-  try { return localStorage.getItem('journal:open') !== '0'; } catch { return true; }
-}
-function setLogOpen(open) {
-  $('deck').classList.toggle('log-closed', !open);
-  $('log-toggle').setAttribute('aria-expanded', String(open));
-  if (open) logEl.scrollTop = logEl.scrollHeight;
-}
-function toggleLog(open) {
-  setLogOpen(open);
-  if (wideLog.matches) {
-    try { localStorage.setItem('journal:open', open ? '1' : '0'); } catch {}
-  }
-  (open ? $('log-close') : $('log-toggle')).focus();
-}
-setLogOpen(wideLog.matches && savedLogOpen());
-wideLog.addEventListener('change', event => setLogOpen(event.matches && savedLogOpen()));
-$('log-toggle').onclick = () => toggleLog($('deck').classList.contains('log-closed'));
-$('log-close').onclick = () => toggleLog(false);
-document.addEventListener('keydown', event => {
-  if (event.key !== 'Escape' || wideLog.matches || $('deck').classList.contains('log-closed') || document.querySelector('dialog[open]')) return;
-  toggleLog(false);
-});
 function subscribe() {
   if (stream) stream.close();
   if (logAccount !== current) {
     seen.clear(); clear(logEl); updateLogSummary(); logAccount = current;
+    logClearBefore = logClearAt = 0;
   }
+  $('log-clear').disabled = !current;
+  const account = current;
   stream = new EventSource('/api/events' + (current ? '?account=' + encodeURIComponent(current) : ''));
+  stream.addEventListener('logs-cleared', event => { if (account === current) clearLogBefore(JSON.parse(event.data)); });
+  stream.addEventListener('guild-aid-changed', () => {
+    clearTimeout(guildRefreshTimer);
+    guildRefreshTimer = setTimeout(() => {
+      if (account === current && !snapshot.paused && !$('tab-guild').classList.contains('hidden')) {
+        void refreshProgression('guild');
+      }
+    }, 300);
+  });
   stream.onmessage = (event) => {
+    if (account !== current) return;
     const entry = JSON.parse(event.data);
     appendLog(entry);
     if (entry.extra?.pauseChanged && entry.account === current) void loadAccounts(false);
-    if (entry.extra?.pirateUpdated && entry.account === current && !$('activity-pirates').closest('.hidden,[hidden]')) refreshActivities();
     if (entry.extra?.worldUpdated && entry.account === current && Date.now() - entry.t < 10_000) refreshManualWorld();
   };
 }
@@ -396,28 +423,34 @@ function subscribe() {
 let snapshot = { connected: false, state: 'IDLE', busy: null, looping: false };
 const disconnected = new Set();
 
+let accountDetailsOwner=null,credentialVersion=0;
 function renderAccountSelect() {
-  const box = clear($('account'));
-  if (!accounts.length) {
-    box.appendChild(new Option('没有账号', ''));
-    box.disabled = true;
-  } else {
-    box.disabled = false;
-    for (const account of accounts) {
-      const option = new Option(account.title + (account.active ? '（当前）' : ''), account.id);
-      box.appendChild(option);
-    }
-    box.value = current || '';
+  if (dailyAccount !== current || snapshot.paused || disconnected.has(current)) {
+    dailyAccount = current; dailyVersion++;
+    clear($('dailies-table'));
+    $('dailies-hint').textContent = snapshot.paused ? '账号已暂停' : '点击探测查看当前日常';
   }
-  $('loot-run').disabled = claiming || !current || snapshot.paused;
+  const box=$('account');
+  const choices=accounts.length?accounts.map(a=>[a.id,a.title+(a.active?'（当前）':'')]):[['','没有账号']];
+  if(box.options.length!==choices.length||choices.some(([id,label],i)=>box.options[i]?.value!==id||box.options[i]?.text!==label)){
+    box.replaceChildren(...choices.map(([id,label])=>new Option(label,id)));
+  }
+  box.disabled=!accounts.length;box.value=current||'';
+  if(accountDetailsOwner!==current){
+    accountDetailsOwner=current;credentialVersion++;
+    clear($('cred'));clear($('worlds'));$('worlds-hint').textContent='';$('world-input').value='';
+    $('who').textContent=current?'等待连接':'未选择账号';$('res').textContent='';
+    $('cred-show').disabled=!current;
+    renderAccounts();
+  }
+  if(activityStatsOwner!==null&&activityStatsOwner!==current)resetActivityStatistics();
+  if(worldMapOwner!==null&&worldMapOwner!==current)resetWorldMap();
   $('account-pause').disabled = !current;
   $('account-pause').textContent = snapshot.paused ? '恢复托管' : '暂停托管';
   $('account-pause').title = snapshot.paused ? '结束自行上号，允许控制台重新登录游戏' : '断开游戏连接，方便自行上号';
   $('busy').textContent = snapshot.paused ? '已暂停 · 可自行上号' : snapshot.connected ? '已连接' : '未连接';
-  $('busy').dataset.state = snapshot.paused ? 'paused' : snapshot.connected ? 'on' : 'off';
   $('connect').disabled = snapshot.paused || snapshot.connected || !accounts.length;
   $('disconnect').disabled = !snapshot.connected;
-  renderOverviewMeta();
 }
 
 async function loadAccounts(reload) {
@@ -430,6 +463,7 @@ async function loadAccounts(reload) {
   renderAccountSelect();
   if (previous !== current || reload) refreshProgression();
   if (previous !== current) refreshManualWorld();
+  if (previous !== current) {configAccountChanged();giftAccountChanged();}
   if (reload) {
     subscribe();
     refreshOverview();
@@ -437,7 +471,10 @@ async function loadAccounts(reload) {
 }
 
 $('account').onchange = async () => {
+  if (!configMayChangeAccount($('account').value)) { $('account').value = current || ''; return; }
   current = $('account').value;
+  giftAccountChanged();
+  configAccountChanged();
   snapshot = accounts.find(a => a.id === current)?.status ?? {};
   renderAccountSelect();
   refreshProgression();
@@ -481,7 +518,6 @@ $('connect').onclick = async () => {
     renderAccountSelect();
     refreshProgression();
     refreshOverview();
-    refreshActivities();
     $('hint').textContent = '';
   } catch (error) {
     $('hint').textContent = '';
@@ -493,47 +529,49 @@ $('disconnect').onclick = async () => {
   disconnected.add(account);
   refreshProgression();
   refreshManualWorld();
-  refreshActivities();
   await call('/api/disconnect', { method: 'POST' });
   if (account !== current) return;
   snapshot.connected = false;
+  $('busy').textContent = '未连接';
   renderAccountSelect();
 };
 
 // ---- 总览 ------------------------------------------------------------------
-function statTile(box, label, value, wide) {
-  const tile = el('div', wide ? 'item wide' : 'item');
-  tile.appendChild(el('span', 'k', label));
-  tile.appendChild(el('span', 'v', value));
-  box.appendChild(tile);
-}
-
 function renderWho(view) {
   const box = clear($('who'));
   const role = view.player || {};
+  const account = view.account || {};
+  const status = view.status || {};
   const items = [
+    ['账号', account.title || '-'],
     ['角色', role.nickname || '-'],
     ['等级', role.level == null ? '-' : String(role.level)],
     ['战力', fmt(role.power)],
     ['区服', role.worldId == null ? '-' : String(role.worldId)],
+    ['状态', status.connected ? '已连接' : '未连接'],
   ];
-  for (const [k, v] of items) statTile(box, k, v);
+  for (const [k, v] of items) {
+    const cellBox = el('div', 'item');
+    cellBox.appendChild(el('span', 'k', k));
+    cellBox.appendChild(el('span', 'v', v));
+    box.appendChild(cellBox);
+  }
   if (view.afk) {
+    const afk = el('div', 'item');
+    afk.appendChild(el('span', 'k', '闯关挂机收益'));
     const finish = view.afk.finishTime;
     const status = view.afk.capped ? '收益已满' : finish > 0 ? new Date(finish * 1000).toLocaleTimeString() + ' 满额' : '暂无计时';
-    statTile(box, '闯关挂机收益', '等级 ' + (view.afk.level ?? '-') + ' · ' + status, true);
+    afk.appendChild(el('span', 'v', '等级 ' + (view.afk.level ?? '-') + ' · ' + status));
+    box.appendChild(afk);
   }
 }
 
 function renderOverview(data) {
   renderWho(data);
-  const res = clear($('res'));
-  for (const entry of data.resources || []) res.appendChild(cell(entry.icon, 34, entry.name, fmt(entry.amount), false));
-  if (!res.childElementCount) res.appendChild(el('span', 'dim', '暂无数据'));
 
-  const items = clear($('items'));
-  for (const entry of (data.items && data.items.top) || []) items.appendChild(cell(entry.icon, 34, entry.name, 'x' + fmt(entry.num)));
-  if (!items.childElementCount) items.appendChild(el('span', 'dim', '暂无数据'));
+  const res = clear($('res'));
+  for (const entry of data.resources || []) res.appendChild(cell(entry.icon, 18, entry.name, entry.amount == null ? '未取得' : fmt(entry.amount), false));
+  if (!res.childElementCount) res.appendChild(el('span', 'dim', '暂无数据'));
 
   const heroes = clear($('hero-strip'));
   for (const hero of (data.heroes && data.heroes.list) || []) {
@@ -543,57 +581,26 @@ function renderOverview(data) {
 }
 
 let overviewPending = false;
-let claiming = false;
-let overviewAt = 0, overviewAccount = null, overviewFailed = false;
-function renderOverviewMeta() {
-  const live = current && !snapshot.paused && !disconnected.has(current);
-  const time = overviewAccount === current && overviewAt ? logTime.format(overviewAt) : '';
-  $('overview-refresh').disabled = !live;
-  $('overview-updated').textContent = !time ? ''
-    : !live ? '未连接，以下是 ' + time + ' 的数据'
-    : overviewFailed ? '刷新失败，以下是 ' + time + ' 的数据'
-    : '更新于 ' + time + '，每 20 秒自动刷新';
-}
 async function refreshOverview() {
-  if (!$('tab-overview').classList.contains('hidden')) refreshIncome();
-  if (overviewPending || claiming || !current || snapshot.paused || disconnected.has(current) || document.hidden || $('tab-overview').classList.contains('hidden')) return;
+  if (overviewPending===current || !current || snapshot.paused || disconnected.has(current) || document.hidden || ($('tab-overview').classList.contains('hidden')&&$('tab-heroes').classList.contains('hidden')&&$('tab-account').classList.contains('hidden'))) return;
   const account = current;
-  overviewPending = true;
+  overviewPending = account;
   try {
     const data = await call('/api/overview');
     if (account !== current || snapshot.paused || disconnected.has(account)) return;
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
-    overviewAt = Date.now();
-    overviewAccount = account;
-    overviewFailed = false;
-    renderOverviewMeta();
+    if(!$('tab-overview').classList.contains('hidden'))void refreshActivityRanks();
+    if(!$('tab-overview').classList.contains('hidden'))void refreshActivityStatistics();
+    if(!$('tab-overview').classList.contains('hidden'))maybeRefreshWorldMap();
     $('hint').textContent = '';
+    $('busy').textContent = data.status.connected ? '已连接' : '未连接';
   } catch (error) {
-    overviewFailed = true;
-    if (account === current) renderOverviewMeta();
     reportError(error, '刷新总览');
-  } finally { overviewPending = false; }
+  } finally { if(overviewPending===account)overviewPending=false; }
 }
 
-$('overview-refresh').onclick = () => refreshOverview();
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshOverview(); });
-
-$('loot-run').onclick = async () => {
-  const account = current;
-  if (!account || claiming) return;
-  claiming = true;
-  $('loot-run').disabled = true;
-  $('loot-hint').textContent = '领取中…';
-  try {
-    await call('/api/loot/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-  } finally {
-    claiming = false;
-    $('loot-hint').textContent = '';
-    $('loot-run').disabled = !current;
-  }
-};
 
 // ---- 挂机 ------------------------------------------------------------------
 const HERO_STATUS = { ready: '可做', done: '已完成', blocked: '不可做' };
@@ -610,10 +617,11 @@ function renderStages(data) {
   if (data.running) {
     $('stage-failures').value = data.maxFailures;
   }
-  const details = data.stage ? '第 ' + data.stage + ' 关 · 已通过 ' + data.wins + ' 关 · 连续失败 ' + data.failures + ' 次' : '';
-  $('stage-view').textContent = [data.stopping ? '正在停止，等待在途战报' : data.running ? '推关中' : '未在推关', details, data.reason].filter(Boolean).join('　');
+  const details = data.stage ? '第 ' + data.stage + ' 关 · 已过 ' + data.wins + ' 关 · 连续失败 ' + data.failures + ' 次' : '';
+  $('stage-view').textContent = [data.stopping ? '正在停止，等待在途战报' : data.running ? '自动挑战中' : data.stage ? '已停止' : '未开启', details, data.reason==='尚未开启'?'':data.reason].filter(Boolean).join('　');
 }
 async function refreshStages() {
+  if(document.hidden)return;
   if ($('tab-stages').classList.contains('hidden')) return;
   const version = ++stageVersion;
   const account = current;
@@ -658,59 +666,145 @@ $('stage-start').onclick = () => stageCommand(true);
 $('stage-stop').onclick = () => stageCommand(false);
 
 let loopVersion = 0;
-let loopAccount = null;
+let loopAccount = null,loopFieldDefaults=null;
 const savingTasks = new Set();
-const savingReserve = new Set();
-let reserveEdited = false;
-const reserveInput = $('fishing-reserve'), reserveSave = $('fishing-reserve-save');
+let loopSettingsRevision = null;
+function selectIdleGroup(value) {
+  document.querySelector('[aria-label="挂机设置分组"]').hidden=false;
+  $('idle-search').value='';$('idle-filter').value='all';for(const row of document.querySelectorAll('.task-setting'))row.hidden=false;$('idle-filter-count').textContent='';
+  document.querySelectorAll('[data-idle-group]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.idleGroup===String(value))));
+  document.querySelectorAll('[data-idle-panel]').forEach(panel=>panel.hidden=panel.dataset.idlePanel!==String(value));
+}
+for(const button of document.querySelectorAll('[data-idle-group]')) {
+  button.onclick=()=>selectIdleGroup(button.dataset.idleGroup);
+  button.onkeydown=event=>{
+    const buttons=[...document.querySelectorAll('[data-idle-group]')],at=buttons.indexOf(button);
+    const next=event.key==='ArrowRight'?(at+1)%buttons.length:event.key==='ArrowLeft'?(at+buttons.length-1)%buttons.length:event.key==='Home'?0:event.key==='End'?buttons.length-1:null;
+    if(next!==null){event.preventDefault();buttons[next].click();buttons[next].focus();}
+  };
+}
 const taskInputs = [...document.querySelectorAll('[data-auto-task]')];
 function setTaskSwitch(input, enabled) {
   input.setAttribute('aria-checked', String(enabled));
   input.dataset.state = enabled ? 'checked' : 'unchecked';
   input.querySelector('[data-slot=switch-thumb]').dataset.state = input.dataset.state;
 }
+const pirateAdvanceErrors=new Map();
+function renderPirateAdvance(data) {
+  if(!data)return;
+  $('pirate-advance-start').disabled=data.running || !current;
+  $('pirate-advance-stop').disabled=!data.running || data.stopping;
+  $('pirate-advance-state').textContent=[data.stopping?'正在停止':data.running?'推进中':'未运行',data.target,'本次已首杀 '+data.wins+' 级 · 已用汽油 '+data.spent,pirateAdvanceErrors.get(current)||data.reason].filter(Boolean).join(' · ');
+}
+async function pirateAdvanceCommand(start) {
+  const account=current;
+  pirateAdvanceErrors.delete(account);
+  if(start && configIsDirty()){reportError(new Error('请先保存海盗首杀参数，再开启推进'));return;}
+  $('pirate-advance-start').disabled=$('pirate-advance-stop').disabled=true;
+  try{const data=await call('/api/pirates/advance/'+(start?'start':'stop'),{method:'POST',body:JSON.stringify({confirm:true})});if(account===current)renderPirateAdvance(data);}
+  catch(error){if(account===current){pirateAdvanceErrors.set(account,error.message);$('pirate-advance-state').textContent='未启动：'+error.message;reportError(error);}}
+  finally{if(account===current)refreshLoop();}
+}
+$('pirate-advance-start').onclick=()=>pirateAdvanceCommand(true);
+$('pirate-advance-stop').onclick=()=>pirateAdvanceCommand(false);
+let overviewLoopData=null,overviewLoopOwner=null,overviewRenderKey="";
+function compactOverviewText(text){
+ return String(text||'—').replaceAll('本次连接尚无检查结果','待检查').replaceAll('尚未同步当前条件','待同步')
+   .replaceAll('当前没有可读取的万吨货轮','暂无万吨货轮').replaceAll('当前不在服务器','未到')
+   .replaceAll('受总控限制：','受限：').replaceAll('当前没有新的联盟福利礼包','暂无联盟福利礼包');
+}
+function renderAutomationOverview(data){
+ overviewLoopData=data;overviewLoopOwner=current;
+ const root=$('overview-task-groups'),opened=new Set([...root.querySelectorAll('details[open]')].map(d=>d.dataset.group));
+ const query=$('overview-task-search').value.trim().toLowerCase(),mode=$('overview-task-filter').value;
+ const issue=t=>t.enabled&&(t.blockedBy?.length||['error','pending'].includes(t.observation?.state));
+ const controls=(data.controls??[]).map(t=>({...t,group:t.group==='总控制'?'运行范围与权限':t.group}));
+ const renderKey=JSON.stringify([current,data.running,query,mode,controls,data.fleetMaintenance]);if(renderKey===overviewRenderKey)return;overviewRenderKey=renderKey;
+ const filterKey=JSON.stringify([current,query,mode]);
+ const previousGroups=root.filterKey===filterKey?new Set([...root.children].map(s=>s.dataset.group)):new Set();
+ root.filterKey=filterKey;
+ const expanded=key=>previousGroups.has(key)?opened.has(key):!!query||mode==='issues'||opened.has(key);
+ const focusedGroup=document.activeElement?.closest('.overview-task-group')?.dataset.group;clear(root);
+ if(!Array.isArray(data.controls)){clear(root);$('overview-task-summary').textContent='未同步';return;}
+ const selected=controls.filter(t=>(mode==='all'||mode==='enabled'&&t.enabled||mode==='issues'&&issue(t))&&(!query||(t.label+' '+(t.observation?.text??'')).toLowerCase().includes(query)));
+ $('overview-task-summary').textContent=(data.running?'运行中':'已停止')+' · 已开 '+controls.filter(t=>t.enabled).length+' · 异常/受限 '+controls.filter(issue).length+((query||mode!=='enabled')?' · 筛出 '+selected.length:'');
+ for(const group of [...new Set(selected.map(t=>t.group))]){
+  const items=selected.filter(t=>t.group===group),section=el('details','overview-task-group');section.dataset.group=group;section.open=expanded(group);
+  section.append(el('summary','',group+' · '+items.length+' 项'));
+  section.append(table(['功能','当前进度','当前条件'],items.map(t=>[t.label,compactOverviewText(t.progress),compactOverviewText(t.condition||t.observation?.text||'待同步')])));
+  root.append(section);if(group===focusedGroup)section.querySelector('summary').focus({preventScroll:true});
+ }
+ const maintenance=data.fleetMaintenance,repairRows=(maintenance?.rows??[]).filter(r=>(!query||('战后维修 '+r.name+' '+r.source+' '+r.condition).toLowerCase().includes(query))&&(mode!=='issues'||['waiting','unknown'].includes(r.state)));
+ const maintenanceShown=maintenance&&(mode==='all'||maintenance.enabled)&&(repairRows.length||(!query||'战后维修'.includes(query))&&maintenance.reason);
+ if(maintenanceShown){
+  const section=el('details','overview-task-group');section.dataset.group='fleet-maintenance';section.open=expanded('fleet-maintenance');section.append(el('summary','','战后维修 · '+repairRows.length+' 队'));
+  section.append(el('p','dim','沿用城战/巨轮所选舰队和自动维修参数；重复选择按调度优先级取参数。'));
+  if(maintenance.reason)section.append(el('p','dim',maintenance.reason));
+  if(repairRows.length)section.append(table(['舰队','当前进度','当前条件'],repairRows.map(r=>[r.name+' · '+r.source,(r.durability??'未同步')+'/'+(r.maxDura??'未同步'),maintenance.enabled?r.condition:'监控未运行；'+r.condition])));
+  root.append(section);
+ }
+ if(!selected.length&&!maintenanceShown)root.append(el('p','dim','没有符合当前筛选的项目。'));
+}
+$('overview-task-search').oninput=()=>{if(overviewLoopData&&overviewLoopOwner===current)renderAutomationOverview(overviewLoopData);};
+$('overview-task-filter').onchange=$('overview-task-search').oninput;
+$('idle-go-settings').onclick=()=>document.querySelector('#tabs [data-tab="settings"]').click();
+$('idle-go-overview').onclick=()=>{document.querySelector('#tabs [data-tab="overview"]').click();$('overview-task-summary').scrollIntoView({block:'center'});};
+function filterIdleControls(){
+ const query=$('idle-search').value.trim().toLowerCase(),mode=$('idle-filter').value;let count=0;
+ for(const input of taskInputs){const row=input.closest('.task-setting');const match=(!query||row.textContent.toLowerCase().includes(query))&&(mode!=='enabled'||input.getAttribute('aria-checked')==='true')&&(mode!=='blocked'||row.dataset.blocked==='true');row.hidden=!match;if(match)count++;}
+ const filtering=!!query||mode!=='all';
+ document.querySelector('[aria-label="挂机设置分组"]').hidden=filtering;
+ for(const panel of document.querySelectorAll('[data-idle-panel]'))panel.hidden=filtering?![...panel.querySelectorAll('.task-setting')].some(row=>!row.hidden):document.querySelector('[data-idle-group="'+panel.dataset.idlePanel+'"]').getAttribute('aria-selected')!=='true';
+ $('idle-filter-count').textContent=filtering?'跨分组找到 '+count+' 项':'';
+}
+$('single-go-pirate').onclick=()=>{const tab=[...document.querySelectorAll('[data-idle-group]')].find(t=>t.textContent==='世界');tab?.click();};
+$('single-go-stages').onclick=()=>document.querySelector('#tabs [data-tab=stages]').click();
+$('single-go-mutual').onclick=()=>activateConsolePage(document.querySelector('#tabs [data-tab=resources]'),'guild');
+$('idle-search').oninput=filterIdleControls;$('idle-filter').onchange=filterIdleControls;
 function renderLoop(data) {
-  if (loopAccount !== current) reserveEdited = false;
-  if (!reserveEdited) reserveInput.value = data.fishingGoldReserve;
-  reserveInput.disabled = savingReserve.has(current);
-  reserveSave.disabled = reserveInput.disabled || !reserveEdited;
+  renderAutomationOverview(data);
+  renderPirateAdvance(data.pirateAdvance);
+  $('runtime-version').textContent='当前服务加载时间：'+(data.runVersion?new Date(data.runVersion).toLocaleString('zh-CN'):'旧版服务，等待加载本次更新');
+  if(data.singleTasks)$('single-task-status').textContent='需单独启动 · 首杀：'+(data.singleTasks.pirate?.running?'运行中':'未启动')+' · 主线：'+(data.singleTasks.stages?.running?'运行中':'未启动')+' · 互助：'+(data.singleTasks.mutual?.running?'运行中':'未启动')+'。入口：世界 / 挑战 / 资源与玩法 → 联盟。';
+  loopSettingsRevision = data.settingsRevision;
   for (const input of taskInputs) {
     if (savingTasks.has(current + ':' + input.dataset.autoTask)) continue;
-    const task = data.tasks.find(t => t.key === input.dataset.autoTask);
+    const task = (data.controls ?? []).find(t => t.key === input.dataset.autoTask);
     setTaskSwitch(input, task?.enabled === true);
-    const hint = $('next-' + input.dataset.autoTask);
-    hint.textContent = task?.nextCheck ? '下次检查 ' + new Date(task.nextCheck * 1000).toLocaleString('zh-CN', {
-      timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-    }) + '（北京时间）' : '';
+    input.closest('.task-setting').dataset.blocked=String(task?.enabled&&!!task?.blockedBy?.length);
+    input.title=task?.blockedBy?.length?'需先开启：'+task.blockedBy.join('、'):'';
     input.disabled = false;
   }
   if (loopAccount !== current || data.running) {
     $('loop-every').value = data.everyMs / 1000;
     $('loop-rounds').value = data.rounds;
+    loopFieldDefaults={rounds:data.rounds,seconds:data.everyMs/1000};
   }
+  filterIdleControls();
   loopAccount = current;
   $('loop-every').disabled = $('loop-rounds').disabled = data.running;
   $('loop-start').disabled = data.running;
   $('loop-stop').disabled = !data.running || data.stopping;
-  renderReconnect(data);
   $('loop-hint').textContent = (data.running ? '挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
-  if (data.recovery?.nextAt) $('loop-hint').textContent = '连接中断，' + logTime.format(data.recovery.nextAt) + ' 第 ' + data.recovery.attempts + ' 次自动重连';
+
 }
 
 async function refreshLoop() {
+  if(document.hidden)return;
   const account = current, version = ++loopVersion;
-  if ($('tab-idle').classList.contains('hidden')) return;
+  if ($('tab-idle').classList.contains('hidden')&&$('tab-overview').classList.contains('hidden')) return;
   if (loopAccount !== account || !account) {
     $('loop-hint').textContent = account ? '正在读取设置' : '请选择账号';
     for (const input of taskInputs) {
       input.disabled = true;
       setTaskSwitch(input, false);
-      $('next-' + input.dataset.autoTask).textContent = '';
+
     }
-    reserveInput.disabled = reserveSave.disabled = true;
-    reserveInput.value = '';
-    reserveEdited = false;
+    if(overviewLoopOwner!==account){overviewLoopData=null;overviewLoopOwner=account;overviewRenderKey='';clear($('overview-task-groups'));$('overview-task-summary').textContent=account?'正在读取运行状态':'请先选择账号';}
+    loopSettingsRevision = null;
+    $('pirate-advance-start').disabled=$('pirate-advance-stop').disabled=true;
+    $('pirate-advance-state').textContent=account?'正在读取首杀状态':'请选择账号';
     $('loop-start').disabled = $('loop-stop').disabled = true;
   }
   if (!account) return;
@@ -724,26 +818,18 @@ async function refreshLoop() {
 
 async function toggleAutoTask(input) {
   const account = current, key = input.dataset.autoTask, saving = account + ':' + key;
-  if (!account || input.disabled || savingTasks.has(saving)) return;
+  if (configIsDirty()) { reportError(new Error('游戏配置有未保存草稿，请先保存或重新载入，再修改挂机开关')); return; }
   const enabled = input.getAttribute('aria-checked') !== 'true';
   setTaskSwitch(input, enabled);
   savingTasks.add(saving);
-  activityTaskEdits.set(saving, { enabled, pending: true, version: activitiesVersion });
-  syncActivityTask(key, enabled, account);
   input.disabled = true;
   ++loopVersion;
   try {
-    await call('/api/loop/task', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled }) });
-  } catch (error) {
-    setTaskSwitch(input, !enabled);
-    syncActivityTask(key, !enabled, account);
-    reportError(error);
-  }
+    const updated = await call('/api/loop/control', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled, revision: loopSettingsRevision }) });
+    if (account === current) { loopSettingsRevision = updated.settingsRevision; configEditor.owner = null; }
+  } catch (error) { if(account===current){setTaskSwitch(input, !enabled); reportError(error);} }
   finally {
     savingTasks.delete(saving);
-    const saved = input.getAttribute('aria-checked') === 'true';
-    activityTaskEdits.set(saving, { enabled: saved, pending: false, version: activitiesVersion });
-    syncActivityTask(key, saved, account);
     if (account === current) {
       if (input.dataset.eventTask) {
         for (const toggle of document.querySelectorAll('[data-event-task]')) {
@@ -757,32 +843,6 @@ async function toggleAutoTask(input) {
   }
 }
 for (const input of taskInputs) input.onclick = () => toggleAutoTask(input);
-
-reserveInput.oninput = () => {
-  reserveEdited = true;
-  reserveSave.disabled = false;
-};
-$('fishing-reserve-form').onsubmit = async event => {
-  event.preventDefault();
-  const account = current;
-  if (!account || account !== loopAccount || savingReserve.has(account)) return;
-  const value = reserveInput.valueAsNumber;
-  if (!Number.isSafeInteger(value) || value < 0) {
-    reportError(new Error('预留金币必须是非负整数'), '设置钓具预留金币');
-    return;
-  }
-  ++loopVersion;
-  savingReserve.add(account);
-  reserveInput.disabled = reserveSave.disabled = true;
-  try {
-    await call('/api/loop/fishing-reserve', { method: 'POST', body: JSON.stringify({ fishingGoldReserve: value }) });
-    if (account === current) reserveEdited = false;
-  } catch (error) { if (account === current) reportError(error); }
-  finally {
-    savingReserve.delete(account);
-    if (account === current) refreshLoop();
-  }
-};
 
 $('loop-start').onclick = async () => {
   try {
@@ -810,31 +870,22 @@ $('loop-stop').onclick = async () => {
   }
 };
 
-$('tasks-plan').onclick = async () => {
-  $('tasks-hint').textContent = '检查中 ...';
-  try {
-    const data = await call('/api/tasks');
-    $('tasks-hint').textContent = '';
-    logReport('任务奖励：可领 ' + data.plan.length + ' 条', data.text);
-  } catch (error) {
-    $('tasks-hint').textContent = '';
-    reportError(error);
-  }
-};
-bindGameAction('tasks-run', async () => {
-  const account = current;
-  const data = await call('/api/tasks/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-  if (current === account) logReport('任务奖励：本轮成功领取 ' + data.results.filter((r) => r.ok).length + ' 项', data.text);
-});
-
+let orderClockOffset=0;
+function orderRefreshLabel(at){
+ const left=Math.max(0,Math.ceil(at-(Date.now()+orderClockOffset)/1000));
+ const time=new Date(at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
+ return time+' 刷新 · '+(left?('剩余 '+Math.floor(left/60)+'分'+left%60+'秒'):'已到时，等待同步');
+}
+setInterval(()=>{if(document.hidden||$('tab-manual').classList.contains('hidden'))return;for(const node of document.querySelectorAll('[data-order-refresh-at]'))node.textContent=orderRefreshLabel(Number(node.dataset.orderRefreshAt));},1000);
 function orderState(order, data) {
   const box = el('div', 'order-state');
   const decision = order.decision;
   const labels = { ready: data.idleRunning ? '等待自动交付' : '等待开启挂机', disabled: '自动交付已关闭', refreshing: '订单刷新中',
     unknown: '等待核对', missing: '材料不足', reserved: '材料已预留', reroll: '等待换单' };
   const state = decision?.status ?? 'unknown';
-  const label = !data.autoDeliverOrders && state !== 'reroll' ? labels.disabled : labels[state] || labels.unknown;
+  const label = !data.autoDeliverOrders && !['reroll','refreshing'].includes(state) ? labels.disabled : labels[state] || labels.unknown;
   box.appendChild(chip(state === 'ready' && data.idleRunning && data.autoDeliverOrders ? 'ready' : 'waiting', label));
+  if(order.refreshTime>0){const time=el('span','order-refresh-time',orderRefreshLabel(order.refreshTime));time.dataset.orderRefreshAt=String(order.refreshTime);box.append(time);}
   if (decision?.reason) box.appendChild(el('span', 'dim', decision.reason));
   return box;
 }
@@ -874,32 +925,40 @@ function residentOrderButton(order) {
   return button;
 }
 
-function renderWorldPlan(actions) {
-  const box = clear($('world-view'));
-  if (!actions?.length) {
-    box.appendChild(el('span', 'dim', '现在没有可执行的动作'));
-    return;
-  }
-  box.appendChild(el('strong', null, '点「执行一轮」会做这些'));
-  const list = el('ul');
-  for (const action of actions) list.appendChild(el('li', null, action.label));
-  box.appendChild(list);
+function residentOrderActions(order){
+ const root=el('div','order-manual-actions');root.append(residentOrderButton(order));
+ const account=current,key=account+':'+order.index,button=smallButton('换单');button.setAttribute('aria-label','刷新'+(order.workerName||'居民')+'的订单 #'+order.index);
+ button.disabled=pendingResidentOrders.has(key)||!order.manualRefresh?.allowed||!account||snapshot.paused||disconnected.has(account);button.title=order.manualRefresh?.reason||'放弃当前需求，等待新订单';
+ button.onclick=()=>{if(button.disabled||current!==account||pendingResidentOrders.has(key))return;
+  openConfirm('刷新居民订单',[el('p','','确认放弃'+(order.workerName||'居民')+'的订单 #'+order.index+'并换一单？'),el('p','dim','新需求按游戏刷新时间到达，不使用付费加速。')],async()=>{
+   if(current!==account||snapshot.paused||disconnected.has(account)||pendingResidentOrders.has(key))throw Error('账号或订单状态已变化，请刷新后再试');
+   pendingResidentOrders.add(key);button.disabled=true;button.textContent='换单中…';
+   try{await call('/api/world/order/reroll',{method:'POST',body:JSON.stringify({confirm:true,index:order.index,orderKey:order.orderKey})});}
+   finally{pendingResidentOrders.delete(key);if(current===account)await refreshManualWorld(true);}
+  });
+ };root.append(button);return root;
 }
 
 function renderWorld(data) {
-  const summary = clear($('world-summary'));
-  statTile(summary, '人口', data.population + (data.futurePopulation ? ' → ' + data.futurePopulation : ''));
-  statTile(summary, '库存', data.stock.length + ' 种');
-  statTile(summary, '工厂', data.factories.length + ' 栋');
-  statTile(summary, '居民订单', data.orders.length + ' 条');
-  statTile(summary, '资源田', (data.resFields.fields?.length ?? 0) + '/' + (data.resFields.maxNum ?? '?'));
-  renderWorldPlan(data.plan);
+  orderClockOffset=Number.isFinite(data.serverNow)?data.serverNow*1000-Date.now():0;
+  $('world-view').textContent = '';
   const fbox = clear($('world-factories'));
   if (data.farms?.length) {
     fbox.appendChild(el('h2', null, '农田'));
-    const plots = el('div', 'icons');
-    for (const farm of data.farms) plots.appendChild(cell(null, 0, farm.plot.replace(/^([0-9]+)农田$/, '$1 号农田'), farm.status, false));
-    fbox.appendChild(plots);
+    const plots = [...data.farms].sort((a, b) => a.plot.localeCompare(b.plot, 'zh-CN', { numeric: true }));
+    const grid = el('table', 'farm-grid'); grid.setAttribute('aria-label', '农田状态');
+    const body = el('tbody');
+    for (let i = 0; i < plots.length; i += 3) {
+      const row = el('tr');
+      for (let j = 0; j < 3; j++) {
+        const plot = plots[i + j], cell = el('td');
+        if (plot) cell.append(el('strong', 'farm-plot', plot.plot), el('span', 'farm-status', plot.status));
+        else cell.setAttribute('aria-hidden', 'true');
+        row.appendChild(cell);
+      }
+      body.appendChild(row);
+    }
+    grid.appendChild(body); fbox.appendChild(grid);
   }
   // 空位：没盖的（待建）与正在盖的（施工中）。计划器只会建「待建」那些，
   // 施工中的只能等它盖完由竣工步骤收尾，所以两种状态要分开说，不然看不出差在哪。
@@ -926,41 +985,46 @@ function renderWorld(data) {
   if (data.orders.length) {
     obox.appendChild(el('h2', null, '居民订单'));
     obox.appendChild(el('p', 'dim', '可手动提交材料已齐的订单。账号忙时自动排队，交付结果见运行日志。'));
-    obox.appendChild(table(['订单', '居民', '需求', '挂机交付', '手动交付'], data.orders.map((o) => [
+    obox.appendChild(table(['订单', '居民', '需求', '挂机交付', '手动操作'], data.orders.map((o) => [
       '#' + o.index,
       { cell: o.workerIcon, text: (o.workerName || '未知居民') + (o.isSpecial ? '（特殊）' : '') },
       o.requirements.length && o.decision?.status !== 'refreshing' ? { cells: o.requirements } : '—',
       orderState(o, data),
-      residentOrderButton(o),
+      residentOrderActions(o),
     ])));
   }
-  const sbox = clear($('world-stock'));
-  for (const entry of data.stock) sbox.appendChild(cell(entry.icon, 30, entry.name, fmt(entry.num)));
-  if (!sbox.childElementCount) sbox.appendChild(el('span', 'dim', '仓库空'));
-  $('world-fields').textContent = data.resFields.text || '';
+  renderInventory(data.stock);
+  const fields=clear($('world-fields'));fields.append(el('p','dim','已占资源田 '+(data.resFields.fields?.length??'?')+'/'+(data.resFields.maxNum??'?')));
+  const yields=el('div','field-yield-summary');yields.setAttribute('aria-label','资源田每小时基础总产量');for(const item of data.resFields.totals??[])yields.append(el('span','',item.name+' '+(item.perHour===null?'未同步':fmt(item.perHour)+'/小时')));fields.append(yields);
+  if(data.resFields.rows?.length)fields.append(table(['建筑','产出','等级'],data.resFields.rows.map(r=>[r.name+' · '+r.cityName,r.product,r.level??'未同步'])));
+  else fields.append(el('p','dim',data.resFields.fields?.length?'资源田信息未同步，请重新加载服务':'暂无已占资源田'));
+  fields.append(el('p','dim','产出为每小时基础值，不含科技及其他加成。'));
 }
 
 let worldVersion = 0, worldRead = null, displayedWorldAccount;
 function refreshManualWorld(force = false) {
   if (force) { worldVersion++; worldRead = null; }
-  if ($('tab-manual').classList.contains('hidden')) return;
+  if ($('tab-manual').classList.contains('hidden')&&$('tab-inventory').classList.contains('hidden')) return;
   const account = current;
   const available = account && !snapshot.paused && !disconnected.has(account);
   if (displayedWorldAccount !== account || !available) {
+    $('inventory-status').textContent='正在读取库存';
     displayedWorldAccount = account;
+    resetInventory();
     worldVersion++;
     worldRead = null;
-    for (const id of ['world-summary', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'world-hint']) clear($(id));
+    for (const id of ['world-factories', 'world-orders', 'world-stock', 'world-fields', 'world-hint']) clear($(id));
     $('world-view').textContent = !account ? '请先选择账号' : !available ? '账号已断开连接' : '正在读取海面数据…';
   }
   if (!available || worldRead?.account === account) return;
   const version = ++worldVersion;
   worldRead = { account, version };
   $('world-hint').textContent = '正在读取…';
-  call('/api/world').then(data => {
+  call('/api/world?speedUp=' + isChecked($('world-speedup'))).then(data => {
     if (version === worldVersion && current === account) renderWorld(data);
   }).catch(error => {
     if (version === worldVersion && current === account) {
+      $('inventory-status').textContent='库存读取失败，请重试';
       $('world-view').textContent = '海面数据读取失败，可点「刷新数据」重试。';
       reportError(error);
     }
@@ -969,7 +1033,9 @@ function refreshManualWorld(force = false) {
     if (version === worldVersion) $('world-hint').textContent = '';
   });
 }
+$('inventory-refresh').onclick=()=>refreshManualWorld(true);
 $('world-plan').onclick = () => refreshManualWorld();
+$('world-speedup').onclick = () => { setTaskSwitch($('world-speedup'), !isChecked($('world-speedup'))); refreshManualWorld(true); };
 bindGameAction('world-run', async () => {
   const account = current;
   $('world-hint').textContent = '执行中 ...';
@@ -978,8 +1044,7 @@ bindGameAction('world-run', async () => {
     const data = await call('/api/world/run', { method: 'POST', body: JSON.stringify(body) });
     if (account !== current || disconnected.has(account)) return;
     worldVersion++;
-    $('world-hint').textContent = '';
-    logReport('海面：执行 ' + data.results.length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length + ' 个');
+    $('world-hint').textContent = '执行 ' + data.results.length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length;
     if (!data.refreshError) renderWorld(data);
   } catch (error) {
     $('world-hint').textContent = '';
@@ -1012,6 +1077,7 @@ function skillText(levels) {
 }
 
 function renderHeroes(data) {
+  $('hero-view').textContent = data.text;
   const box = clear($('hero-table'));
   const planned = new Set(data.steps.map(step => step.heroId));
   if (!planned.size) return;
@@ -1027,10 +1093,8 @@ function renderHeroes(data) {
 $('hero-plan').onclick = async () => {
   $('hero-hint').textContent = '计算中 ...';
   try {
-    const data = await call('/api/heroes');
-    renderHeroes(data);
+    renderHeroes(await call('/api/heroes'));
     $('hero-hint').textContent = '';
-    logReport('英雄养成计划：' + data.steps.length + ' 步', data.text);
   } catch (error) {
     $('hero-hint').textContent = '';
     reportError(error);
@@ -1040,9 +1104,8 @@ bindGameAction('hero-run', async () => {
   $('hero-hint').textContent = '执行中 ...';
   try {
     const data = await call('/api/heroes/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-    $('hero-hint').textContent = '';
-    logReport('英雄养成：发出 ' + data.sent + ' 个请求，失败 ' + data.failed + '，跳过 ' + data.skipped + '，耗时 ' + Math.round(data.ms / 1000) + ' 秒');
-    renderHeroes(await call('/api/heroes'));
+    $('hero-hint').textContent = '发出 ' + data.sent + ' 个请求，失败 ' + data.failed + '，跳过 ' + data.skipped + '，耗时 ' + Math.round(data.ms / 1000) + 's';
+    $('hero-plan').onclick();
   } catch (error) {
     $('hero-hint').textContent = '';
     reportError(error);
@@ -1052,16 +1115,48 @@ bindGameAction('hero-run', async () => {
 // ---- 日常 ------------------------------------------------------------------
 const DAILY_LABEL = { ready: '可做', paid: '需付费', partial: '部分可做', waiting: '等待中', done: '已完成', blocked: '不可用', error: '出错', unknown: '未知' };
 
-function renderDailies(data) {
+function dailyOperation(entry, account) {
+  const cell = el('div', 'daily-operation');
+  if (!entry.manual?.token) {
+    const reason = entry.manual?.reason || '请重新探测';
+    cell.textContent = reason === entry.reason ? '暂无操作' : reason;
+    cell.title = reason; return cell;
+  }
+  const button = smallButton(entry.manual.label);
+  button.disabled = pendingDailyAccounts.has(account) || snapshot.paused || disconnected.has(account);
+  button.onclick = async () => {
+    if (account !== current || snapshot.paused || disconnected.has(account) || pendingDailyAccounts.has(account)) return;
+    pendingDailyAccounts.add(account); button.disabled = true; button.textContent = '执行中…';
+    $('dailies-hint').textContent = '正在处理“' + entry.task.title + '”…';
+    let outcome;
+    try {
+      outcome = await call('/api/dailies/single', { method: 'POST', body: JSON.stringify({ confirm: true, token: entry.manual.token, paid: isChecked($('dailies-paid')) }) });
+    } catch (error) { if (account === current) { outcome = { label: error.message }; reportError(error); } }
+    finally {
+      pendingDailyAccounts.delete(account);
+      if (account === current) {
+        await refreshDailyView();
+        if (outcome) $('dailies-hint').textContent = outcome.label;
+      }
+    }
+  };
+  cell.appendChild(button); return cell;
+}
+function renderDailies(data, account = current) {
+  if (account !== current) return;
+  dailyAccount = account;
   const box = clear($('dailies-table'));
-  box.appendChild(table(['任务', '进度', '状态', '动作 / 原因'], data.tasks.map((entry) => [
+  const taskTable = table(['任务', '进度', '状态', '动作 / 原因', '完成操作'], data.tasks.map((entry) => [
     entry.task.title,
     entry.task.progress + '/' + entry.task.targetProgress,
     chip(entry.status, DAILY_LABEL[entry.status] || entry.status),
-    entry.status === 'ready' || entry.status === 'paid'
+    entry.status === 'ready' || entry.status === 'paid' || entry.status === 'partial'
       ? (entry.actions || []).map((a) => a.cost || a.request).join('；') || '直接完成'
       : (entry.reason || ''),
-  ])));
+    dailyOperation(entry, account),
+  ]));
+  taskTable.classList.add('daily-tasks');
+  box.appendChild(taskTable);
   if (data.chests) {
     const line = (label, chest) => {
       const tiers = chest.tiers || [];
@@ -1084,25 +1179,32 @@ function renderDailies(data) {
   }
 }
 
-$('dailies-plan').onclick = async () => {
+async function refreshDailyView() {
+  const account = current, version = ++dailyVersion;
+  if (!account || snapshot.paused || disconnected.has(account)) {
+    clear($('dailies-table')); $('dailies-hint').textContent = snapshot.paused ? '账号已暂停' : '请先连接当前账号'; return;
+  }
   $('dailies-hint').textContent = '探测中 ...';
   try {
     const data = await call('/api/dailies');
-    renderDailies(data);
+    if (account !== current || version !== dailyVersion) return;
+    renderDailies(data, account);
     $('dailies-hint').textContent = '';
-    logReport('每日任务探测：钻石 ' + fmt(data.ruby), data.text);
   } catch (error) {
-    $('dailies-hint').textContent = '';
+    if (account !== current || version !== dailyVersion) return;
+    $('dailies-hint').textContent = '读取失败，请重新探测';
     reportError(error);
   }
-};
+}
+$('dailies-plan').onclick = refreshDailyView;
 bindGameAction('dailies-run', async () => {
+  const account = current;
   const paid = isChecked($('dailies-paid'));
   $('dailies-hint').textContent = '执行中 ...';
   try {
     const data = await call('/api/dailies/run', { method: 'POST', body: JSON.stringify({ confirm: true, paid }) });
-    $('dailies-hint').textContent = '';
-    logReport('每日任务：完成 ' + data.results.filter((r) => r.ok).length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length + ' 个，领取奖励 ' + data.claimed.length + ' 个，耗时 ' + Math.round(data.ms / 1000) + ' 秒');
+    if (account !== current) return;
+    $('dailies-hint').textContent = '完成 ' + data.results.filter((r) => r.ok).length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length + '，领取奖励 ' + data.claimed.length + ' 个，耗时 ' + Math.round(data.ms / 1000) + 's';
     renderDailies(data);
   } catch (error) {
     $('dailies-hint').textContent = '';
@@ -1146,6 +1248,48 @@ function putCell(td, spec) {
   }
   td.textContent = spec.text || '';
 }
+
+let sourceIndex;
+function renderSourceSearch() {
+  const box = clear($('source-results')), query = $('source-query').value.trim();
+  if (!query || !sourceIndex) return;
+  const matches = sourceIndex.filter(row => row.name.includes(query));
+  if (!matches.length) box.textContent = '未找到已配置来源的材料';
+  else box.appendChild(table(['材料', '游戏内来源'], matches.map(r => [r.name, r.sources.join('、')])));
+}
+$('source-query').oninput = renderSourceSearch;
+
+let activitiesVersion = 0;
+async function refreshActivities() {
+  if ($('tab-activities').classList.contains('hidden')) return;
+  const version=++activitiesVersion,account=current,materials=$('activities-order');
+  if(materials.dataset.owner!==account){clear(materials);materials.dataset.owner=account||'';}
+  if(!account||snapshot.paused||disconnected.has(account)){materials.textContent='连接账号后查看材料需求';return;}
+  if(!materials.children.length)materials.textContent='正在读取周订单材料…';
+  try{
+    const [data,sources]=await Promise.all([call('/api/activities'),sourceIndex??call('/api/material-sources')]);
+    if(version!==activitiesVersion||account!==current)return;
+    sourceIndex=sources;renderSourceSearch();clear(materials);
+    if(data.order?.materials.length&&!data.order.finished){
+      const order=data.order;
+      const run=(action,payload,detail)=>openConfirm(action==='buy'?'钻石购买材料':'提交整份周订单',[el('p','',detail)],async()=>{
+        if(account!==current)throw Error('账号已切换，请刷新');
+        const result=await call('/api/week-order/'+action,{method:'POST',body:JSON.stringify({confirm:true,orderKey:order.orderKey,...payload})});
+        if(account===current){$('hint').textContent=result.message;await refreshActivities();}
+      });
+      const submit=smallButton('提交整单');submit.disabled=!order.ready;
+      submit.onclick=()=>run('submit',{},order.materials.map(r=>r.name+' ×'+r.required).join('、'));
+      materials.append(submit);
+      materials.append(table(['材料','需要','库存','缺口','来源','购买'],order.materials.map(r=>{
+        const cost=r.price*r.missing,buy=smallButton(cost+' 钻');
+        buy.onclick=()=>run('buy',{itemId:r.id,quantity:r.missing,cost},r.name+' ×'+r.missing+'，共 '+cost+' 钻石');
+        const source=r.seed?'农田 · '+r.farmStatus:r.factory?r.factory.name+' · 需'+r.factory.required+'级（'+(r.factory.level==null?'未同步':r.factory.level+'级')+'）':'—';
+        return [r.name,String(r.required),String(r.owned),r.missing?String(r.missing):'齐',source,r.missing&&r.price?buy:r.missing?'无售价':'—'];
+      })));
+    }else materials.textContent=data.orderError?'材料未同步，请刷新重试':!data.order?'本期未开放周订单':data.order.finalReady?'本期周订单已全部交付，最终奖励待领取。':data.order.finished?'本期周订单已完成':'当前没有材料需求';
+  }catch{if(version===activitiesVersion&&account===current)materials.textContent='材料需求读取失败，请刷新重试';}
+}
+$('activities-refresh').onclick=refreshActivities;
 
 function table(headers, rows) {
   const box = component('ui-table');
@@ -1196,6 +1340,10 @@ async function exportAccounts(id) {
 $('export-accounts').onclick = () => exportAccounts();
 async function renderAccounts() {
   $('export-accounts').disabled = !accounts.length;
+  const signature=JSON.stringify([current,accounts.map(a=>[a.id,a.title,a.lastSeen])]);
+  if($('accounts').cardSnapshot===signature)return;
+  $('accounts').cardSnapshot=signature;
+  const details=$('account-details');$('account-detail-home').append(details);
   const box = clear($('accounts'));
   if (!accounts.length) {
     box.appendChild(el('div', 'dim', '还没有账号。先在下面用「从电脑微信添加」，或跑 node tools/capture-credentials.mjs。'));
@@ -1214,7 +1362,11 @@ async function renderAccounts() {
     const use = smallButton(account.id === current ? '已选中' : '切换到它');
     use.disabled = account.id === current;
     use.onclick = async () => {
+      if (!configMayChangeAccount(account.id)) return;
       current = account.id;
+      snapshot=account.status??{};renderAccountSelect();
+      giftAccountChanged();
+      configAccountChanged();
       await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id: account.id }) });
       await loadAccounts(true);
       renderAccounts();
@@ -1238,14 +1390,17 @@ async function renderAccounts() {
     download.onclick = () => exportAccounts(account.id);
     top.append(use, rename, download, drop);
     card.appendChild(top);
+    if(account.id===current)card.append(details);
     box.appendChild(card);
   }
 }
 
 $('cred-show').onclick = async () => {
+  const owner=current,version=++credentialVersion;
   $('cred-show').disabled = true;
   try {
     const data = await call('/api/accounts/credential?reveal=1');
+    if(owner!==current||version!==credentialVersion)return;
     const box = clear($('cred'));
     const rows = [
       ['账号', data.title + '（' + data.id + '）'],
@@ -1268,12 +1423,14 @@ $('cred-show').onclick = async () => {
     $('hint').textContent = '';
     reportError(error);
   }
-  $('cred-show').disabled = false;
+  if(owner===current&&version===credentialVersion)$('cred-show').disabled = false;
 };
-$('cred-hide').onclick = () => clear($('cred')).appendChild(el('span', 'dim', '已收起，点「显示凭证」再看'));
+$('cred-hide').onclick=()=>{credentialVersion++;clear($('cred'));$('cred-show').disabled=!current;};
 
 async function renderWorlds() {
+  const owner=current;
   const data = await call('/api/worlds');
+  if(owner!==current)return;
   const box = clear($('worlds'));
   for (const world of data.recentWorlds) {
     const role = world.role || {};
@@ -1293,9 +1450,11 @@ async function renderWorlds() {
 }
 
 async function enterWorld(worldId) {
+  const owner=current;
   $('worlds-hint').textContent = '进入 ' + worldId + ' ...';
   try {
     const data = await call('/api/worlds/enter', { method: 'POST', body: JSON.stringify({ confirm: true, worldId, fromWorldId: 0 }) });
+    if(owner!==current)return;
     const role = data.player || {};
     $('worlds-hint').textContent = '已在 ' + worldId + '：' + (role.nickname || '') + ' lv' + (role.level ?? '') + ' 战力' + fmt(role.power);
     await loadAccounts(false);
@@ -1331,6 +1490,8 @@ let capturePoll = null;
 
 function renderCapture(state) {
   const hint = $('cap-hint');
+  const previousQr=$('cap-box').querySelector('img'),previousLog=$('cap-box').querySelector('pre');
+  const logY=previousLog?.scrollTop??0,logX=previousLog?.scrollLeft??0;
   const box = clear($('cap-box'));
   const cleanupPending = state.phase === 'error';
   $('cap-start').disabled = state.running || cleanupPending;
@@ -1351,8 +1512,8 @@ function renderCapture(state) {
     const qr = el('div', 'qr');
     const side = el('div', null, '');
     if (state.platform !== 'douyin' && state.qr && state.qr.kind === 'image') {
-      const img = el('img');
-      img.src = state.qr.url + '?t=' + Date.now();
+      const img=previousQr?.dataset.url===state.qr.url?previousQr:el('img');
+      if(!img.dataset.url){img.dataset.url=state.qr.url;img.src=state.qr.url+'?t='+Date.now();}
       img.alt = '游戏入口码（非扫码登录授权）';
       qr.appendChild(img);
     }
@@ -1374,6 +1535,11 @@ function renderCapture(state) {
     box.appendChild(status);
   }
 
+  if (state.log && state.log.length) {
+    box.appendChild(el('h2', null, '抓包记录'));
+    const pre=previousLog||el('pre');const lines=state.log.join(String.fromCharCode(10));
+    if(pre.textContent!==lines)pre.textContent=lines;box.appendChild(pre);pre.scrollTop=logY;pre.scrollLeft=logX;
+  }
 }
 
 async function pollCapture() {
@@ -1433,51 +1599,48 @@ $('cap-stop').onclick = async () => {
 };
 
 // ---- 启动 ------------------------------------------------------------------
-${activitiesScript}
 ${progressionScript}
-${connectionScript}
-document.querySelectorAll('[data-subtabs]').forEach((group) => {
-  const tabs = [...group.querySelectorAll('[role=tab]')];
-  const choose = (tab, focus) => {
-    for (const other of tabs) {
-      const selected = other === tab;
-      other.setAttribute('aria-selected', String(selected));
-      other.tabIndex = selected ? 0 : -1;
-      $(other.getAttribute('aria-controls')).hidden = !selected;
-    }
-    if (focus) tab.focus();
-    refreshProgression();
-  };
-  tabs.forEach((tab, index) => {
-    tab.onclick = () => choose(tab);
-    tab.onkeydown = (event) => {
-      const offsets = { ArrowRight: 1, ArrowLeft: -1, Home: -index, End: tabs.length - index - 1 };
-      if (!(event.key in offsets)) return;
-      event.preventDefault();
-      choose(tabs[(index + offsets[event.key] + tabs.length) % tabs.length], true);
-    };
-  });
-});
-document.querySelectorAll('#tabs button').forEach((button) => {
-  button.onclick = () => {
+${helpTipsScript}
+${mapMotionPosition.toString()}
+${worldMapScript}
+${rankingScript}
+${activityStatisticsScript}
+${inventoryScript}
+${settingsScript}
+for(const button of document.querySelectorAll('[data-panel-toggle]'))button.onclick=()=>{const panel=$(button.dataset.panelToggle),open=panel.hidden;panel.hidden=!open;button.setAttribute('aria-expanded',String(open));button.textContent=open?'收起':'展开';};
+${giftCodeScript}
+let selectedResource = 'dailies';
+function activateConsolePage(button, resource = selectedResource) {
+    const isResource = button.dataset.tab === 'resources';
+    const target = isResource ? resource : button.dataset.tab;
+    if (isResource) selectedResource = resource;
+    $('resource-tabs').hidden = !isResource;
+    for (const tab of document.querySelectorAll('[data-resource-tab]')) tab.setAttribute('aria-current', tab.dataset.resourceTab === target ? 'page' : 'false');
+    closeHelpTip(false);
     for (const other of document.querySelectorAll('#tabs button')) other.removeAttribute('aria-current');
     button.setAttribute('aria-current', 'page');
     for (const section of document.querySelectorAll('main > section')) {
-      section.classList.toggle('hidden', section.id !== 'tab-' + button.dataset.tab);
+      section.classList.toggle('hidden', section.id !== 'tab-' + target);
     }
-    $('page-title').textContent = button.textContent;
     refreshProgression();
-    if (button.dataset.tab === 'overview') refreshOverview();
+    if (button.dataset.tab === 'overview') {refreshOverview();refreshLoop();}
+    if(isResource&&resource==='inventory')refreshManualWorld();
+    if(isResource&&resource==='heroes')refreshOverview();
     if (button.dataset.tab === 'account') {
+      refreshOverview();
       renderAccounts();
       pollCapture();
     }
     if (button.dataset.tab === 'manual') refreshManualWorld();
     if (button.dataset.tab === 'idle') refreshLoop();
-    if (button.dataset.tab === 'activities') refreshActivities();
+    if (button.dataset.tab === 'settings') void configLoad();
+    if(target==='giftcodes')void refreshGiftCodes();
+    if (target === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();
-  };
-});
+}
+document.querySelectorAll('#tabs button').forEach(button => { button.onclick = () => activateConsolePage(button); });
+for(const link of document.querySelectorAll('#tab-idle a[href^="#config-group-"]'))link.onclick=event=>{if(location.hash===link.getAttribute('href')){event.preventDefault();activateConsolePage(document.querySelector('#tabs [data-tab="settings"]'));configApplyHash();}};
+document.querySelectorAll('[data-resource-tab]').forEach(button => { button.onclick = () => activateConsolePage(document.querySelector('#tabs [data-tab="resources"]'), button.dataset.resourceTab); });
 
 async function boot() {
   try {
@@ -1487,10 +1650,16 @@ async function boot() {
     reportError(error);
     return;
   }
+  // 每次打开默认总览；移除旧配置锚点，确保随后点击同一链接也能正确定位。
+  if(location.hash.startsWith('#config-group-'))history.replaceState(null,'',location.pathname+location.search);
+  activateConsolePage(document.querySelector('#tabs [data-tab="overview"]'));
+  if (location.hash === '#journal') openJournal();
+  if (location.hash === '#pirate-first-kill') { activateConsolePage(document.querySelector('#tabs [data-tab="idle"]')); $('single-go-pirate').click(); }
   pollCapture();
 }
 boot();
 setInterval(refreshOverview, 20000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){refreshLoop();refreshStages();}});
 setInterval(refreshLoop, 3000);
 setInterval(refreshStages, 3000);
 </script>

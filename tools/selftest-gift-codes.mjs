@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+process.env.CW_DATA_DIR=fs.mkdtempSync(path.join(os.tmpdir(),'cw-gift-codes-'));
+const {startGiftCodes,giftCodeStatus}=await import('../src/gift-codes.mjs');
+const {loadProtocol}=await import('../src/proto.mjs');
+const p=loadProtocol(), sent=[];
+const client={promptNames:p.Prompt,async request(name,body,response){
+  assert.equal(name,'GotGiftCodeRequest');assert.equal(response,'GotRewardResponse');
+  const {giftCode}=p[name].decode(p[name].encode(body).finish());sent.push(giftCode);
+  if(giftCode==='无效')throw Object.assign(Error(),{request:name,prompt:{prompt:p.Prompt.GIFT_CODE_INVALID}});
+  if(giftCode==='限频')throw Object.assign(Error(),{request:name,prompt:{prompt:p.Prompt.GIFT_CODE_TOO_MANY_REQUESTS}});
+  if(giftCode==='超时')throw Error('timeout');
+  return p[response].decode(p[response].encode({reward:{asset:[{id:'RUBY',num:10}]}}).finish());
+}};
+const send=fn=>fn(client);
+const first=startGiftCodes('a','成功，成功\n无效 超时 停止',send);assert.throws(()=>startGiftCodes('a','其他',send),/正在兑换/);
+await first.done;
+assert.deepEqual(giftCodeStatus('a').rows.map(r=>r.status),['success','rejected','unknown','skipped']);
+assert.deepEqual(sent,['成功','无效','超时']);assert.match(giftCodeStatus('a').rows[0].detail,/10/);
+await startGiftCodes('a','成功 超时 限频 后续',send).done;
+assert.deepEqual(sent,['成功','无效','超时','限频']);assert.equal(giftCodeStatus('b').rows.length,0);
+const file=path.join(process.env.CW_DATA_DIR,'gift-codes-a.json');
+const rows=JSON.parse(fs.readFileSync(file));rows.push({code:'中断',status:'sending'},{code:'未发送',status:'queued'});fs.writeFileSync(file,JSON.stringify(rows));
+assert.deepEqual(giftCodeStatus('a').rows.slice(-2).map(r=>r.status),['unknown','skipped']);
+assert.throws(()=>startGiftCodes('b',' ',send));console.log('礼包码测试通过：真实协议编解码、逐码核验、去重、限频、超时、重启、账号隔离。');

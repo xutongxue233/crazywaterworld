@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createPrivateKey, X509Certificate } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-export const CA_DIR = path.join(os.homedir(), '.cw-ca');
+export const CA_DIR = path.resolve(import.meta.dirname, '../../certificates');
 export const CA_KEY = path.join(CA_DIR, 'ca.key');
 export const CA_CRT = path.join(CA_DIR, 'ca.crt');
 const LEAF_KEY = path.join(CA_DIR, 'leaf.key');
@@ -102,6 +102,7 @@ export function prepareLeaf(host) {
 }
 
 export function caFingerprint() {
+  if (!fs.existsSync(CA_CRT)) return null;
   return run(['x509', '-in', CA_CRT, '-noout', '-fingerprint', '-sha256']).trim();
 }
 

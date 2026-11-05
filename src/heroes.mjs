@@ -59,19 +59,22 @@ export function skillLevelMinStar(config, slot, targetLevel) {
 }
 
 // itemNum: (itemId) => number，直接吃 AllItemRequest 的结果。
-export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversal = true, heroIds = null }) {
+export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversal = true, heroIds = null, settings = null }) {
   const { byLevel, starByStar, heroById, skillUp } = buildIndex(config);
-  const maxLevel = maxHeroLevelFor(playerLevel, config);
+  const pref = settings?.heroes;
+  if (pref) { allowUniversal = pref.universal; heroIds = pref.heroIds.length ? pref.heroIds : null; }
+  const maxLevel = Math.min(maxHeroLevelFor(playerLevel, config), pref?.targetLevel || Infinity);
   const maxStar = maxHeroStar(config);
   const steps = [];
   const notes = [];
-  let expLeft = itemNum(HERO_EXP_ITEM);
+  let expLeft = Math.max(0, itemNum(HERO_EXP_ITEM) - (pref?.keepExp ?? 0));
+  if (pref && !pref.enabled) return { steps, notes: ['英雄养成总开关已关闭'], maxLevel, maxStar };
 
   const picked = heroes.filter((hero) => !heroIds || heroIds.includes(hero.heroId));
   // 升星优先给战力最高的英雄，万能碎片有限时这个顺序更划算。
   const byPower = [...picked].sort((a, b) => (b.power ?? 0) - (a.power ?? 0));
 
-  for (const hero of picked) {
+  for (const hero of pref && !pref.level ? [] : picked) {
     const cfg = heroById.get(hero.heroId);
     if (!cfg) {
       notes.push(`${hero.heroId}: HeroCfg 里没有这个英雄，跳过`);
@@ -93,7 +96,8 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
       count += 1;
     }
     if (count > 0) {
-      steps.push({ kind: 'level', heroId: hero.heroId, from: level, to: level + count, count, exp: cost });
+      steps.push({ kind: 'level', heroId: hero.heroId, from: level, to: level + count, count, exp: cost,
+        levelCosts: Array.from({ length: count }, (_, index) => byLevel.get(level + index + 1).exp), costs: [{ id: HERO_EXP_ITEM, num: cost }] });
       expLeft -= cost;
     }
   }
@@ -102,7 +106,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
   const fragBudget = new Map();
   const fragLeft = (item) => (fragBudget.has(item) ? fragBudget.get(item) : itemNum(item));
 
-  for (const hero of byPower) {
+  for (const hero of pref && !pref.star ? [] : byPower) {
     const cfg = heroById.get(hero.heroId);
     if (!cfg) continue;
     const key = QUALITY_CONSUME[cfg.quality];
@@ -119,7 +123,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
     let universalUsed = 0;
     const sameItem = universalItem === ownItem;
     const gained = [];
-    while (star < maxStar) {
+    while (star < Math.min(maxStar, pref?.targetStar || Infinity)) {
       const row = starByStar.get(star + 1);
       if (!row) break;
       const need = row[key] ?? 0;
@@ -154,6 +158,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
           own: entry.own,
           total,
           universal: entry.own < entry.fragments,
+          costs: [{ id: ownItem, num: entry.own }, ...(entry.own < entry.fragments ? [{ id: universalItem, num: entry.fragments - entry.own }] : [])].filter(item => item.num > 0),
         });
       }
       if (usedUniversal) notes.push(`${hero.heroId}: 升星共用掉 ${universalUsed} 个万能碎片`);
@@ -168,7 +173,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
   const bookBudget = new Map();
   const bookLeft = (item) => (bookBudget.has(item) ? bookBudget.get(item) : itemNum(item));
 
-  for (const hero of picked) {
+  for (const hero of pref && !pref.skill ? [] : picked) {
     const cfg = heroById.get(hero.heroId);
     if (!cfg) continue;
     const levels = hero.skillLevels ?? [];
@@ -197,7 +202,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
           break;
         }
         bookBudget.set(item, bookLeft(item) - num);
-        steps.push({ kind: 'skill', heroId: hero.heroId, slot, from: cur, to: target, item, num });
+        steps.push({ kind: 'skill', heroId: hero.heroId, slot, from: cur, to: target, item, num, costs: [{ id: item, num }] });
         cur = target;
       }
     }
@@ -207,12 +212,13 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
 }
 
 // 逐条执行。HeroLevelUpRequest 一次只升一级，服务端没有批量接口，所以英雄升级会被展开成多次请求。
-export async function runHeroPlan(client, protocol, plan, { allowMutate = false, timeout = 15000, onStep } = {}) {
+export async function runHeroPlan(client, protocol, plan, { allowMutate = false, timeout = 15000, onStep, enabled = () => true, getSettings, beforeAction, afterAction } = {}) {
   if (!allowMutate) throw new Error('英雄养成会改变账号状态，需要 --yes');
   const results = [];
   // 同一英雄的同一类操作一旦被服务端拒了，后面的同类步骤必然同样被拒，直接跳过不再骚扰服务端。
   const blocked = new Set();
   for (const step of plan.steps) {
+    if (!enabled()) break;
     const key = `${step.kind}|${step.heroId}`;
     if (blocked.has(key)) {
       const entry = { step, targetLevel: step.kind === 'level' ? step.from + 1 : undefined,
@@ -223,16 +229,25 @@ export async function runHeroPlan(client, protocol, plan, { allowMutate = false,
     }
     const calls = step.kind === 'level' ? step.count : 1;
     for (let i = 0; i < calls; i += 1) {
+      if (!enabled()) break;
+      const pref = getSettings?.()?.heroes;
+      if (pref && (!pref.enabled || !pref[step.kind] || (pref.heroIds.length && !pref.heroIds.includes(step.heroId)) ||
+        (step.kind === 'level' && pref.targetLevel > 0 && step.from + i + 1 > pref.targetLevel) ||
+        (step.kind === 'star' && ((pref.targetStar > 0 && step.to > pref.targetStar) || (step.universal && !pref.universal))))) break;
       const body = buildHeroBody(step);
       const targetLevel = step.kind === 'level' ? step.from + i + 1 : undefined;
       try {
+        const budgetStep = { ...step, scope: 'hero', setting: `heroes.${step.kind}`, label: `${step.heroId}养成`,
+          costs: step.kind === 'level' ? [{ id: HERO_EXP_ITEM, num: step.levelCosts?.[i] }] : step.costs };
+        const ticket = await beforeAction?.(budgetStep);
         const outcome = await sendHero(client, protocol, step, body, timeout);
         const entry = { step, targetLevel, ok: true, ...outcome };
         results.push(entry);
         onStep?.(entry);
+        await afterAction?.(budgetStep, ticket, outcome.response ? entry : { ...entry, sent: true });
       } catch (error) {
         blocked.add(key);
-        const entry = { step, targetLevel, ok: false, error: error.message };
+        const entry = { step, targetLevel, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
         results.push(entry);
         onStep?.(entry);
         break;

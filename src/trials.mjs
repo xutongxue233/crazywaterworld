@@ -1,4 +1,6 @@
 import { displayMaterial } from './config.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { stageFailureLimit } from './stages.mjs';
 
 async function readRaid(client, raidId) {
   const { raid } = await client.request('TrialRaidInfoRequest', { raidId });
@@ -97,4 +99,66 @@ export async function sweepTrials(client, config, level, enabled, log, scheduler
       log({ title: raid.title + '免费扫荡', ok: false, error: error.message });
     }
   }
+}
+
+export async function runTrialStages(client, player, config, raidId, { maxFailures = 3, signal, enabled = () => true,
+  schedule = work => work(), wait = sleep, onBattle = () => {} } = {}) {
+  maxFailures = stageFailureLimit(maxFailures);
+  const definition = config?.tables?.TrialRaidCfg?.data?.find(r => r.raidId === raidId);
+  if (!definition) throw new Error('未知试炼副本');
+  const stages = raidStages(config, raidId);
+  let wins = 0, failures = 0, lastStage = null;
+  for (;;) {
+    signal?.throwIfAborted();
+    if (!enabled() || !client.connected) throw new Error('账号状态已变化，试炼推关已停止');
+    if (lastStage != null) await wait(5000, undefined, { signal });
+    const result = await schedule(async () => {
+      signal?.throwIfAborted();
+      if (!enabled() || !client.connected) throw new Error('账号状态已变化，试炼推关已停止');
+      const before = await readRaid(client, raidId);
+      if (!Number.isSafeInteger(before.passedStage) || before.passedStage < 0 || (before.passedStage && !stages.some(r => r.stageId === before.passedStage))) throw new Error('试炼已通关进度无效，停止重试');
+      const next = stages.find(r => r.stageId > before.passedStage);
+      if (!next) return { done: true, reason: '该试炼已全部通关' };
+      if (!(player?.level >= next.openLevel)) return { done: true, reason: `下一关需要角色 ${next.openLevel} 级` };
+      signal?.throwIfAborted();
+      if (!enabled()) throw new Error('账号已暂停，未发送试炼挑战');
+      const reply = await client.request('TrialRaidChallengeRequest', { raidId, stageId: next.stageId }, 'TrialRaidChallengeResponse');
+      if (reply?.raidId !== raidId || reply?.stageId !== next.stageId) throw new Error('试炼挑战回包不匹配，结果待核对，已停止');
+      const after = await readRaid(client, raidId);
+      if (!Number.isSafeInteger(after.passedStage) || after.passedStage < before.passedStage || (after.passedStage && !stages.some(r => r.stageId === after.passedStage))) throw new Error('试炼挑战后进度无法确认，已停止');
+      return { stage: next.stageId, level: next.stageLevel, won: after.passedStage >= next.stageId };
+    });
+    if (result.done) return { wins, failures, reason: result.reason };
+    if (lastStage !== result.stage) failures = 0;
+    lastStage = result.stage;
+    if (result.won) { wins++; failures = 0; } else failures++;
+    onBattle({ ...result, wins, failures });
+    if (failures >= maxFailures) return { wins, failures, reason: `第 ${result.level} 关连续失败 ${failures} 次，已停止` };
+  }
+}
+
+export function createTrialTask(raidId) {
+  let controller = null;
+  let state = { raidId, running: false, stopping: false, wins: 0, failures: 0, stage: null, reason: '尚未开启' };
+  const view = () => ({ ...state });
+  return {
+    view,
+    start(options, open, report) {
+      if (controller) throw new Error('该试炼已在推关');
+      const maxFailures = stageFailureLimit(options.maxFailures);
+      controller = new AbortController(); const { signal } = controller;
+      state = { raidId, running: true, stopping: false, wins: 0, failures: 0, stage: null, maxFailures, reason: '正在准备' };
+      (async () => {
+        try {
+          const context = await open(); signal.throwIfAborted();
+          const result = await runTrialStages(context.client, context.player, context.config, raidId, { ...context, signal, maxFailures,
+            onBattle(info) { Object.assign(state, { stage: info.level, wins: info.wins, failures: info.failures, reason: `第 ${info.level} 关${info.won ? '已通关' : '未通关'}` }); report?.(view()); } });
+          Object.assign(state, result);
+        } catch (error) { state.reason = error.message; state.failed = !signal.aborted; }
+        finally { if (signal.aborted) state.reason = signal.reason.message; controller = null; state.running = state.stopping = false; report?.(view()); }
+      })();
+      return view();
+    },
+    stop(reason = '已手动停止') { if (controller) { state.stopping = true; controller.abort(new Error(reason)); } return view(); },
+  };
 }

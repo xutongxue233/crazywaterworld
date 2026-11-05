@@ -97,3 +97,17 @@ export function loadProtocol(bundlePath) {
   if (!protocol) throw new Error('protocol table not exported');
   return protocol;
 }
+
+export function describe(protocol) {
+  const keys = Object.keys(protocol);
+  let messages = 0;
+  let enums = 0;
+  const services = [];
+  for (const k of keys) {
+    const v = protocol[k];
+    if (typeof v === 'function' && typeof v.encode === 'function') messages++;
+    else if (typeof v === 'function' && /Service/.test(k)) services.push(k);
+    else if (v && typeof v === 'object' && !v.encode) enums++;
+  }
+  return { total: keys.length, messages, enums, services };
+}

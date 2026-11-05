@@ -16,10 +16,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SERVER, assetUrl } from '../tools/sync-art.mjs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { normalize } from './worlds.mjs';
+import { residentFilter, resourceReserve, worldPreferenceEnabled, worldActionAllowed, exactAutomationId, AutomationSkip } from './automation-policy.mjs';
 import { readWeekOrder } from './activities.mjs';
 import { RESOURCE, displayMaterial } from './config.mjs';
+
+// 与客户端FactoryUtil一致：活动工坊只使用服务器limitTimeItem开放窗口。
+export function factoryRecipeAvailability(recipe, festivals, now) {
+  if (!recipe) return {allowed:false,reason:'配方未确认',signature:'missing'};
+  if (!recipe.limitType && recipe.buildType!=='活动工厂') return {allowed:true,signature:'ordinary'};
+  if (!Array.isArray(festivals)) return {allowed:false,reason:'活动配方开放状态未同步',signature:'unknown'};
+  const windows=festivals.flatMap(event=>(event.festivalData?.limitTimeItem??[]).filter(row=>row.item===recipe.limitType).map(row=>({item:row.item,openTime:row.openTime,closeTime:row.closeTime})));
+  const valid=windows.filter(w=>Number.isSafeInteger(w.openTime)&&Number.isSafeInteger(w.closeTime)&&w.openTime>0&&w.closeTime>=w.openTime);
+  const allowed=valid.some(w=>w.openTime<=now&&now<=w.closeTime);
+  return {allowed,reason:allowed?'':'当前活动未开放此配方',signature:JSON.stringify(valid)};
+}
+const factoryFailures = new WeakMap();
 
 export const SPEED_UP_ITEM = '加速器';
 export const SPEED_UP_ITEM_TYPE = 2;
@@ -117,6 +130,12 @@ function trackResidentOrders(client) {
   return session;
 }
 
+export function watchResidentRefreshes(client,ledger,player){
+ const session=trackResidentOrders(client),world=exactAutomationId(player?.worldId),id=exactAutomationId(player?.playerId);
+ if(ledger&&world&&id)session.manualRefresh={ledger,identity:world+':'+id};
+ return session;
+}
+
 function rememberResidentOrders(session, orders) {
   const keys = new Map();
   for (const order of orders) {
@@ -129,6 +148,15 @@ function rememberResidentOrders(session, orders) {
     if (session.get(index)?.signature !== signature) session.set(index, { key: randomUUID(), signature });
     keys.set(index, session.get(index).key);
   }
+  session.refreshPending=new Set();
+  if(session.manualRefresh){const {ledger,identity}=session.manualRefresh;
+    for(const[key,record]of Object.entries(ledger.keyRecords())){
+      const detail=record.details;if(detail?.kind!=='manualOrderRefresh'||detail.identity!==identity)continue;
+      const row=session.get(detail.index);if(!row||!keys.has(detail.index))continue;
+      if(row.signature!==detail.signature){if(!record.confirmed)ledger.resolveKey(key,true);ledger.releaseCompletedKey(key);}
+      else if(!record.confirmed){keys.set(detail.index,null);session.refreshPending.add(detail.index);}
+    }
+  }
   for (const index of session.keys()) if (!keys.has(index)) session.delete(index);
   return keys;
 }
@@ -139,7 +167,12 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     const responseName = `${name.slice(0, -7)}Response`;
     if (!protocol[name] || !protocol[responseName]) return null;
     try {
-      return normalize(await client.request(name, {}, responseName, timeout));
+      const raw = await client.request(name, {}, responseName, timeout);
+      const value = normalize(raw);
+      if (name === 'OnWaterRequest') for (const [index, building] of (value.building ?? []).entries()) {
+        if (building.petServe) building.petServe.petUid = exactAutomationId(raw.building[index].petServe?.petUid);
+      }
+      return value;
     } catch {
       return null;
     }
@@ -188,6 +221,8 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       level,
       farm: raw.farm ?? null,
       factory: raw.factory ?? null,
+      petBreed: raw.petBreed ?? null,
+      petServe: raw.petServe ?? null,
       product: (raw.product?.asset ?? []).map((a) => ({ id: a.id, num: Number(a.num ?? 0) })),
       buildStartTime: raw.buildStartTime ?? 0,
       buildFinishTime: raw.buildFinishTime ?? 0,
@@ -234,9 +269,18 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       }
       rewardExp = known ? total : null;
     }
+    let rewardGold = null;
+    if (raw.isSpecial) {
+      const row = specOrderCfg.get(raw.textId) ?? specOrderCfg.get(String(raw.textId));
+      const reward = (row?.reward ?? []).find(x => x[0] === 'GOLD');
+      if (reward) rewardGold = Number(reward[1]);
+    } else if (requirements.length && requirements.every(r => (orderCfg.get(r.id)?.reward ?? []).some(x => x[0] === 'GOLD'))) {
+      rewardGold = requirements.reduce((sum, r) => sum + Number(orderCfg.get(r.id).reward.find(x => x[0] === 'GOLD')[1]) * r.num, 0);
+    }
     return {
       index: raw.index ?? 0,
       orderKey: orderKeys.get(raw.index ?? 0),
+      refreshPending: orderSession.refreshPending?.has(raw.index??0)??false,
       workerId: raw.workerId,
       workerName: workerNames.get(String(raw.workerId)) || '未知居民',
       textId: raw.textId,
@@ -245,6 +289,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       requirements,
       missing,
       rewardExp,
+      rewardGold,
     };
   });
 
@@ -300,12 +345,17 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     orderOfTheDay: water.orderOfTheDay ?? { orderNum: 0, rewardedNum: 0 },
     autoProduceEndTime: water.autoProduceEndTime ?? 0,
     autoProduceForever: water.autoProduceForever === true,
+    festivals: Array.isArray(client.festivals)?normalize(client.festivals):null,
     floaters: water.floater ?? [],
     floaterCount: (water.floater ?? []).length,
     population,
     futurePopulation,
     maxPopulation,
     autoFarming: water.autoFarming === true,
+    cropIds: new Set(rowsOf(config, 'FarmlandPlantCfg').map(row => row.id)),
+    fishingLevel: water.fishingLevel ?? null,
+    salvageLevel: water.salvageLevel ?? null,
+    divingLevel: water.divingLevel ?? null,
     stockCap: paramOf(config, STOCK_PARAM) + stockBonus,
     factorySlots: paramOf(config, SLOTS_PARAM),
     resFields: resFieldInfo ? normalize(resFieldInfo) : null,
@@ -322,9 +372,16 @@ export function planWorld(survey, {
   allowReroll = false,
   minOrderExp = 0,
   maxUpgrades = Infinity,
-  enabled = () => true,
+  enabled: taskEnabled = () => true,
+  settings = null,
+  usage = { counters: {} },
+  extraDemand = [],
 } = {}) {
   const { now, have } = survey;
+  const enabled = kind => taskEnabled(kind) && worldPreferenceEnabled(settings, kind);
+  const blockedBuilding = b => !!settings?.building.disabledTypes.some(id => id === b.type || id === b.buildingId);
+  const blockedFactory = b => !!settings?.factory.disabledTypes.some(id => id === b.type || id === b.buildingId);
+  if (settings) maxUpgrades = settings.building.maxUpgrades;
   const name = id => displayMaterial(config, id);
   const buildingName = b => displayBuilding(config, b);
   const actions = [];
@@ -334,7 +391,7 @@ export function planWorld(survey, {
   const dueHarvest = new Map();
   const markHarvest = (id, num) => dueHarvest.set(id, (dueHarvest.get(id) ?? 0) + num);
   const reserve = (id, num) => reserved.set(id, (reserved.get(id) ?? 0) + Number(num ?? 0));
-  const free = (id) => have(id) - (reserved.get(id) ?? 0);
+  const free = (id) => have(id) - (reserved.get(id) ?? 0) - resourceReserve(settings, id);
 
   // 给手动交周订单留出已有库存，在产和待收的成品也计入缺口。
   const weeklyGap = new Map();
@@ -384,6 +441,7 @@ export function planWorld(survey, {
       if (gap <= 0) continue;
       const target = weekFactoryInfo(config, id, survey.buildings);
       if (!target || target.level >= target.required) continue;
+      if (blockedBuilding({ type: target.type, buildingId: target.buildingId }) || blockedFactory({ type: target.type, buildingId: target.buildingId })) continue;
       if ((factoryTargets.get(target.type)?.required ?? 0) < target.required) factoryTargets.set(target.type, target);
     }
   }
@@ -431,7 +489,8 @@ export function planWorld(survey, {
   //    首建门槛、前置建筑和材料取自每个具体地块的 BuildingUnlockCfg。
   const builds = [];
   const buildMaterials = new Map();
-  const produceRows = rowsOf(config, 'BuildingProduceCfg');
+  const unavailableRecipes=new Map();
+  const produceRows = rowsOf(config, 'BuildingProduceCfg').filter(row=>{const gate=factoryRecipeAvailability(row,survey.festivals,survey.serverNow??now);if(!gate.allowed&&survey.factories.some(b=>b.type===row.buildType)){notes.push(name(row.itemId)+'：'+gate.reason);unavailableRecipes.set(row.buildType,gate.reason);}return gate.allowed;});
   const craftable = new Set(produceRows.filter(row =>
     survey.factories.some(b => b.type === row.buildType && b.level >= row.unlockLevel)).map(row => row.itemId));
   const unlocks = indexBy(config, 'BuildingUnlockCfg', 'buildingId');
@@ -439,6 +498,7 @@ export function planWorld(survey, {
   let plannedPopulation = survey.futurePopulation ?? survey.population;
   for (const b of survey.buildings) {
     if (!enabled('build')) break;
+    if (blockedBuilding(b)) continue;
     if (!b.type || b.level !== 0) continue;
     // 有开工或完工时间就已有工程；即便已到竣工时间且竣工开关关闭，也不是空地。
     if (b.buildStartTime > 0 || b.buildFinishTime > 0) continue;
@@ -491,7 +551,9 @@ export function planWorld(survey, {
     if (plot) priorityPlots.add(plot.building.buildingId);
   }
   builds.sort((a, b) => Number(priorityPlots.has(b.building.buildingId)) - Number(priorityPlots.has(a.building.buildingId)));
+  let buildCount = 0;
   for (const u of builds) {
+    if (settings && buildCount >= settings.building.maxBuilds) { notes.push('已达到每轮建造数量上限'); break; }
     if (u.gain && plannedPopulation + u.gain > survey.maxPopulation) {
       notes.push(`${buildingName(u.building)} 增加 ${u.gain} 人，需上限 ${plannedPopulation + u.gain}，当前上限 ${survey.maxPopulation}；先建指标建筑`);
       continue;
@@ -501,12 +563,14 @@ export function planWorld(survey, {
       continue;
     }
     plannedPopulation += u.gain;
+    buildCount++;
     for (const c of u.consume) reserve(c.id, c.num);
     actions.push({
       kind: 'build',
       request: 'BuildBuildingRequest',
       response: null,
       body: { buildingId: u.building.buildingId },
+      costs: u.consume,
       label: `建造${buildingName(u.building)}（需要角色 ${u.row.playerLevel} 级）`
         + (priorityPlots.has(u.building.buildingId) ? `，周订单需要 ${factoryTargets.get(u.building.type).required} 级` : '')
         + (u.capacity ? `，竣工后人口上限 +${u.capacity}` : '')
@@ -515,7 +579,7 @@ export function planWorld(survey, {
   }
 
   // Count ripe crops too: keep the order until the actual harvest reply is known.
-  if (enabled('farm') && !survey.autoFarming) {
+  if (enabled('farm') && (!settings || settings.farm.harvest) && (!survey.autoFarming || settings)) {
     const crops = rowsOf(config, 'FarmlandPlantCfg');
     for (const plot of survey.buildings.filter(b => b.type === '农田' && b.level > 0 && !b.buildStartTime && !b.buildFinishTime)) {
       const crop = crops.find(r => r.id === plot.farm?.productId);
@@ -532,6 +596,7 @@ export function planWorld(survey, {
     const cargoOverlap = Math.max(0, (survey.cargoOrder?.get(id) ?? 0) - (cargoHeld.get(id) ?? 0));
     return Math.max(0, (weeklyHeld.get(id) ?? 0) - cargoOverlap);
   };
+  let residentPlanned = 0;
   for (const order of survey.orders) {
     const label = `${order.workerName || '未知居民'}的订单 #${order.index}`;
     const decision = (status, reason, shortages = []) => {
@@ -542,9 +607,20 @@ export function planWorld(survey, {
     };
     // v74 ignores the previous order's requirements while its slot is refreshing.
     if (order.refreshTime) { decision('refreshing', '订单刷新中，等待新需求'); continue; }
-    if (order.orderKey === null) { decision('unknown', '服务器返回重复的订单槽位，请刷新后再试'); continue; }
+    if (order.orderKey === null) { decision('unknown', order.refreshPending?'上次手动换单结果待确认，等待服务器更新':'服务器返回重复的订单槽位，请刷新后再试'); continue; }
     if (survey.orderCheckError || !order.requirements.length || order.requirements.some(r => !r.id || !(r.num > 0))) {
       decision('unknown', survey.orderCheckError || '尚未收到完整订单需求');
+      continue;
+    }
+    const countBefore = Math.max(Number(survey.orderOfTheDay?.orderNum ?? 0), Number(usage.counters?.residentOrders ?? 0));
+    const filter = residentFilter(order, { ...survey, available: id => Math.max(0, free(id) + lendable(id)), cropIds: survey.cropIds ?? new Set(rowsOf(config, 'FarmlandPlantCfg').map(row => row.id)),
+      orderOfTheDay: { ...survey.orderOfTheDay, orderNum: countBefore + residentPlanned } }, settings, usage);
+    if (filter) {
+      decision('filtered', filter);
+      if (settings?.resident.enabled && settings.resident.reroll && enabled('denyOrder') && !filter.includes('上限') && (survey.player?.level ?? 0) >= 12) {
+        actions.push({ kind: 'denyOrder', request: 'DenyOrderRequest', response: null, body: { index: order.index }, orderKey: order.orderKey,
+          label: `刷新${label}：${filter}` });
+      }
       continue;
     }
     const shortages = order.requirements.filter(r => free(r.id) < r.num).map(({ id, num }) => {
@@ -574,11 +650,15 @@ export function planWorld(survey, {
         request: 'FinishWorkerOrderRequest',
         response: 'FinishWorkerOrderResponse',
         body: { index: order.index },
+        costs: order.requirements,
+        counters: { residentOrders: 1 },
+        counterMinimums: { residentOrders: Number(survey.orderOfTheDay?.orderNum ?? 0) },
         weeklyBorrowed,
         orderKey: order.orderKey, requirements: order.requirements, workerId: order.workerId, textId: order.textId,
         label: `交付${label}${order.rewardExp == null ? '' : `（经验 ${order.rewardExp}）`}` +
           (borrowedText ? '；周订单待补 ' + borrowedText : ''),
       });
+      residentPlanned++;
       continue;
     }
     const short = shortages.map(item => {
@@ -617,7 +697,7 @@ export function planWorld(survey, {
     }
   }
 
-  // 5. 排产：按订单缺口挑配方，缺得多的先产；已设自动生产的工厂不覆盖。
+  // 5. 排产：按需求补料；原生自动目标仅在协同开关开启时调整，保留正在生产项。
   if (borrowedTotals.size) creditExistingProduction();
   const demand = new Map();
   for (const [i, order] of survey.orders.entries()) {
@@ -627,7 +707,31 @@ export function planWorld(survey, {
   for (const [id, required] of demand) {
     demand.set(id, Math.max(0, required - free(id) - lendable(id) - (incomingForResidents.get(id) ?? 0)));
   }
-  if (enabled('farm') && !survey.autoFarming) {
+  const buildingSupplies = [];
+  if (settings?.building.supply && enabled('buildSupply')) for (const b of survey.buildings) {
+    if (!b.type || blockedBuilding(b) || b.buildStartTime || b.buildFinishTime || (b.level === 0 ? !settings.building.build : !settings.building.upgrade)) continue;
+    const row = b.level === 0 ? unlocks.get(b.buildingId) : upgradeRow(config, b.type, b.level + 1);
+    if (!row || row.playerLevel > (survey.player?.level ?? 1) || row.curPeople > survey.population) continue;
+    const unmet = b.level === 0 ? (row.condition ?? []).some(([id, lv]) => (levels.get(id) ?? 0) < lv)
+      : (row.condition ?? []).some(([type, lv]) => (typeLevels.get(type) ?? 0) < lv);
+    if (unmet) continue;
+    const costs = (row.consume ?? []).map(([id, num]) => ({ id, num: Number(num) }));
+    const missing = costs.filter(item => free(item.id) < item.num);
+    if (missing.length && missing.every(item => craftable.has(item.id))) buildingSupplies.push({ source: 'building', requirements: costs });
+  }
+  const detailedNeeds = settings ? settingDemands(survey, config, [
+    { source: 'merchant', requirements: [...(survey.weekOrder ?? [])].map(([id, num]) => ({ id, num })) },
+    { source: 'cargo', requirements: [...(survey.cargoOrder ?? [])].map(([id, num]) => ({ id, num })) },
+    ...survey.orders.filter((order, i) => ['reserved', 'missing', 'disabled'].includes(orderDecisions[i]?.status))
+      .map(order => ({ source: 'resident', requirements: order.requirements })),
+    ...buildingSupplies,
+    ...extraDemand,
+  ], settings.factory.demandPriority) : null;
+  if(detailedNeeds)for(const crop of rowsOf(config,'FarmlandPlantCfg')) {const need=detailedNeeds.get(crop.id),seed=detailedNeeds.get(crop.material?.[0]);if(need?.num>0 && seed?.num>0)notes.push('生产依赖：缺'+name(crop.id)+' '+need.num+' → 缺'+name(crop.material[0])+' '+seed.num+' → 种子厂按需求补产'+(settings.factory.cooperateNative?'（已允许调整原生自动目标）':'（原生协同尚未开启）'));}
+  if (enabled('farm') && settings && survey.autoFarming && (settings.farm.customPlant || !settings.farm.autoPlant)) {
+    actions.push({ kind: 'farm', request: 'SetAutoFarmingRequest', response: null, body: { isOn: false }, label: '暂停游戏内自动种植，应用当前种植设置' });
+  }
+  if (enabled('farm') && !survey.autoFarming && (!settings || settings.farm.autoPlant || settings.farm.customPlant)) {
     const crops = rowsOf(config, 'FarmlandPlantCfg');
     const planted = new Map();
     const plots = survey.buildings.filter(b => b.type === '农田' && b.level > 0 && !b.buildStartTime && !b.buildFinishTime);
@@ -636,7 +740,8 @@ export function planWorld(survey, {
       if (!crop) continue;
       planted.set(crop.id, (planted.get(crop.id) ?? 0) + crop.produceNum);
     }
-    const shortage = id => Math.max(0, (weeklyGap.get(id) ?? 0) + (demand.get(id) ?? 0) - (planted.get(id) ?? 0));
+    const custom = settings?.farm.customPlant ? new Map(settings.farm.crops.map((row, priority) => [row.id, { ...row, priority }])) : null;
+    const shortage = id => Math.max(0, (custom ? (custom.get(id)?.target ?? 0) - have(id) : settings ? detailedNeeds.get(id)?.num ?? 0 : (weeklyGap.get(id) ?? 0) + (demand.get(id) ?? 0)) - (planted.get(id) ?? 0));
     const projected = id => have(id) + (planted.get(id) ?? 0);
     for (const crop of crops) {
       if (shortage(crop.id) > 0 && free(crop.material[0]) < crop.material[1])
@@ -644,8 +749,9 @@ export function planWorld(survey, {
     }
     for (const b of plots.filter(b => !b.farm?.productId)) {
       const choices = crops.filter(r => free(r.material[0]) >= r.material[1]
-        && projected(r.id) < survey.stockCap * 5 && (!weeklyGap.has(r.id) || shortage(r.id) > 0));
-      choices.sort((a, b) => shortage(b.id) - shortage(a.id) || projected(a.id) - projected(b.id) || a.time - b.time);
+        && projected(r.id) < survey.stockCap * 5 && (custom ? custom.has(r.id) && shortage(r.id) > 0 : settings || !weeklyGap.has(r.id) || shortage(r.id) > 0));
+      choices.sort((a, b) => (custom ? custom.get(a.id).priority - custom.get(b.id).priority : 0)
+        || shortage(b.id) - shortage(a.id) || projected(a.id) - projected(b.id) || a.time - b.time);
       const crop = choices[0];
       if (!crop) continue;
       reserve(crop.material[0], crop.material[1]);
@@ -653,6 +759,7 @@ export function planWorld(survey, {
       planted.set(crop.id, (planted.get(crop.id) ?? 0) + crop.produceNum);
       actions.push({ kind: 'farm', request: 'FarmPlantRequest', response: null,
         body: { args: [{ buildingId: b.buildingId, productId: crop.id }] },
+        costs: [{ id: crop.material[0], num: crop.material[1] }],
         label: '农田播种 ' + name(crop.id) + (need ? '（订单缺 ' + need + '）' : ''),
       });
     }
@@ -670,11 +777,26 @@ export function planWorld(survey, {
     ? Math.max(0, buildMaterials.get(id).num - free(id) - (incoming.get(id) ?? 0)) : 0;
   for (const b of survey.factories) {
     if (!enabled('startProduce')) break;
-    if (b.factory.autoProductId && survey.autoProduceEndTime > (survey.serverNow ?? now)) {
-      factoryReasons.set(b.buildingId, `游戏自动生产 ${name(b.factory.autoProductId)} 已开启`);
-      notes.push(`${buildingName(b)}已在游戏内自动生产${name(b.factory.autoProductId)}`);
+    if (blockedFactory(b)) { factoryReasons.set(b.buildingId, '已在设置中禁用此工厂'); continue; }
+    if (b.factory.autoProductId && (survey.autoProduceForever || survey.autoProduceEndTime > (survey.serverNow ?? now))) {
+      const desired = settings?.factory.cooperateNative && settings.factory.demandFirst ? produceRows.filter(row =>
+        row.buildType === b.type && row.unlockLevel <= b.level && (detailedNeeds.get(row.itemId)?.num ?? 0) > 0 && projectedStock(row.itemId) < survey.stockCap) : [];
+      const choices = desired.filter(row => (row.costItem ?? []).every(([id,n]) => free(id) >= n));
+      const shortages=desired.filter(row=>!choices.includes(row)).map(row=>name(row.itemId)+'：'+(row.costItem??[]).filter(([id,n])=>free(id)<n).map(([id,n])=>name(id)+'需'+n+'，可用'+free(id)+'，缺'+(n-free(id))).join('；'));
+      if(shortages.length)notes.push(buildingName(b)+'原生协同等待原料：'+shortages.join('；'));
+      const bFactoryTarget = b.factory.autoProductId;
+      choices.sort((a,b) => detailedNeeds.get(a.itemId).priority - detailedNeeds.get(b.itemId).priority ||
+        Number(b.itemId === bFactoryTarget) - Number(a.itemId === bFactoryTarget) || detailedNeeds.get(b.itemId).num - detailedNeeds.get(a.itemId).num);
+      const best = choices[0];
+      if (best && best.itemId !== b.factory.autoProductId) {
+        actions.push({kind:'startProduce',request:'SetFactoryAutoProduceRequest',response:null,
+          body:{buildingId:b.buildingId,productId:best.itemId},previousProduct:b.factory.autoProductId,eligibilityKey:factoryRecipeAvailability(best,survey.festivals,survey.serverNow??now).signature+':'+b.level,
+          label:buildingName(b)+'：原生自动目标改为'+name(best.itemId)+'，保留当前生产队列',costs:[]});
+        factoryReasons.set(b.buildingId,'按需求调整原生自动目标，当前队列继续完成');
+      } else factoryReasons.set(b.buildingId, '游戏自动生产 '+name(b.factory.autoProductId)+(settings?.factory.cooperateNative?(shortages.length?'；等待所需原料':'；当前目标无需调整或需求已在产'):'；需求协同未开启'));
       continue;
     }
+    if (settings && !settings.factory.produce) {factoryReasons.set(b.buildingId,'普通排产关闭；原生协同只调整已开启的自动目标');continue;}
     const queue = b.factory.factoryQ ?? [];
     if (queue.length >= survey.factorySlots) continue;
     for (let slot = queue.length; slot < survey.factorySlots; slot++) {
@@ -685,6 +807,8 @@ export function planWorld(survey, {
         let reason;
         if (projectedStock(id) >= survey.stockCap)
           reason = '库存、待收和在产合计已达 ' + survey.stockCap;
+        else if (settings && projectedStock(id) >= settings.factory.keepStock && !(settings.factory.demandFirst && (detailedNeeds.get(id)?.num ?? 0) > 0))
+          reason = '已达到设置的备货水位 ' + settings.factory.keepStock;
         else {
           const missing = (row.costItem ?? []).filter(([item, n]) => free(item) < n);
           if (missing.length) reason = missing.map(([item, n]) => name(item) + '需要 ' + n + '，可用 ' + free(item)).join('；');
@@ -693,10 +817,14 @@ export function planWorld(survey, {
         return !reason;
       });
       if (!cand.length) {
-        factoryReasons.set(b.buildingId, reasons.join('；') || '当前等级没有已解锁的生产配方');
+        factoryReasons.set(b.buildingId, reasons.join('；') || unavailableRecipes.get(b.type) || '当前等级没有已解锁的生产配方');
         break;
       }
-      const best = cand.sort((a, b2) => (weeklyGap.get(b2.itemId) ?? 0) - (weeklyGap.get(a.itemId) ?? 0)
+      const customRank = row => settings?.factory.demandFirst && (detailedNeeds.get(row.itemId)?.num ?? 0) > 0 ? detailedNeeds.get(row.itemId).priority : Infinity;
+      const compareCustom = (a, b) => customRank(a) - customRank(b)
+        || (settings.factory.demandFirst ? (detailedNeeds.get(b.itemId)?.num ?? 0) - (detailedNeeds.get(a.itemId)?.num ?? 0) : 0)
+        || projectedStock(a.itemId) - projectedStock(b.itemId) || a.produceTime - b.produceTime;
+      const best = cand.sort(settings ? compareCustom : (a, b2) => (weeklyGap.get(b2.itemId) ?? 0) - (weeklyGap.get(a.itemId) ?? 0)
         || (cargoGap.get(b2.itemId) ?? 0) - (cargoGap.get(a.itemId) ?? 0)
         || (demand.get(b2.itemId) ?? 0) - (demand.get(a.itemId) ?? 0)
         || constructionGap(b2.itemId) - constructionGap(a.itemId)
@@ -719,6 +847,14 @@ export function planWorld(survey, {
         needsConfirmedBorrow = Math.max(needsConfirmedBorrow, replacement);
       }
       addIncoming(best.itemId, 1);
+      if (detailedNeeds?.has(best.itemId)) {
+        const need = detailedNeeds.get(best.itemId);
+        need.num = Math.max(0, need.num - 1);
+        const source = settings.factory.demandPriority.find(source => (need.productionBySource[source] ?? 0) > 0);
+        if (source) need.productionBySource[source]--;
+        need.priority = settings.factory.demandPriority.findIndex(source => (need.productionBySource[source] ?? 0) > 0);
+        if (need.priority < 0) need.priority = Infinity;
+      }
       if (need > 0 && !weeklyNeed && !cargoNeed) demand.set(best.itemId, need - 1);
       credit(best.itemId, 1);
       const displayFactory = buildingName(b);
@@ -730,6 +866,8 @@ export function planWorld(survey, {
         request: 'StartFactoryProduceRequest',
         response: null,
         body: { buildingId: b.buildingId, productId: best.itemId },
+        eligibilityKey:factoryRecipeAvailability(best,survey.festivals,survey.serverNow??now).signature+':'+b.level,
+        costs: (best.costItem ?? []).map(([id, num]) => ({ id, num: Number(num) })),
         ...(needsConfirmedBorrow ? { needsConfirmedBorrow } : {}),
         displayFactory, displayProduct,
         label: `${displayFactory}安排生产${displayProduct} 1 件，耗时 ${durationText(best.produceTime)}。${reason}`,
@@ -743,6 +881,7 @@ export function planWorld(survey, {
   function planUpgrades(priority) {
     const upgrades = [];
     for (const b of survey.buildings) {
+      if (blockedBuilding(b)) continue;
       const target = factoryTargets.get(b.type);
       const forOrder = target?.buildingId === b.buildingId && b.level < target.required;
       if (forOrder !== priority || (!priority && !enabled('upgrade'))) continue;
@@ -793,6 +932,7 @@ export function planWorld(survey, {
         request: 'UpgradeBuildingRequest',
         response: null,
         body: { buildingId: u.building.buildingId },
+        costs: u.consume,
         label: `${buildingName(u.building)}从 ${u.building.level} 级升至 ${u.building.level + 1} 级（耗时 ${durationText(u.costTime)}，需要 ${u.row.curPeople} 人）`
           + (priority ? `，周订单需要 ${factoryTargets.get(u.building.type).required} 级` : ''),
       });
@@ -800,10 +940,11 @@ export function planWorld(survey, {
   }
 
   // 7. 加速：只花「加速器」，而且只对真的在等的建造/生产用。
-  if (allowSpeedUp) {
+  if (allowSpeedUp || (settings?.farm.enabled && settings.farm.speedUp)) {
     const speeders = Number(have(SPEED_UP_ITEM));
-    let left = speeders;
+    let left = Math.max(0, speeders - resourceReserve(settings, SPEED_UP_ITEM));
     for (const b of survey.buildings) {
+      if (settings && !enabled('speedUpUpgrade')) continue;
       if (b.buildFinishTime <= now) continue;
       const minutes = Math.ceil((b.buildFinishTime - now) / 60);
       if (minutes <= 0 || left <= 0) continue;
@@ -814,11 +955,18 @@ export function planWorld(survey, {
         request: 'SpeedUpUpgradeBuildingRequest',
         response: null,
         body: { buildingId: b.buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
+        costs: [{ id: SPEED_UP_ITEM, num: useNum }],
         label: `使用 ${useNum} 个${name(SPEED_UP_ITEM)}加速${buildingName(b)}施工`,
       });
     }
     for (const b of survey.factories) {
+      if (settings && (!enabled('speedUpProduce') || blockedFactory(b))) continue;
       for (const job of b.factory.factoryQ ?? []) {
+        if (settings) {
+          const specific = settings.factory.speedUp && (!settings.factory.speedUpItems.length || settings.factory.speedUpItems.includes(job.productId));
+          const need = detailedNeeds.get(job.productId);
+          if (!specific && !(need?.unfilled > 0 && need.sources.some(source => settings.factory.speedUpSources.includes(source)))) continue;
+        }
         if (job.finishTime <= now || left <= 0) continue;
         const minutes = Math.ceil((job.finishTime - now) / 60);
         if (minutes <= 0) continue;
@@ -829,14 +977,60 @@ export function planWorld(survey, {
           request: 'SpeedUpFactoryProduceRequest',
           response: null,
           body: { buildingId: b.buildingId, index: job.idx, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
+          costs: [{ id: SPEED_UP_ITEM, num: useNum }],
           label: `使用 ${useNum} 个${name(SPEED_UP_ITEM)}加速${buildingName(b)}生产`,
         });
+      }
+    }
+    if (settings?.farm.enabled && settings.farm.speedUp && enabled('farm')) {
+      for (const b of survey.buildings) {
+        if (!(b.farm?.ripeTime > (survey.serverNow ?? now)) || left <= 0) continue;
+        const goal = settings.farm.customPlant ? settings.farm.crops.find(c => c.id === b.farm.productId)?.target ?? 0 : (detailedNeeds.get(b.farm.productId)?.unfilled ?? 0) + have(b.farm.productId);
+        if (goal <= have(b.farm.productId)) continue;
+        const useNum = Math.min(left, Math.ceil((b.farm.ripeTime - (survey.serverNow ?? now)) / 60));
+        left -= useNum;
+        actions.push({ kind: 'farm', request: 'FarmSpeedUpRequest', response: null, body: { buildingId: b.buildingId, param: { type: SPEED_UP_ITEM_TYPE, useNum } },
+          costs: [{ id: SPEED_UP_ITEM, num: useNum }], label: `使用 ${useNum} 个加速器催熟${name(b.farm.productId)}` });
       }
     }
     if (left === speeders) notes.push(`${SPEED_UP_ITEM} 有 ${speeders} 个，但没有等待中的建造或生产`);
   }
 
-  return { actions, notes, factoryReasons, upgradeReasons, orderDecisions, reserved: [...reserved].filter(([, n]) => n > 0) };
+  return { actions, notes, factoryReasons, upgradeReasons, orderDecisions, demands: detailedNeeds ? [...detailedNeeds].map(([id, need]) => ({ id, ...need })) : [], reserved: [...reserved].filter(([, n]) => n > 0) };
+}
+
+export function settingDemands(survey, config, records, priority) {
+  const result = new Map();
+  const recipes = new Map(rowsOf(config, 'BuildingProduceCfg').map(row => [row.itemId, row]));
+  const crops = new Map(rowsOf(config, 'FarmlandPlantCfg').map(row => [row.id, row]));
+  const incoming = new Map();
+  const finished = new Map();
+  for (const b of survey.factories) {
+    for (const job of b.factory.factoryQ ?? []) incoming.set(job.productId, (incoming.get(job.productId) ?? 0) + 1);
+    for (const item of b.factory.finishedProducts ?? []) finished.set(item.id, (finished.get(item.id) ?? 0) + Number(item.num));
+  }
+  for (const b of survey.buildings ?? []) {
+    const crop = crops.get(b.farm?.productId);
+    if (crop) incoming.set(crop.id, (incoming.get(crop.id) ?? 0) + crop.produceNum);
+  }
+  const add = (source, id, count, seen = new Set()) => {
+    if (!id || !Number.isFinite(count) || count <= 0 || seen.has(id)) return;
+    const previous = result.get(id);
+    const required = (previous?.required ?? 0) + count;
+    const unfilled = Math.max(0, required - survey.have(id) - (finished.get(id) ?? 0));
+    const num = Math.max(0, unfilled - (incoming.get(id) ?? 0));
+    const extra = Math.max(0, num - (previous?.num ?? 0));
+    const immediate = Math.max(0, unfilled - (previous?.unfilled ?? 0));
+    const productionBySource = { ...previous?.productionBySource };
+    if (extra > 0) productionBySource[source] = (productionBySource[source] ?? 0) + extra;
+    result.set(id, { required, unfilled, num, priority: Math.min(previous?.priority ?? Infinity, extra > 0 ? priority.indexOf(source) : Infinity),
+      sources: [...new Set([...(previous?.sources ?? []), ...(immediate > 0 ? [source] : [])])], productionBySource });
+    for (const [material, amount] of recipes.get(id)?.costItem ?? []) add(source, material, extra * Number(amount), new Set([...seen, id]));
+    const crop = crops.get(id);
+    if (crop?.produceNum > 0 && extra > 0) add(source, crop.material[0], Math.ceil(extra / crop.produceNum) * crop.material[1], new Set([...seen,id]));
+  };
+  for (const source of priority) for (const record of records.filter(row => row.source === source)) for (const item of record.requirements ?? []) add(source, item.id, Number(item.num));
+  return result;
 }
 
 export function stepKey(step) {
@@ -845,6 +1039,7 @@ export function stepKey(step) {
 }
 
 const lastOrderSent = new WeakMap();
+const nativeTargetChecks = new WeakMap();
 
 // A collection request alone is not proof that the stock increased. Check the
 // actual reward before spending another set of reads on affected resident slots.
@@ -886,7 +1081,8 @@ export async function runWorldRound(client, protocol, plan, {
     if (!allow('finishOrder')) return result;
     if (survey.orderCheckError) throw new Error(survey.orderCheckError);
     survey.orders = survey.orders.filter(order => slots.has(order.index));
-    const followup = planWorld(survey, { config, enabled: allow });
+    const followup = planWorld(survey, { config, enabled: allow, settings: options.getSettings?.() ?? options.settings,
+      usage: options.getUsage?.() ?? options.usage });
     const { results } = await runWorld(client, protocol, followup, { ...execution, enabled: allow });
     for (const { step } of results) attemptedOrders.add(step.body.index);
     result.followupCount = results.length;
@@ -904,7 +1100,7 @@ export async function runWorldRound(client, protocol, plan, {
 
 // A harvest earlier in this round can complete the weekly order. Do not spend
 // its stock based solely on a plan that was made before the harvest.
-async function confirmResidentOrder(client, protocol, step, config, player, cargoEnabled) {
+async function confirmResidentOrder(client, protocol, step, config, player, cargoEnabled, settings, usage) {
   if (!config || !player) return { reason: '无法复核周订单和贸易港预留' };
   const includeCargo = cargoEnabled();
   const survey = await surveyWorld(client, protocol, { config, player, ordersOnly: true, includeCargo });
@@ -916,7 +1112,7 @@ async function confirmResidentOrder(client, protocol, step, config, player, carg
     !order.requirements.every(item => step.requirements.some(old => item.id === old.id && item.num === old.num)))) {
     return { reason: '订单需求已刷新，留待下一轮重新安排' };
   }
-  const fresh = planWorld({ ...survey, orders: [order] }, { config, enabled: kind => kind === 'finishOrder' });
+  const fresh = planWorld({ ...survey, orders: [order] }, { config, enabled: kind => kind === 'finishOrder', settings: step.manualCheck ? null : settings, usage });
   const current = fresh.actions.find(action => action.kind === 'finishOrder');
   if (!current) return { reason: fresh.orderDecisions[0].reason };
   if ((!includeCargo && cargoEnabled()) || (!step.manualCheck && current.weeklyBorrowed.some(item =>
@@ -924,6 +1120,34 @@ async function confirmResidentOrder(client, protocol, step, config, player, carg
     return { reason: '订单预留已变化，请重新核对库存' };
   }
   return { action: current };
+}
+
+// 手动换单只处理当前显示的一单，使用原拒单协议，不付费加速刷新。
+export async function rerollResidentOrder(client,protocol,{index,orderKey,config,player,ledger,enabled=()=>true}){
+ if(!Number.isSafeInteger(index)||index<0||typeof orderKey!=='string'||!orderKey)throw Error('请从当前订单列表选择换单');
+ if(!enabled())throw Error('账号状态已变化，已取消换单');
+ if(!Number.isSafeInteger(player?.level)||player.level<12)throw Error('手动换单需要角色12级');
+ const session=watchResidentRefreshes(client,ledger,player),identity=session.manualRefresh?.identity;
+ if(!identity||!ledger)throw Error('换单记录或角色身份不可用');
+ if(session.get(index)?.key!==orderKey)throw Error('这条订单已变化，请刷新后再选择');
+ const before=await surveyWorld(client,protocol,{config,player,ordersOnly:true,includeWeekOrder:false}),order=before.orders.find(r=>r.index===index);
+ if(!order||order.orderKey!==orderKey)throw Error(order?.refreshPending?'上次换单结果待确认，暂不重复提交':'这条订单已刷新或已处理');
+ if(order.refreshTime>0)throw Error('订单正在刷新，等待新订单');
+ if(!order.requirements?.length)throw Error('当前订单需求未同步');
+ if(session.get(index)?.key!==orderKey)throw Error('这条订单已变化，请刷新后再选择');
+ const signature=session.get(index)?.signature;
+ const key='manual-order:'+identity+':'+index+':'+createHash('sha256').update(signature).digest('hex').slice(0,24);
+ if(ledger.hasKey(key))throw Error('上次换单结果待确认，暂不重复提交');
+ if(!enabled())throw Error('账号状态已变化，已取消换单');
+ const ticket=ledger.reserve({},{},{},{uniqueKey:key,details:{kind:'manualOrderRefresh',identity,index,signature}});
+ // 使其他持有旧页面标识的提交/换单失效，下一次读取由记录与服务器签名核对。
+ session.delete(index);
+ try{
+  await client.sendWatch('DenyOrderRequest',{index},{window:600});
+  await surveyWorld(client,protocol,{config,player,ordersOnly:true,includeWeekOrder:false});
+  if(session.get(index)?.signature&&session.get(index).signature!==signature){if(ledger.hasKey(key)){ledger.confirm(ticket);ledger.releaseCompletedKey(key);}return{index,label:'居民订单 #'+index+'已换单，等待新需求',status:'confirmed'};}
+  throw Error('换单请求已发送，结果待确认；请稍后刷新，暂不重复提交');
+ }catch(error){if(error.prompt&&error.request==='DenyOrderRequest')ledger.cancel(ticket);throw error;}
 }
 
 export async function submitResidentOrder(client, protocol, { index, orderKey, config, player, cargoEnabled = () => false, enabled = () => true }) {
@@ -954,6 +1178,7 @@ export async function runWorld(client, protocol, plan, {
   onStep,
   enabled = () => true,
   config, player, cargoEnabled = () => false,
+  settings = null, getSettings, usage, getUsage, beforeStep, afterStep, cancelStep,
 } = {}) {
   if (!allowMutate) throw new Error('海面自动化会改变账号状态，需要 --yes');
   const results = [];
@@ -962,6 +1187,11 @@ export async function runWorld(client, protocol, plan, {
   const confirmedBorrow = new Map();
   for (const step of plan.actions) {
     if (!enabled(step.kind)) continue;
+    const currentSettings = getSettings?.() ?? settings;
+    if (!step.manualCheck && !worldActionAllowed(currentSettings, step, config)) {
+      const entry = { step, ok: false, skipped: true, error: '此动作已在设置中关闭或禁用' };
+      results.push(entry); onStep?.(entry); continue;
+    }
     const key = stepKey(step);
     const resident = step.kind === 'finishOrder' || step.kind === 'denyOrder';
     const recipe = step.kind === 'startProduce' ? JSON.stringify(step.body) : null;
@@ -973,16 +1203,17 @@ export async function runWorld(client, protocol, plan, {
     else if (blocked.has(step.kind)) entry = { step, ok: false, skipped: true, error: `同类动作已失败，本轮不再尝试` };
     else if (!protocol[step.request]) entry = { step, ok: false, error: `协议表里没有 ${step.request}` };
     else {
+      let ticket = null, prepared = false, dispatched = false;
+      let actual = step;
       try {
-        let actual = step;
         if (step.kind === 'finishOrder') {
           if (!protocol[step.response]) throw new Error('当前协议不能确认居民订单交付结果');
           // WorkerOrderPop spaces consecutive commits by at least two seconds.
           const delay = (lastOrderSent.get(client) ?? 0) + 2000 - Date.now();
           if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
           if (!enabled(step.kind)) continue;
-          if (step.manualCheck || step.weeklyBorrowed?.length) {
-            const fresh = await confirmResidentOrder(client, protocol, step, config, player, cargoEnabled);
+          if (step.manualCheck || step.weeklyBorrowed?.length || currentSettings) {
+            const fresh = await confirmResidentOrder(client, protocol, step, config, player, cargoEnabled, currentSettings, getUsage?.() ?? usage);
             if (fresh.reason) {
               entry = { step, ok: false, skipped: true, error: fresh.reason };
               results.push(entry);
@@ -992,32 +1223,74 @@ export async function runWorld(client, protocol, plan, {
             if (!enabled(step.kind)) continue;
             actual = fresh.action;
           }
-          lastOrderSent.set(client, Date.now());
         }
+        if (['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)) {
+          const recipe=rowsOf(config,'BuildingProduceCfg').find(row=>row.itemId===step.body.productId);
+          const gate=factoryRecipeAvailability(recipe,client.festivals,Math.floor((Date.now()+(client.serverClockOffsetMs||0))/1000));
+          if(recipe&&!gate.allowed)throw new AutomationSkip(gate.reason);
+          const failures=factoryFailures.get(client),failure=failures?.get(JSON.stringify([step.request,step.body]));
+          if(failure&&failure.signature===step.eligibilityKey&&Date.now()<failure.until)throw new AutomationSkip('前次生产被明确拒绝，等待条件变化：'+failure.reason);
+          if(failure)failures.delete(JSON.stringify([step.request,step.body]));
+        }
+        if (step.request === 'SetFactoryAutoProduceRequest') {
+          if (!currentSettings?.factory.cooperateNative) throw new Error('原生生产协同已关闭');
+          const water = normalize(await client.request('OnWaterRequest', {}, 'OnWaterResponse'));
+          const factory = water.building?.find(b => b.buildingId === step.body.buildingId)?.factory;
+          if (!factory || !(water.autoProduceForever || water.autoProduceEndTime > (Date.now()+(client.serverClockOffsetMs||0))/1000)) throw new Error('原生自动生产状态已变化，等待下轮重算');
+          if (factory.autoProductId === step.body.productId) continue;
+          if (factory.autoProductId !== step.previousProduct) throw new Error('自动生产目标已变化，等待下轮重算');
+          const checks = nativeTargetChecks.get(client) ?? new Map(); nativeTargetChecks.set(client,checks);
+          const prior = checks.get(step.body.buildingId);
+          if (prior && Date.now() < prior.until) { results.push({step,skipped:true,reason:prior.pending?'前次目标调整待确认':'目标调整冷却中'}); continue; }
+          checks.set(step.body.buildingId,{until:Date.now()+300000,pending:true});
+        }
+        ticket = step.manualCheck ? null : await beforeStep?.(actual);
+        prepared = !step.manualCheck;
+        if (!enabled(step.kind) || (!step.manualCheck && !worldActionAllowed(getSettings?.() ?? settings, actual, config))) {
+          if (prepared) await cancelStep?.(actual, ticket);
+          if(step.request==='SetFactoryAutoProduceRequest')nativeTargetChecks.get(client)?.delete(step.body.buildingId);
+          continue;
+        }
+        if (step.kind === 'finishOrder') lastOrderSent.set(client, Date.now());
         if (resident && actual.orderKey) {
           const session = trackResidentOrders(client);
           if (session.get(step.body.index)?.key !== actual.orderKey) throw new Error('这条居民订单已刷新或已处理，请查看当前订单');
           session.delete(step.body.index); // A lost reply can still have consumed this slot.
         }
         if (step.response && protocol[step.response]) {
+          dispatched = true;
           const body = await client.request(step.request, step.body, step.response, timeout);
           if (step.kind === 'finishOrder' && !body?.reward?.asset?.length) throw new Error('服务端尚未返回居民订单的交付奖励');
           for (const item of actual.weeklyBorrowed ?? []) confirmedBorrow.set(item.id, (confirmedBorrow.get(item.id) ?? 0) + item.num);
           entry = { step: actual, ok: true, body };
         } else {
           // 没有配套 Response：静默即成功，回包是 PromptResponse 就是被拒。
+          dispatched = true;
           const sent = await client.sendWatch(step.request, step.body, { window });
           entry = { step, ok: true, sent };
+          if (step.request === 'SetFactoryAutoProduceRequest') {
+            const water = normalize(await client.request('OnWaterRequest', {}, 'OnWaterResponse'));
+            const confirmed = water.building?.find(b => b.buildingId === step.body.buildingId)?.factory?.autoProductId === step.body.productId;
+            nativeTargetChecks.get(client).set(step.body.buildingId,{until:Date.now()+(confirmed?60000:300000),pending:!confirmed});
+            entry = {step,ok:confirmed,status:confirmed?'confirmed':'unknown',reason:confirmed?'已回读确认自动生产目标；本次未逐项核对原队列':'目标切换结果待确认，暂不重复提交'};
+          }
         }
+        await afterStep?.(actual, ticket, entry);
       } catch (error) {
-        if (recipe) failedRecipes.add(recipe);
+        if (prepared && !dispatched) await cancelStep?.(actual, ticket);
+        if(['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)&&error.prompt&&error.request===step.request){
+          const failures=factoryFailures.get(client)??new Map();factoryFailures.set(client,failures);
+          failures.set(JSON.stringify([step.request,step.body]),{signature:step.eligibilityKey,until:/limited item not available/i.test(error.message)?Infinity:Date.now()+300000,reason:error.message});
+        }
+        if(step.request==='SetFactoryAutoProduceRequest'&&(!dispatched||error.prompt&&error.request===step.request))nativeTargetChecks.get(client)?.delete(step.body.buildingId);
+        if (recipe && error.code !== 'AUTOMATION_SKIP') failedRecipes.add(recipe);
         // Each plot has independent prerequisites. A failed build must not
         // suppress other plots, or prevent a later fresh survey from retrying it.
-        if (!resident && !['build', 'farm', 'upgrade', 'weekFactory', 'startProduce'].includes(step.kind)) {
+        if (error.code !== 'AUTOMATION_SKIP' && !resident && !['build', 'farm', 'upgrade', 'weekFactory', 'startProduce'].includes(step.kind)) {
           rejected.add(key);
           blocked.add(step.kind);
         }
-        entry = { step, ok: false, error: error.message };
+        entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
       }
     }
     results.push(entry);
@@ -1087,7 +1360,10 @@ function parseMap(raw, file, scenarioId) {
     scenarioId: scenarioId > 0 ? scenarioId : 1,
     width: mapInfo?.width ?? 0,
     height: mapInfo?.height ?? 0,
+    tileWidth: mapInfo?.tileWidth ?? 0,
+    tileHeight: mapInfo?.tileHeight ?? 0,
     cityInfo,
+    cityAt(gridIdx) { return mapData[gridIdx] === undefined ? 0 : mapData[gridIdx] % 1000; },
     fieldCount: mapData.reduce((n, v) => n + (Math.floor(v / 10000) % 10 ? 1 : 0), 0),
     fieldAt(gridIdx) {
       const v = mapData[gridIdx];

@@ -15,9 +15,7 @@
 //   WeeklyActivityRewardCfg 120/240/360/480/600。
 
 import { displayMaterial } from './config.mjs';
-import { arenaDailyDriver } from './arena.mjs';
 import { normalize } from './worlds.mjs';
-import { pirateSweepProbes, planPirateSweeps, runPirateSweep } from './pirates.mjs';
 import { FREE_DAILY_PACK_ID } from './actions.mjs';
 
 export const TASK_TITLES = {
@@ -30,7 +28,7 @@ export const TASK_TITLES = {
   1007: '折扣商店购买',
   1008: '累计贸易次数',
   1009: '累计试炼挑战',
-  1010: '累计击败野怪',
+  1010: '累计击败海盗',
   1011: '累计联盟情报',
   1012: '累计联盟订单',
   1013: '累计联盟互助',
@@ -46,8 +44,7 @@ const RESOURCE_RUBY = '钻石';
 
 export function describeDailyTask(task, config) {
   const row = (config?.tables?.DailyTaskCfg?.data ?? []).find((r) => r.taskId === task.id);
-  return { ...task, progress: task.progress ?? 0, targetProgress: task.targetProgress ?? 0,
-    title: TASK_TITLES[task.id] ?? row?.type ?? String(task.id), desc: row?.desc ?? '' };
+  return { ...task, title: TASK_TITLES[task.id] ?? row?.type ?? String(task.id), desc: row?.desc ?? '' };
 }
 
 // ---- 活跃度宝箱 ---------------------------------------------------------------
@@ -161,7 +158,7 @@ export const DAILY_DRIVERS = {
       const actions = [];
       // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
       if (info && info.freeEndTimeSeconds <= now) {
-        actions.push({ request: 'RecruitStartRequest', body: { way: 1 }, response: 'RecruitStartResponse', cost: '免费次数', note: '免费招募' });
+        actions.push({ request: 'RecruitStartRequest', body: { way: 1 }, response: 'RecruitStartResponse', cost: '免费次数', note: '英雄免费招募' });
       }
       const ticketName = displayMaterial(config, RECRUIT_ITEM);
       const tickets = items.get(RECRUIT_ITEM) ?? 0;
@@ -204,18 +201,38 @@ export const DAILY_DRIVERS = {
     },
   },
 
-  1005: arenaDailyDriver,
+  1005: {
+    id: 1005,
+    title: '竞技场战斗',
+    probes: [['ArenaInfoRequest', {}]],
+    evaluate({ task, probe }) {
+      if (task.progress >= task.targetProgress) return { status: 'done' };
+      const challenges = probe('ArenaInfoRequest')?.challenges ?? [];
+      const remaining = task.targetProgress - task.progress;
+      if (!challenges.length) return { status: 'blocked', reason: '竞技场没有可挑战对手' };
+      // 从战力最低的开始打，胜率最高。
+      const targets = [...challenges].sort((a, b) => lowPower(a.power) - lowPower(b.power)).slice(0, remaining);
+      const actions = targets.map((target) => ({
+        request: 'ArenaChallengeRequest',
+        body: { rank: target.rankNo, challengeId: target.id },
+        response: 'ArenaChallengeResponse',
+        cost: '竞技场次数',
+        note: `挑战 rank=${target.rankNo} 战力=${lowPower(target.power)}`,
+      }));
+      return { status: 'ready', actions };
+    },
+  },
 
   1006: {
     id: 1006,
     title: '点金次数',
     probes: [['ClickGoldInfoRequest', {}]],
-    evaluate({ task, probe, config, ruby }) {
+    evaluate({ task, probe, config, ruby, settings }) {
       if (task.progress >= task.targetProgress) return { status: 'done' };
       const info = probe('ClickGoldInfoRequest')?.info;
       if (!info) return { status: 'blocked', reason: '拿不到点金信息' };
       const param = (name) => (config?.tables?.OfflineParamCfg?.data ?? []).find((row) => row.paramName === name)?.paramValue ?? 0;
-      const remaining = task.targetProgress - task.progress;
+      let remaining = task.targetProgress - task.progress;
       // 免费次数上限来自 OfflineParamCfg.免费点金次数，付费单价来自 点金价格（单位钻石）。
       const freeLeft = Math.max(0, param('免费点金次数') - (info.freeTimes ?? 0));
       if (freeLeft > 0) {
@@ -228,6 +245,11 @@ export const DAILY_DRIVERS = {
         return { status: 'ready', actions };
       }
       const price = param('点金价格');
+      if (settings) {
+        if (!settings.gold.enabled) return { status: 'blocked', reason: '付费点金已在设置中关闭' };
+        remaining = Math.min(remaining, Math.max(0, settings.gold.times - (info.paidTimes ?? 0)));
+        if (!remaining) return { status: 'done', reason: '已达到设置的付费点金次数' };
+      }
       const paidLeft = Math.max(0, (info.maxPaidTimes ?? 0) - (info.paidTimes ?? 0));
       if (paidLeft < remaining) return { status: 'blocked', reason: `免费次数用完，付费上限只剩 ${paidLeft} 次` };
       if (price * remaining > ruby) return { status: 'blocked', reason: `付费点金要 ${price * remaining} 钻石，当前 ${ruby}` };
@@ -235,7 +257,7 @@ export const DAILY_DRIVERS = {
       return {
         status: 'paid',
         reason: `免费次数已用完，付费 ${price} 钻石一次`,
-        actions: [{ request: 'ClickGoldRequest', body: { times: remaining, free: false }, response: 'ClickGoldResponse', cost: `${RESOURCE_RUBY} x${price * remaining}`, note: '付费点金' }],
+        actions: [{ request: 'ClickGoldRequest', body: { times: remaining, free: false }, response: 'ClickGoldResponse', costs: [{ id: 'RUBY', num: price * remaining }], counters: { goldPaidTimes: remaining }, counterMinimums: { goldPaidTimes: info.paidTimes ?? 0 }, cost: `${RESOURCE_RUBY} x${price * remaining}`, note: '付费点金' }],
       };
     },
   },
@@ -256,7 +278,7 @@ export const DAILY_DRIVERS = {
       if (cheapest.realPrice > ruby) return { status: 'blocked', reason: `最便宜的一件要 ${cheapest.realPrice} 钻石，当前 ${ruby}` };
       return {
         status: 'ready',
-        actions: [{ request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: null, cost: `${RESOURCE_RUBY} x${cheapest.realPrice}`, note: '购买折扣商品' }],
+        actions: [{ request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: null, costs: [{ id: 'RUBY', num: cheapest.realPrice }], cost: `${RESOURCE_RUBY} x${cheapest.realPrice}`, note: '购买折扣商品' }],
       };
     },
   },
@@ -283,37 +305,35 @@ export const DAILY_DRIVERS = {
   },
 
   1010: {
-    id: 1010,
-    title: '累计击败野怪',
-    probes: pirateSweepProbes,
-    evaluate: planPirateSweeps,
-    run: runPirateSweep,
+    id:1010,title:'累计击败海盗',probes:[],
+    evaluate({task}){return task.progress>=task.targetProgress?{status:'done'}:{status:'waiting',reason:'每日免费扫荡按“游戏配置 → 世界 → 海盗日常扫荡”所选种类及游戏剩余次数独立执行'};},
   },
 
-  1011: { id: 1011, title: '累计联盟情报', probes: [], evaluate: automationReason('联盟情报领奖与派舰') },
-  1012: { id: 1012, title: '累计联盟订单', probes: [], evaluate: automationReason('提交联盟订单') },
-  1013: { id: 1013, title: '累计联盟互助', probes: [], evaluate: automationReason('响应联盟求助') },
+  1011: { id: 1011, title: '累计联盟情报', probes: [['TradeGuildRadarRequest', {}]], evaluate: lockedReason('联盟情报（雷达）') },
+  1012: { id: 1012, title: '累计联盟订单', probes: [['GuildCityInfoRequest', {}]], evaluate: lockedReason('联盟城市募兵') },
+  1013: { id: 1013, title: '累计联盟互助', probes: [['GuildAidListRequest', { type: 0 }]], evaluate: lockedReason('联盟互助') },
   1014: { id: 1014, title: '累计请求帮助', probes: [], evaluate: lockedReason('联盟求助') },
   1015: { id: 1015, title: '城战获得功勋', probes: [], evaluate: lockedReason('城战（20:00-21:00 限时）') },
-  1016: { id: 1016, title: '博物馆探险', probes: [], evaluate: automationReason('派遣博物馆探险队', '博物馆') },
+  1016: { id: 1016, title: '博物馆探险', probes: [['MuseumInfoRequest', {}]], evaluate: lockedReason('博物馆') },
   1017: { id: 1017, title: '参与积分赛', probes: [['LeagueInfoRequest', {}]], evaluate: lockedReason('跨服积分赛') },
 };
 
-function automationReason(label, group = '联盟') {
-  return ({ task }) => task.progress >= task.targetProgress ? { status: 'done' }
-    : { status: 'waiting', reason: `可在「挂机 → ${group} → ${label}」开启，执行条件与结果见运行日志` };
-}
-
-// These drivers have no execution flow yet. Do not attribute that to the server.
+// 这类任务的入口请求被服务端直接拒绝（未入盟 / 未开放 / 限时），探测结果只用来确认原因。
 function lockedReason(feature) {
   return ({ task }) => {
     if (task.progress >= task.targetProgress) return { status: 'done' };
-    return { status: 'blocked', reason: `控制台尚未接入${feature}的执行流程，可在游戏内完成` };
+    return { status: 'blocked', reason: `${feature}当前不可用（服务端拒绝或功能未开放）` };
   };
 }
 
+function lowPower(power) {
+  if (power == null) return 0;
+  if (typeof power === 'number') return power;
+  return power.low ?? 0;
+}
+
 // 只读调研：跑一遍前置请求，给出每个日常任务能不能做、要发什么。
-export async function surveyDailies(client, protocol, { config = null, player = null, timeout = 8000, includeTask = () => true, probeGift = true, idle = false } = {}) {
+export async function surveyDailies(client, protocol, { config = null, player = null, timeout = 8000, includeTask = () => true, probeGift = true, idle = false, settings = null } = {}) {
   const daily = await client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
   const tasks = (daily.dailyTask ?? []).filter(task => includeTask(task.id)).map((task) => describeDailyTask(task, config));
   const unfinished = id => tasks.some(task => task.id === id && task.progress < task.targetProgress);
@@ -327,7 +347,6 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   const ruby = Number((resourceList?.list ?? []).find((entry) => entry.res === RUBY)?.amount ?? 0);
 
   const cache = new Map();
-  if (resourceList) cache.set('AllResourceRequest|{}', resourceList);
   const fetchProbe = async (name, body) => {
     const key = `${name}|${JSON.stringify(body)}`;
     if (cache.has(key)) return cache.get(key);
@@ -350,7 +369,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   for (const driver of Object.values(DAILY_DRIVERS)) {
     if (!tasks.some(task => task.id === driver.id && task.progress < task.targetProgress)) continue;
     for (const [name, body, shouldProbe] of driver.probes ?? []) {
-      if (shouldProbe && !shouldProbe(probe, { config, player })) continue;
+      if (shouldProbe && !shouldProbe(probe)) continue;
       const key = `${name}|${JSON.stringify(body)}`;
       if (probeCache.has(key)) continue;
       probeCache.set(key, await fetchProbe(name, body));
@@ -370,7 +389,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
     }
     let verdict;
     try {
-      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player, client, dailyResetTime: daily.dailyResetTime }));
+      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player, settings }));
     } catch (error) {
       verdict = { status: 'error', reason: error.message };
     }
@@ -387,7 +406,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   }
   const gold = probe('ClickGoldInfoRequest')?.info;
   const freeLimit = config?.tables?.OfflineParamCfg?.data?.find(row => row.paramName === '免费点金次数')?.paramValue;
-  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config, player,
+  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config,
     freeRecruitAt: probe('RecruitInfoRequest')?.hero?.freeEndTimeSeconds,
     freeGoldAt: freeLimit > 0 && gold?.freeTimes >= freeLimit ? gold.resetTime : undefined,
   };
@@ -407,9 +426,10 @@ async function sendAction(client, protocol, action, timeout) {
 // claimRewards 走的是「收尾」：驱动动作发完服务端才更新完成数，所以这里重新问一次
 // DailyTaskInfoResponse，先把达标任务的奖励领了（奖励里的活跃度会把活跃度顶上去），
 // 再领活跃度宝箱。少了这一步，任务做完了奖励还挂在服务端上。
-export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, onStep, allowAction = () => true } = {}) {
+export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, onStep, allowAction = () => true, settings = null, beforeAction, afterAction } = {}) {
   if (!allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
   const results = [];
+  if (settings && !settings.dailies.enabled) return results;
   for (const entry of survey.tasks) {
     if (!entry.actions?.length) continue;
     if (entry.status === 'paid' && !allowPaid) {
@@ -419,18 +439,20 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
     }
     for (const action of entry.actions) {
       if (!allowAction(entry.task.id, action)) continue;
+      if (!allowPaid && action.costs?.some(item => item.id === 'RUBY' && item.num > 0)) {
+        const outcome = { id: entry.task.id, title: entry.task.title, skipped: true, reason: '本次操作未允许花钻石' };
+        results.push(outcome); onStep?.(outcome); continue;
+      }
       try {
-        const run = DAILY_DRIVERS[entry.task.id]?.run;
-        const result = run
-          ? await run({ client, protocol, survey, entry, action, timeout, allowAction, config: config ?? survey.config })
-          : { body: await sendAction(client, protocol, action, timeout) };
-        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ...result };
-        if (!outcome.skipped) outcome.ok = true;
+        const ticket = await beforeAction?.({ kind: 'daily', scope: 'daily', setting: 'dailies.enabled', label: action.note, ...action });
+        const body = await sendAction(client, protocol, action, timeout);
+        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: true, body };
         results.push(outcome);
         onStep?.(outcome);
-        if (outcome.skipped) break;
+        await afterAction?.(action, ticket, action.response ? outcome : { ...outcome, sent: true });
       } catch (error) {
-        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, way: action.body?.way, note: action.note, ok: false, error: error.message };
+        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, way: action.body?.way, note: action.note, ok: false,
+          ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true, reason: error.message } : {}), error: error.message };
         results.push(outcome);
         onStep?.(outcome);
         break;
@@ -441,15 +463,16 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
   if (claimRewards) {
     // 服务端的完成数是异步落库的，动作刚发完就问会读到旧值。
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    results.push(...await claimDailies(client, protocol, { config: config ?? survey.config, timeout, onStep }));
+    results.push(...await claimDailies(client, protocol, { config: config ?? survey.config, timeout, onStep, settings }));
   }
   return results;
 }
 
 // 收尾两连：先领达标任务的奖励，再领活跃度宝箱。
-export async function claimDailies(client, protocol, { config = null, timeout = 15000, onStep, enabled = () => true, scheduler } = {}) {
+export async function claimDailies(client, protocol, { config = null, timeout = 15000, onStep, enabled = () => true, scheduler, settings = null } = {}) {
   const results = [];
-  const ready = key => enabled(key) && (!scheduler || scheduler.due(key));
+  const selected = key => !settings || (settings.dailies.enabled && (key === 'dailyRewards' ? settings.dailies.claimTasks : key === 'gift' ? settings.dailies.claimGift : settings.dailies.claimDailyChest || settings.dailies.claimWeeklyChest));
+  const ready = key => selected(key) && enabled(key) && (!scheduler || scheduler.due(key));
 
   const report = (outcome) => {
     results.push(outcome);
@@ -482,21 +505,24 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
 
   // 任务奖励刚加过活跃度，所以宝箱要按新活跃度重新算一次，否则会漏掉刚好够到的档位。
   const fresh = ready('chests') && results.some(entry => entry.ok) ? await readDaily('刷新活跃度') : after;
-  const actions = fresh ? planChests(fresh, config).actions : [];
+  const actions = (fresh ? planChests(fresh, config).actions : []).filter(action => !settings || (action.request === 'DrawWeeklyRewardRequest' ? settings.dailies.claimWeeklyChest : settings.dailies.claimDailyChest));
   if (scheduler && fresh?.dailyResetTime > scheduler.now()) {
     const recheck = Math.min(fresh.dailyResetTime, scheduler.now() + 180);
     if (ready('dailyRewards') && fresh.dailyTask?.length) {
+      scheduler.observe?.('dailyRewards','已领取 '+fresh.dailyTask.filter(t=>t.rewardClaimed).length+'/'+fresh.dailyTask.length+' 项任务奖励');
       if (fresh.dailyTask.every(task => task.rewardClaimed)) scheduler.defer('dailyRewards', fresh.dailyResetTime);
       else if (fresh.dailyTask.every(task => task.rewardClaimed || task.progress < task.targetProgress)) scheduler.defer('dailyRewards', recheck);
     }
     // This switch serves both day and week tiers. Only sleep once both sets
     // are exhausted, waking at the earlier (daily) reset.
     const allCollected = kind => {
+      if (settings && !(kind === 'daily' ? settings.dailies.claimDailyChest : settings.dailies.claimWeeklyChest)) return true;
       const rows = config?.tables?.[CHEST_TABLE[kind]]?.data;
       const claimed = fresh[kind + 'RewardClaimed'];
       return rows?.length && rows.every(row => claimed?.includes(row.id));
     };
     if (ready('chests') && !actions.length && Object.values(CHEST_TABLE).every(table => config?.tables?.[table]?.data?.length)) {
+      scheduler.observe?.('chests',allCollected('daily')&&allCollected('weekly')?'当前可领活跃宝箱已全部领取':'活跃度尚未达到下一档');
       scheduler.defer('chests', allCollected('daily') && allCollected('weekly') ? fresh.dailyResetTime : recheck);
     }
   }
@@ -523,6 +549,7 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
       return results;
     }
     const plan = planDailyGift(before);
+    scheduler?.observe?.('gift',plan.freeAvailable?'免费赠礼可领取':'今日免费赠礼已领取');
     if (!plan.freeAvailable && scheduler && plan.resetTime > scheduler.now()) scheduler.defer('gift', plan.resetTime);
     if (plan.actions.length > 0 && ready('gift')) {
       const action = plan.actions[0];

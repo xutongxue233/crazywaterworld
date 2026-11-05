@@ -203,11 +203,11 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
 }
 
 // 逐条领取。同一条被服务端拒过就记下来，本轮之后不再重发——否则循环模式里会每轮骚扰一次。
-export async function runTasks(client, protocol, survey, { allowMutate = false, window = 400, onStep, enabled = () => true } = {}) {
+export async function runTasks(client, protocol, survey, { allowMutate = false, window = 400, onStep, enabled = () => true, settings = null } = {}) {
   if (!allowMutate) throw new Error('领取任务奖励会改变账号状态，需要 --yes');
   const results = [];
   const rejected = new Set();
-  for (const step of survey.plan) {
+  for (const step of selectTaskSettings(survey, settings).plan) {
     if (!enabled()) break;
     const key = `${step.kind}:${step.id}`;
     if (rejected.has(key)) {
@@ -235,6 +235,14 @@ export async function runTasks(client, protocol, survey, { allowMutate = false, 
     }
   }
   return results;
+}
+
+export function selectTaskSettings(survey, settings) {
+  if (!settings) return survey;
+  const enabled = kind => kind === 'orderDaily' ? settings.loop.world && settings.resident.rewards : settings.loop.tasks &&
+    (kind === 'main' ? settings.tasks.main : kind === 'branch' ? settings.tasks.branch : kind === 'achievement' ? settings.tasks.achievements : true);
+  const paused = survey.plan.filter(step => !enabled(step.kind));
+  return { ...survey, plan: survey.plan.filter(step => enabled(step.kind)), notes: [...survey.notes, ...paused.map(step => `${step.label}：已在设置中暂停领取`)] };
 }
 
 export function formatTaskPlan(survey) {
