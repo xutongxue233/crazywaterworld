@@ -220,7 +220,7 @@ export class GameClient extends EventEmitter {
       const entry = { name, responseName, resolve, reject, timer: null, order: this.sendOrder };
       entry.timer = setTimeout(() => {
         this.pending = this.pending.filter((item) => item !== entry);
-        reject(new Error(`timeout waiting for ${responseName} (sent ${name})`));
+        reject(new Error(`timeout waiting for ${[responseName].flat().join(' or ')} (sent ${name})`));
       }, timeout);
       this.pending.push(entry);
       this.sendOrder += 1;
@@ -334,7 +334,9 @@ export class GameClient extends EventEmitter {
       this.attributePrompt(body);
       return;
     }
-    const index = this.pending.findIndex((item) => item.responseName === name);
+    // 部分领奖请求的回包可能是 GotRewardResponse 或 OkResponse，调用方会传回包名数组。
+    const index = this.pending.findIndex((item) =>
+      Array.isArray(item.responseName) ? item.responseName.includes(name) : item.responseName === name);
     if (index >= 0) {
       const [entry] = this.pending.splice(index, 1);
       clearTimeout(entry.timer);

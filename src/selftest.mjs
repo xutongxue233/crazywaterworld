@@ -563,6 +563,32 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   checked++;
 }
 
+// 领奖请求传回包名数组时，任一回包都能结掉请求；先发的请求先拿到同名回包。
+{
+  const { GameClient, toNumber } = await import('./client.mjs');
+  const client = new GameClient({ protocol });
+  client.recvSeqNo = 60;
+  client.send = () => 1;
+  client.ack = () => {};
+  const either = ['GotRewardResponse', 'OkResponse'];
+  const daily = client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+  const ok = client.request('GotGuildTitleRewardRequest', {}, either);
+  const reward = client.request('GetDailyRewardRequest', {}, either);
+  client.onMessage(codec.encode('OkResponse', 61, {}));
+  assert.equal(client.pending.length, 2, 'OkResponse 只结掉第一个接受它的请求');
+  assert.equal(client.pending[0].name, 'DailyTaskInfoRequest');
+  client.onMessage(codec.encode('GotRewardResponse', 62, { reward: { asset: [{ id: 'RUBY', num: 5 }] } }));
+  client.onMessage(codec.encode('DailyTaskInfoResponse', 63, { dailyActivity: 1 }));
+  await ok;
+  assert.equal(toNumber((await reward).reward.asset[0].num), 5);
+  assert.equal((await daily).dailyActivity, 1);
+  assert.equal(client.pending.length, 0);
+  const late = client.request('GotWorldOnlineRwdRequest', {}, either, 20);
+  await assert.rejects(late, /timeout waiting for GotRewardResponse or OkResponse/);
+  client.stop();
+  checked++;
+}
+
 {
   const client = new GameClient({ protocol });
   let nacks = 0;
