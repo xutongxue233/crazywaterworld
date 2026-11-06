@@ -12,7 +12,21 @@ const messages = {
   GIFT_CODE_USED_BY_OTHER:'已由其他账号兑换', GIFT_CODE_EXPIRED_OR_NOT_YET:'不在兑换有效期',
   GIFT_CODE_EXCEED_LIMIT:'已达到兑换上限', GIFT_CODE_TOO_MANY_REQUESTS:'请求过于频繁'
 };
+const SEND_GAP_MS = 700;
 const active = new Map();
+// 限频范围未知，所以发送跨账号串行并保持间隔；账号各自排队，某账号忙时不会挡住其他账号。
+let sendTail = Promise.resolve();
+function throughSendGate(work) {
+  const run = sendTail.then(work);
+  sendTail = run.catch(()=>{}).then(()=>sleep(SEND_GAP_MS));
+  return run;
+}
+function parseCodes(input) {
+  if(typeof input!=='string'||input.length>12000)throw Error('请输入不超过100个礼包码');
+  const codes=[...new Set(input.trim().split(/[\s,，;；]+/u).filter(Boolean))];
+  if(!codes.length||codes.length>100||codes.some(c=>c.length>128))throw Error('每批1至100个不同的礼包码，每个最多128个字符');
+  return codes;
+}
 const fileFor = id => path.join(DATA_DIR, 'gift-codes-' + encodeURIComponent(id) + '.json');
 function store(id, rows) {
   fs.mkdirSync(DATA_DIR, {recursive:true});
@@ -36,11 +50,16 @@ export function giftCodeStatus(id) {
   const job=active.get(id);
   return {running:!!job, rows:job?.rows??read(id)};
 }
-export function startGiftCodes(id,input,dispatch) {
-  if(active.has(id))throw Error('当前账号已有一批正在兑换');
-  if(typeof input!=='string'||input.length>12000)throw Error('请输入不超过100个礼包码');
-  const codes=[...new Set(input.trim().split(/[\s,，;；]+/u).filter(Boolean))];
-  if(!codes.length||codes.length>100||codes.some(c=>c.length>128))throw Error('每批1至100个不同的礼包码，每个最多128个字符');
+export function giftCodeSummary(id) {
+  const {running,rows}=giftCodeStatus(id);
+  const latest=rows.filter(r=>r.batch&&r.batch===rows[0].batch);
+  const counts={};
+  for(const r of latest)counts[r.status]=(counts[r.status]??0)+1;
+  return {running,total:latest.length,counts};
+}
+export function startGiftCodes(id,input,dispatch,shared={stop:''}) {
+  if(active.has(id))throw Error('该账号已有一批正在兑换');
+  const codes=parseCodes(input);
   const history=read(id),batch=randomUUID(),time=new Date().toISOString();
   const rows=codes.map(code=>{
     const old=history.find(r=>r.code===code&&['success','unknown','used'].includes(r.status));
@@ -51,9 +70,13 @@ export function startGiftCodes(id,input,dispatch) {
     let stop='';
     for(const r of rows){
       if(r.status!=='queued')continue;
+      stop||=shared.stop;
       if(stop){Object.assign(r,{status:'skipped',detail:stop});continue;}
       try {
-        await dispatch(async client=>{
+        await dispatch((client,enabled)=>throughSendGate(async()=>{
+          stop||=shared.stop;
+          if(stop){Object.assign(r,{status:'skipped',detail:stop});return;}
+          if(enabled?.()===false)throw Error('账号连接已变化');
           Object.assign(r,{at:new Date().toISOString(),status:'sending',detail:'等待服务器回包'});
           store(id,job.rows);
           try {
@@ -68,21 +91,31 @@ export function startGiftCodes(id,input,dispatch) {
             const name=client.promptNames?.[error.prompt?.prompt];
             if(error.prompt && error.request==='GotGiftCodeRequest'){
               Object.assign(r,{status:name==='GIFT_CODE_USED'?'used':'rejected',detail:messages[name]||('服务器拒绝，提示码 '+error.prompt.prompt)});
-              if(name==='GIFT_CODE_TOO_MANY_REQUESTS')stop='服务器限频，尚未发送';
+              if(name==='GIFT_CODE_TOO_MANY_REQUESTS'){stop='服务器限频，尚未发送';shared.stop='同批其他账号触发服务器限频，尚未发送';}
             }else{
               Object.assign(r,{status:'unknown',detail:'未取得可核对的奖励回包，请核对游戏内记录'});stop='前一码结果待确认，尚未发送';
             }
           }
-        });
+        }));
       }catch(error){
-        if(r.status==='queued')Object.assign(r,{status:'skipped',detail:'当前账号连接不可用，尚未发送'});
+        if(r.status==='queued')Object.assign(r,{status:'skipped',detail:'账号连接不可用（'+error.message+'），尚未发送'});
         stop='批次中断，尚未发送';
       }
       store(id,job.rows);
-      if(!stop && r!==rows.at(-1))await sleep(700);
     }
     store(id,job.rows);
   }
   job.done=run().finally(()=>active.delete(id));
   return job;
+}
+// 账号连接失败或结果未知只停该账号；限频才让同批尚未发送的账号一起停手。
+export function startGiftCodeBatch(targets,input) {
+  parseCodes(input);
+  const shared={stop:''};
+  return targets.map(({id,dispatch,blocked})=>{
+    try {
+      if(blocked)throw Error(blocked);
+      return {id,accepted:true,done:startGiftCodes(id,input,dispatch,shared).done};
+    }catch(error){ return {id,accepted:false,error:error.message}; }
+  });
 }

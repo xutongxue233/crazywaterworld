@@ -4,7 +4,7 @@ import {readGuildTech,upgradeGuildTech} from './guild-tech.mjs';
 import {resourceFieldRows,resourceFieldTotals} from './resource-fields.mjs';
 import {activityRankCatalog,readActivityRanking} from './activity-rankings.mjs';
 import {readActivityStatistics} from './activity-statistics.mjs';
-import { giftCodeStatus, startGiftCodes } from './gift-codes.mjs';
+import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
 import {runtimeProgress} from './runtime-progress.mjs';
 import {watchTreasureTravel} from './treasure-follow.mjs';
 import {watchFleetMaintenance,fleetMaintenanceEnabled} from './fleet-maintenance.mjs';
@@ -1156,6 +1156,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         removeAccount(store, account.id);
         saveStore(store);
         const removed = sessions.get(account.id);
+        if (removed) removed.generation += 1;
         removed?.loop.controller?.abort();
         removed?.pirateAdvance.stop('账号已删除'); removed?.stages.stop('账号已删除'); removed?.mutualAid.stop('账号已删除'); for (const task of removed?.trials.values() ?? []) task.stop('账号已删除');
         removed?.client?.stop();
@@ -1253,18 +1254,35 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const {session}=scoped_(parsed);
         json(giftCodeStatus(session.id));return;
       }
+      if(route==='GET /api/gift-codes/accounts'){
+        json({accounts:loadStore().accounts.map(account=>{
+          const session=sessionFor(account.id);
+          const base={id:account.id,title:describeAccount(account).title,paused:session.paused,connected:Boolean(session.client?.connected)};
+          try{return {...base,...giftCodeSummary(account.id)};}
+          catch(error){return {...base,running:false,total:0,counts:{},error:error.message};}
+        })});return;
+      }
       if(route==='POST /api/gift-codes/redeem'){
         if(req.headers.origin && req.headers.origin!=='http://'+req.headers.host)throw Error('仅接受本地控制台的兑换请求');
         const payload=jsonBody();needConfirm(payload);
-        const {session,account}=scoped_(parsed);
-        if(session.paused)throw Error('当前账号已暂停托管');
-        const generation=session.generation;
-        const job=startGiftCodes(session.id,payload.codes,action=>{
-          if(session.generation!==generation||session.paused)throw Error('原账号连接已变化');
-          return progressionJob(session,account,'gift-code-redeem',null,action);
+        if(!Array.isArray(payload.accounts)||!payload.accounts.length||payload.accounts.some(id=>typeof id!=='string'))throw Error('请至少选择一个账号');
+        const known=new Map(loadStore().accounts.map(account=>[account.id,account]));
+        const targets=[...new Set(payload.accounts)].map(id=>{
+          const account=known.get(id);
+          if(!account)return {id,title:id,blocked:'账号不存在'};
+          const session=sessionFor(id),generation=session.generation;
+          return {id,session,title:describeAccount(account).title,blocked:session.paused?'账号已暂停托管':'',dispatch:action=>{
+            const latest=loadStore().accounts.find(item=>item.id===id);
+            if(!latest||session.generation!==generation||session.paused)throw Error('原账号连接已变化');
+            return progressionJob(session,latest,'gift-code-redeem',null,action);
+          }};
         });
-        job.done.then(()=>emit(session,'info','礼包兑换完成，请查看兑换记录'),()=>emit(session,'error','礼包兑换中断，请核对记录'));
-        json({accepted:true});return;
+        const results=startGiftCodeBatch(targets,payload.codes).map((result,index)=>({...result,...targets[index]}));
+        const started=results.filter(result=>result.accepted);
+        if(!started.length)throw Error(results.map(result=>result.title+'：'+result.error).join('；'));
+        for(const {done,session} of started)done.then(()=>emit(session,'info','礼包兑换完成，请查看兑换记录'),()=>emit(session,'error','礼包兑换中断，请核对记录'));
+        if(started.length>1)Promise.allSettled(started.map(result=>result.done)).then(()=>emit(null,'info','批量礼包兑换结束：共 '+started.length+' 个账号，请查看兑换记录'));
+        json({accepted:started.length,results:results.map(({id,title,accepted,error})=>({id,title,accepted,error}))});return;
       }
       if(route==='GET /api/activity-statistics'){
         const {account,session}=scoped_(parsed);

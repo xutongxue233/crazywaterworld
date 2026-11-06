@@ -290,3 +290,9 @@ main { container:main / inline-size }
 .config-compat-settings .settings-form { padding-block:8px }
 .activity-auto input[type=number] { width:72px }
 #activities-order { overflow-x:auto }
+.gift-accounts{border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:6px 0}
+.gift-accounts legend{padding:0 4px;font-weight:bold}
+.gift-accounts p{margin:4px 0 0}
+.gift-account-list{display:grid;gap:2px;max-height:240px;overflow:auto}
+.gift-account{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;padding:3px 2px}
+@media(pointer:coarse){.gift-account{min-height:44px}}

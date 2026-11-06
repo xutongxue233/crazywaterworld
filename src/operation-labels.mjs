@@ -1,6 +1,9 @@
 // Operation names shared by the server journal and the browser's network errors.
 export const operationLabels = {
   '/api/activities/run': '单次执行活动',
+  '/api/gift-codes': '读取礼包兑换记录',
+  '/api/gift-codes/accounts': '读取礼包兑换账号',
+  '/api/gift-codes/redeem': '兑换礼包码',
   '/api/pirates/board': '查看海盗首杀',
   '/api/equipment/crafting': '查看装备厂',
   '/api/equipment/crafting/start': '制造装备',
