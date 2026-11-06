@@ -4,7 +4,8 @@ import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
 import { claimCollection, newbieView } from './collections.mjs';
 import { toNumber } from './client.mjs';
-import { campaignReportState, claimCampaignReports, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
+import { campaignReportState, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
+import { claimReportRewards } from './missing-rewards.mjs';
 import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
 import { riverActivity } from './seasonal-activities.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys, festivalRewardState, snowballState,
@@ -228,7 +229,8 @@ export async function runActivity(client, config, { activityId, taskKey, enabled
     await riverActivity(client, config, { ...channel, player, key: taskKey, label: activity.name, ledger,
       settings: getSettings, enabled: () => allowed(taskKey), report: collect });
   } else if (taskKey === 'vipDaily') await claimVipDaily(client, config, player, allowed, collect);
-  else if (taskKey === 'campaignReports') await claimCampaignReports(client, config, player, allowed, collect);
+  else if (taskKey === 'campaignReports') await claimReportRewards(client, config, {
+    enabled: () => allowed(taskKey), ledger, report: collect });
   else if (taskKey === 'openRankRewards') await claimOpenRanks(client, config, player, allowed, collect);
   else if (festivalRewardKeys.includes(taskKey)) {
     await claimFestivalRewards(client, config, allowed, collect, null, (row, type) => activityId.startsWith('linkage:' + toNumber(row.activityId) + ':')
