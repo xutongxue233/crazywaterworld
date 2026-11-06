@@ -148,6 +148,7 @@ function renderActivityTask(box, row, task) {
   const descriptions = {
     evilExpel: '清理当前可驱除的邪祟，并领取已达标的累计奖励。',
     edict: '完成当前解符对局；没有对局时，最多消耗 1 份贡品开局。',
+    edictPass: '领取酆都法旨战令已达标的奖励，不消耗贡品。',
     compassReward: '领取已达标的积分奖励，不进行罗盘抽奖。',
     weekPass: '领取已完成任务的积分和已达标的战令奖励。',
     weekGift: '领取本期可用的免费礼包。',

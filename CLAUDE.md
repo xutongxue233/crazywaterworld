@@ -45,7 +45,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 仓库不分发 `.proto` 或配置表，运行和部分测试需要本机游戏缓存。
 
 - `proto.mjs` 执行游戏自带 `game.js`，取得 protobufjs 编解码类。`protocol-source.mjs` 按 `CW_PROTO_BUNDLE`、微信缓存最高版本 `_src_chunks_.wxapkg`、`work/extracted/` 查找。
-- 无反射信息，使用 `tools/describe.mjs` 还原字段、`tools/ctx.mjs` 查压缩代码上下文。请求名和响应名必须核对真实 `protocol[name]`，不能凭名称推测接口。
+- 无反射信息，使用 `tools/describe.mjs` 还原字段、`tools/ctx.mjs` 查压缩代码上下文。`work/extracted/` 可能落后于微信缓存，客户端逻辑以缓存最高版本的主包为准。请求名和响应名必须核对真实 `protocol[name]`，不能凭名称推测接口。
 - `config.mjs` 按 `CW_CONFIG_PACK`、`work/cdn/config_cn_pack.json`、微信缓存查找。同步命令是 `npm run sync-config`；旧注释中的 `tools/fetch-config.mjs` 已不存在。
 - `actions.mjs` 是协议操作目录，`mutate` 区分读写；`CW_DEBUG=1` 可同时在终端输出协议日志，原始日志默认写项目 `data/protocol.log`。
 
@@ -98,7 +98,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - `fleet-maintenance.mjs` 复用启用城战/巨轮的 `autoRepair` 和舰队名单，空闲后普通补满，不要求下一个目标或仍处于城战时段。同舰队取优先来源的维修参数，遵守该来源保留量与预算。
 - `world-boss.mjs` 只在服务器当天参与次数为 0 时派一支空闲舰队；城战接续、万吨巨轮、首杀各自检查目标、耐久、汽油和持久防重记录。城战原生委任额度来自服务器 VIP 规则，不能写死次数。
 - `equipment-forge.mjs` 管详细锻造，`equipment-crafting.mjs` 保留原手动制造；达到下单上限不应阻止完工领取。海兽放生与装备分解不能读取客户端本地锁定，页面帮助必须说明限制。
-- `seasonal-activities.mjs` 与奖励模块处理新活动；消费动作与免费奖励分别门控。`gift-codes.mjs` 按账号保存记录，多账号各自排队、发送跨账号串行；未知或连接失败只停该账号，限频停止同批未发送账号，未知码不重发。
+- `seasonal-activities.mjs` 与奖励模块处理新活动；消费动作与免费奖励分别门控。`side-rewards.mjs` 处理漫剧、擂台赛每日礼包和赛季宝箱；擂台赛状态只有推送，由 `server.mjs` 记在连接上。`gift-codes.mjs` 按账号保存记录，多账号各自排队、发送跨账号串行；未知或连接失败只停该账号，限频停止同批未发送账号，未知码不重发。
 - 世界地图、活动统计和排行榜是只读展示。地图移动位置为已同步行军数据的推算，自动刷新间隔与挂机独立，不能承诺实时坐标。
 
 ## 数据与验证约定

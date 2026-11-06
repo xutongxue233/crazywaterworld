@@ -1,5 +1,6 @@
 import {checkFleetSettlement} from './fleet-settlement.mjs';
-import { militaryRewards, riverActivity, compassActivity, beautyActivity } from './seasonal-activities.mjs';
+import { militaryRewards, riverActivity, edictPassActivity, compassActivity, beautyActivity } from './seasonal-activities.mjs';
+import { claimComicDrama, claimTournamentDaily, openSeasonChests } from './side-rewards.mjs';
 import { merchantActivity } from './merchant-activity.mjs';
 import {runPirateSweeps} from './pirate-sweeps.mjs';
 import {claimGuildTitleReward} from './guild-title-rewards.mjs';
@@ -425,15 +426,15 @@ export async function runLoop(client, protocol, {
       }
       if (isEnabled) {
         const extraReport=entry=>{summary.tasks.results.push(entry);if(!entry.skipped)summary.tasks.planned++;logReward(entry,'免费领奖');};
-        for(const [key,service] of [['vipDailyGift',claimVipDaily],['guildTitleReward',claimGuildTitleReward],['limitedFreeGifts',claimLimitedFree],['weekHeroStar',claimWeekHeroStar],['pirateRankRewards',(c,f,o)=>claimOpenRank(c,f,o,3)],['warRankRewards',(c,f,o)=>claimOpenRank(c,f,o,4)],['festivalActiveRewards',claimFestivalActive],['battleReportRewards',claimReportRewards],['leagueCollect',claimLeagueCollect],['leaguePassRewards',claimLeaguePass],['weekSupplyFree',claimWeekSupply],['worldBossRewards',claimWorldBossDamage]]) {
+        for(const [key,service] of [['vipDailyGift',claimVipDaily],['guildTitleReward',claimGuildTitleReward],['limitedFreeGifts',claimLimitedFree],['weekHeroStar',claimWeekHeroStar],['pirateRankRewards',(c,f,o)=>claimOpenRank(c,f,o,3)],['warRankRewards',(c,f,o)=>claimOpenRank(c,f,o,4)],['festivalActiveRewards',claimFestivalActive],['battleReportRewards',claimReportRewards],['leagueCollect',claimLeagueCollect],['leaguePassRewards',claimLeaguePass],['weekSupplyFree',claimWeekSupply],['worldBossRewards',claimWorldBossDamage],['comicDrama',claimComicDrama],['tournamentDailyGift',claimTournamentDaily]]) {
           if (!settings && key === 'weekHeroStar') continue;
-          if(serviceEnabled(key))try{let reports=0;await service(client,config,{player,allLevels:active('vipDaily'),enabled:()=>serviceActive(key),ledger:usageLedger,report:entry=>{reports++;extraReport({...entry,taskKey:key});}});if(!reports)extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,skipped:true,reason:'已检查，当前没有新增可执行的领取动作'});}catch(error){extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,ok:false,error:error.message});}
+          if(serviceEnabled(key))try{let reports=0;await service(client,config,{player,allLevels:active('vipDaily'),enabled:()=>serviceActive(key),ledger:usageLedger,scheduler:rewards,report:entry=>{reports++;extraReport({...entry,taskKey:key});}});if(!reports)extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,skipped:true,reason:'已检查，当前没有新增可执行的领取动作'});}catch(error){extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,ok:false,error:error.message});}
         }
-        const activityServices = { armsRaceRewards:militaryRewards, riverScore:riverActivity, riverPass:riverActivity,
+        const activityServices = { armsRaceRewards:militaryRewards, riverScore:riverActivity, riverPass:riverActivity, edictPass:edictPassActivity, seasonChest:openSeasonChests,
           riverHelp:riverActivity, compassDaily:compassActivity, compassAdGift:compassActivity, compassSpin:compassActivity, compassReward:compassActivity,
           merchantTrade:merchantActivity, merchantRewards:merchantActivity, beautyVotes:beautyActivity, beautyGift:beautyActivity };
         for (const [key,service] of Object.entries(activityServices)) {
-          if (!settings && key === 'compassSpin') continue;
+          if (!settings && (key === 'compassSpin' || key === 'seasonChest')) continue;
           if (!serviceEnabled(key)) continue;
           const label=automationTasks.find(task=>task.key===key).label;
           let reported=false;
@@ -445,7 +446,7 @@ export async function runLoop(client, protocol, {
             logReward(result,'活动');
           };
           try {
-            await service(client,config,{...adChannel,player,key,label,ledger:usageLedger,settings:getSettings,freeOnly:key==='riverHelp'&&!active(key),enabled:()=>serviceActive(key),report});
+            await service(client,config,{...adChannel,player,key,label,ledger:usageLedger,scheduler:rewards,settings:getSettings,freeOnly:key==='riverHelp'&&!active(key),enabled:()=>serviceActive(key),report});
             if (!reported) report({label,skipped:true,reason:'已检查，当前没有可领取的新增奖励'});
           } catch(error) {report({label,ok:false,error:error.message});}
         }

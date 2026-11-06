@@ -704,3 +704,18 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - `DispFactoryJob.idx` 是 optional，0 号队列可能不在线路上出现，读取时按 0 处理。`finishTime` 为 0 表示未开工，客户端不提供加速。
 - 展柜到期由客户端补发 `MuseumFinishCaseUpgradeRequest{exhibitionId,caseIndex}`；工具没有其他展柜升级入口，由广告加速开关一并处理。
 - 实现位于 `ad-shop.mjs` 的 `adAccess`、`takeAdSlot`、`prepareAd` 与 `ad-rewards.mjs`。
+
+## 14. 漫剧、擂台赛与赛季宝箱
+
+依据微信缓存版本 75 的主包。`work/extracted/` 中的旧主包仍是 `SeasonChestOpenRequest {chestId}` 与每箱次数上限，已不适用。以下请求尚未在真实账号发送过，回包类型来自协议和客户端用法，首次运行时以 `data/protocol.log` 为准。
+
+| 玩法 | 读取 | 写入 | 回包 |
+| --- | --- | --- | --- |
+| 法旨战令 | `BattlePassRequest {type:11}` | `BattlePassGotRewardRequest {type:11}` | `BattlePassGotRewardResponse` |
+| 漫剧 | `MainTaskInfoResponse.comicDrama`：`comics[{comicId,state}]`、`gotDaily`、`isRead` | `ComicDramaReadRequest {comicId}`、`ComicDramaGotRewardRequest {comicId}`、`ComicDramaGotDailyRequest` | 观看无专属回包，按 `OkResponse` 等待，超时后回读；领奖为 `GotRewardResponse` |
+| 擂台赛 | 推送 `SCTournamentOpen`（`state.currentStageId`、`lastClaimDailyGiftTime`）、`SCTournamentUpdate` | `TournamentClaimDailyGiftRequest` | `GotRewardResponse` |
+| 赛季宝箱 | `SeasonChestInfoResponse.flow`：`stage`、`costItemId[]` | `SeasonChestOpenRequest`（无参数） | `SeasonChestOpenResponse {reward, flow}` |
+
+- 漫剧条目不存在时显示播放，`state=false` 时可领奖，`state=true` 时已领奖。解锁条件是 `ComicDramaCfg` 的 `unlockLevel` 与 `unlockTime + unlockHours`；模块条件是 `ModuleOpenCfg` 的“漫剧”。每日奖励要求 `isRead` 为真。
+- 擂台赛入口只在 `currentStageId` 大于 1（预选）且小于 8（结束）时进入赛场页；每日礼包条件是 `lastClaimDailyGiftTime` 不在当天。
+- 赛季宝箱开放条件是 `GameplayOpenCfg` 的“赛季交换宝箱”（`openDays: [0,1,1,1]`，第一赛季关闭）。宝箱按 `SeasonExchangeChestCfg.stage` 循环；每次消耗 `costItemId` 列出的钥匙，种类随机且可重复。自动开启只接受 `SeasonChestKeyLibCfg` 中的钥匙。结果未知时，阶段变化视为已生效，超过 10 分钟阶段未变视为未生效。

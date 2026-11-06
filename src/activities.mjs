@@ -7,7 +7,7 @@ import { toNumber } from './client.mjs';
 import { campaignReportState, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
 import { claimReportRewards } from './missing-rewards.mjs';
 import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
-import { riverActivity } from './seasonal-activities.mjs';
+import { riverActivity, edictPassActivity } from './seasonal-activities.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys, festivalRewardState, snowballState,
   compassState, weekChargeState, weekHeroStarState, weekFreePackState, weekOrderState, vipDailyState, syncFestivalDay } from './free-rewards.mjs';
 
@@ -168,7 +168,7 @@ export function activityEntries(client, week = [], festivals = client.festivals 
       for (const sub of linkage) {
         if (playable(row, sub, time)) activities.push({
           id: linkageId(row, sub), kind: 'limited', group: '捞尸人联动',
-          taskKeys: sub.subActivityType === 28 ? ['compassReward', 'compassSpin'] : [linkageTasks[sub.subActivityType]],
+          taskKeys: sub.subActivityType === 28 ? ['compassReward', 'compassSpin'] : sub.subActivityType === 29 ? ['edict', 'edictPass'] : [linkageTasks[sub.subActivityType]],
           name: linkageNames[sub.subActivityType], taskKey: linkageTasks[sub.subActivityType],
           endTime: Math.min(sub.closeTime || row.endTime, row.endTime),
         });
@@ -227,6 +227,9 @@ export async function runActivity(client, config, { activityId, taskKey, enabled
     collect({ label: '周订单提交', ok: true, note: result.message });
   } else if (['riverScore', 'riverPass', 'riverHelp'].includes(taskKey)) {
     await riverActivity(client, config, { ...channel, player, key: taskKey, label: activity.name, ledger, manual: true,
+      settings: getSettings, enabled: () => allowed(taskKey), report: collect });
+  } else if (taskKey === 'edictPass') {
+    await edictPassActivity(client, config, { ...channel, player, key: taskKey, label: activity.name + '战令', ledger, manual: true,
       settings: getSettings, enabled: () => allowed(taskKey), report: collect });
   } else if (taskKey === 'vipDaily') await claimVipDaily(client, config, player, allowed, collect);
   else if (taskKey === 'campaignReports') await claimReportRewards(client, config, {

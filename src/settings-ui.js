@@ -38,6 +38,7 @@ const configGroups = [
     configField('schedule.riverHelp','走江助力 · 免费和广告礼包','switch',{help:'广告档要求当前渠道支持，且账号有免广告权益或已在“广告奖励”中开启无权益领取。'}),
     configField('schedule.festivalSign','酆都诡事 · 每日签到'),configField('schedule.festivalFreeGift','酆都诡事 · 免费特惠'),
     configField('schedule.festivalActiveRewards','酆都诡事 · 活跃奖励'),configField('schedule.edict','酆都法旨 · 解符'),configField('schedule.evilExpel','驱邪除祟 · 累计奖励'),
+    configField('schedule.edictPass','酆都法旨 · 法旨战令','switch',{help:'默认开启。只领取积分已达标的档位，不消耗贡品；已购通行证时一并领取对应奖励。'}),
     configField('schedule.compassDaily','龙王罗盘 · 每日免费礼包'),configField('schedule.compassReward','龙王罗盘 · 积分奖励'),
     configField('schedule.compassSpin','龙王罗盘 · 自动抽取'),
     configField('eventActions.compassThreshold','铜钱达到多少开始抽取','number',{unit:'枚',help:'每轮先核对活动、道具单价与库存，默认10枚。'}),
@@ -46,6 +47,11 @@ const configGroups = [
   {id:'merchant-week',title:'周期 · 海商王',category:'daily',fields:[
     configField('schedule.merchantTrade','根据商情自动走商','switch',{help:'周期活动。在贸易时段读取本港报价、船舱和联盟紧缺货情报，先买本港跌幅最大的可购商品，售罄时顺延，同跌幅优先整船折价金额较高的货物，再按所持商品找紧缺城池；无匹配商情时持货等待，到港有盈利才卖，再从当地选货。'}),
     configField('schedule.merchantRewards','领取战令、利润和联盟奖励','switch',{help:'按本期利润、战令分数、联盟任务进度和当日商情贡献领取已达成档。'}),
+  ]},
+  {id:'side-rewards',title:'漫剧 · 擂台赛 · 赛季宝箱',category:'daily',fields:[
+    configField('schedule.comicDrama','漫剧观看与每日奖励','switch',{help:'默认开启。已解锁的集数每轮最多处理 10 集，并在每天领取 1 次每日奖励；当天没有新集时重看最后一集以满足领取条件。'}),
+    configField('schedule.tournamentDailyGift','擂台赛每日礼包','switch',{help:'默认开启。只在擂台赛进行阶段按服务器记录每天领取 1 次，不参与投注和布阵。'}),
+    configField('schedule.seasonChest','赛季宝箱用钥匙开启','switch',{help:'默认关闭。每箱消耗服务器指定的 3 把钥匙，每轮最多 5 箱，钥匙不足时等待，不花钻石，也不发起钥匙交换。钥匙在进入新赛季时清零，建议赛季内开启。'}),
   ]},
   {id:'beauty-contest',title:'限时 · 海上风采大赛',category:'daily',fields:[
     configField('schedule.beautyVotes','每天投给当前最高票选手','switch',{help:'限时活动，每天投够3票即停；已投票数计入目标，同票按编号升序选择。'}),

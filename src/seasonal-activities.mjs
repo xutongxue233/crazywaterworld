@@ -199,6 +199,19 @@ async function snowGift(client, config, ctx, event, allowed) {
   }
 }
 
+export async function edictPassActivity(client, config, ctx) {
+  const event = liveSeries(client, 29);
+  if (!event) return waiting(ctx, '酆都法旨当前未开放');
+  const allowed = () => ctx.enabled() && liveSeries(client, 29)?.id === event.id;
+  await claimPass(client, ctx, {
+    type: 11,
+    tiers: table(config, 'LinkageLSREdictBattlePassCfg'),
+    scope: event.id,
+    allowed
+  });
+  ctx.scheduler?.defer(ctx.key, clock(client) + 1800);
+}
+
 export async function riverActivity(client, config, ctx) {
   const event = liveSeries(client, 27);
   if (!event) return waiting(ctx, '走江踏浪当前未开放');
