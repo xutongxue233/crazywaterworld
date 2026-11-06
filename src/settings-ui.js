@@ -95,6 +95,8 @@ const configGroups = [
     configField('events.enabled', '自动处理', 'switch', { help: '海上资源补给选择“建造居民房”；居民离开选择“让他离开”；其他服务器事件按上方默认选项处理，不等待手选。' }),
   ] },
   { id: 'pet', title: '海兽培育室', category: 'base', fields: [
+    configField('schedule.petCollect', '沿用原规则领取成熟海兽', 'switch', { help: '保留原挂机设置。开启海兽培育总开关后，改用本组领取、品质与用料参数。' }),
+    configField('schedule.petBreed', '沿用原规则培育海兽', 'switch', { help: '每轮最多一只，最高橙色并保留一万金币。开启海兽培育总开关后，改用本组品种、品质与材料参数。' }),
     configField('pet.enabled', '总开关'), configField('pet.claim', '自动领取'), configField('pet.breed', '自动培育'),
     configField('pet.species', '培育种类', 'multi', { catalog: 'petSpecies', empty: '请选择要培育的海兽', when: d => d.pet.breed }),
     configField('pet.release','自动放生','switch',{help:'确认领取后扫描全部库存，只处理所选品质的闲置未养成对象。游戏客户端本地锁定名单不可读。'}),
@@ -119,6 +121,8 @@ const configGroups = [
     configField('forge.checkEverySeconds', '锻造检查间隔', 'number', { unit: '秒', help: '制作完成后正常领取，确认新装备入库再继续；领取不受新下单次数上限阻断。' }),
   ] },
   { id: 'museum', title: '博物馆探宝', category: 'base', fields: [
+    configField('schedule.museumCollect', '沿用原规则领取探险奖励', 'switch', { help: '保留原挂机设置。开启本组自动探宝后，改用本组规则统一领取和派遣。' }),
+    configField('schedule.museumExplore', '沿用原规则派遣探险', 'switch', { help: '每轮一队并预留订单材料。开启本组自动探宝后，改用本组地图、倍数与指南规则。' }),
     configField('museum.enabled', '自动探宝'), configField('museum.upgrade', '自动升级技能与展区'),
     configField('museum.factor', '常规探宝倍数', 'number', { unit: '倍', help: '可选 1–3 倍；未解锁时按当前最高可用倍数执行，保留已选设置。' }),
     configField('museum.materialFactor', '根据材料调整倍数'),
@@ -162,6 +166,8 @@ const configGroups = [
     configField('treasure.checkEverySeconds', '检查间隔', 'number', { unit: '秒', help: '挂机运行时每 5–300 秒检查一次。保存配置不会开始挂机。' }),
   ] },
   { id:'radar',title:'联盟情报',category:'world',fields:[
+    configField('schedule.radarAuto', '沿用原规则领奖与派遣', 'switch', { help: '保留原挂机设置，按战力余量20%与一万汽油保留量执行。开启联盟情报总开关后，改用本组舰队、类型与预算。' }),
+    configField('schedule.radarRepair', '沿用原规则维修空闲舰队', 'switch', { help: '仅普通维修耐久低于80%的空闲舰队，并保留一万汽油。' }),
     configField('radar.enabled','联盟情报总开关'),
     configField('radar.fleetIds','情报参与舰队','multi',{catalog:'expeditionFleets',empty:'未选择，仅领取完成奖励',help:'使用空闲且已编队舰队；可与巨轮、城战、首杀共用舰队，只使用实际空闲且无待确认任务的舰队。'}),
     configField('radar.types','情报类型','multi',{catalog:'radarTypes',empty:'未选择，暂停新派遣'}),
@@ -201,6 +207,13 @@ const configGroups = [
     configField('cityWar.dailyDispatchLimit', '每日工具接续出战上限', 'number', { unit: '次', help: '至少1次，不包含游戏原生委任次数。原生额度按账号真实VIP规则读取，不固定为4。' }),
     configField('cityWar.reserveDuringWar', '城战期间为所选舰队保留任务', 'switch', { help: '存在有效宣战目标的城战时段，巨轮不再派遣这些舰队；已在执行巨轮或其他任务的舰队等待空闲，不主动召回。' }),
     configField('cityWar.checkEverySeconds', '城战检查间隔', 'number', { unit: '秒' }),
+  ] },
+  { id: 'guild-orders', title: '联盟订单', category: 'world', fields: [
+    configField('schedule.guildOrders', '自动提交联盟订单', 'switch', { help: '每轮最多提交一单，仅使用现有材料并预留其他订单用料。默认关闭。' }),
+  ] },
+  { id: 'equipment-legacy', title: '装备制造原有规则', category: 'heroes', fields: [
+    configField('schedule.equipmentCollect', '领取完工装备', 'switch', { help: '保留原挂机设置。开启装备自动锻造后，由锻造模块统一领取。' }),
+    configField('schedule.equipmentCraft', '空闲装备厂续产', 'switch', { help: '每轮一件，保留一万金币。开启装备自动锻造后，改用所选工厂、配方与每日预算。' }),
   ] },
   { id: 'heroes', title: '英雄养成', category: 'heroes', fields: [
     configField('heroes.enabled', '养成总开关'), configField('loop.heroes', '加入自动挂机', 'switch', { help: '关闭时仍可在“英雄”页手动按本配置执行养成。' }),
@@ -354,7 +367,7 @@ function configRender() {
     configLegacyGroups.set('schedule-' + (configGroups.length + index), id);
     let group = groups.find(item => item.id === id);
     if (!group) { group = { id, title, category: 'daily', fields: [] }; groups.push(group); }
-    for (const task of tasks.filter(task => task.group === name)) if (!group.fields.some(field => field.key === 'schedule.' + task.key)) group.fields.push(configField('schedule.' + task.key, task.label, 'switch', task.key === 'heroRecruitRewards' ? { help: '只领取本赛季已达标的英雄累计招募奖励，不消耗招募券或钻石。默认关闭；与藏品领奖分别控制，不受日常行动开关控制，暂停托管时停止。' } : {}));
+    for (const task of tasks.filter(task => task.group === name)) if (!group.fields.some(field => field.key === 'schedule.' + task.key)) group.fields.push(configField('schedule.' + task.key, task.label, 'switch', task.key === 'heroRecruitRewards' ? { help: '只领取本赛季已达标的英雄累计招募奖励，不消耗招募券或钻石。与藏品领奖分别控制，不受日常行动开关控制，暂停托管时停止。' } : {}));
   });
   groups.find(g => g.id === 'rewards').title = '任务与领奖';
   const trialGroup = groups.find(g => g.id === 'daily-challenges');
@@ -372,6 +385,7 @@ function configRender() {
     group.controlGroup = group.id==='pirate-hunt'?'世界':configEditor.data.rules?.controlGroups?.[group.fields.find(field=>movedFields.has(field.key))?.key] ?? '总控制';
     group.controlKeys=group.fields.map(field=>field.key);
     group.movedCount = group.fields.filter(field=>movedFields.has(field.key)).length;
+    group.movedHelp = group.fields.filter(field=>movedFields.has(field.key) && field.help).map(field=>field.label + '：' + field.help);
     group.fields = group.fields.filter(field=>!movedFields.has(field.key));
     configEditor.groups.set(group.id, group);
   }
@@ -413,6 +427,7 @@ function configRender() {
       const heading = el('div', 'config-group-heading title-with-help'); const title = el('h3', '', group.title); title.id = section.id + '-title'; heading.append(title);
 
       section.append(heading);
+      if (group.movedHelp.length) section.append(el('p', 'config-help', group.movedHelp.join(' ')));
       if (group.movedCount || group.id === 'pirate-hunt') {
         const jump=el('button','config-small-button','前往挂机设置');jump.type='button';
         jump.onclick=()=>{document.querySelector('#tabs [data-tab="idle"]').click();const tab=[...document.querySelectorAll('[data-idle-group]')].find(x=>x.textContent===group.controlGroup);tab?.click();if(group.controlGroup==='总控制'){document.querySelector('[aria-label="挂机设置分组"]').scrollIntoView({block:'center'});}};
@@ -824,7 +839,7 @@ async function configExport() {
   try {
     const data = await call('/api/settings/validate', { method: 'POST', body: JSON.stringify({ settings: draft }) });
     if (account !== current) return;
-    const exported = { format: 'crazywaterword-automation', version: 1, settings: data.settings };
+    const exported = { format: 'crazywaterworld-automation', version: 1, settings: data.settings };
     const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob), link = document.createElement('a');
     link.href = url; link.download = '疯狂水世界-游戏配置.json'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);

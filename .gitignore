@@ -1,6 +1,8 @@
 node_modules/
 work/
 data/
+output/
+.playwright-cli/
 
 # 本地生成的证书、密钥及开发记录
 certificates/
@@ -14,4 +16,3 @@ certificates/
 *.log
 .planning/
 .impeccable/
-src/ui/dist/

@@ -26,6 +26,7 @@ export function giftCodesPage() {
 
 export function overviewPage() {
   return renderToStaticMarkup(<div className="grid gap-2">
+    <Panel title="收益日报" help="按北京时间统计当前账号的金币、钻石、汽油、加速器、战力、等级和主线关卡净变化。挂机运行后定期采样。"><div id="income-view" className="income-view"><span className="dim">挂机运行后开始记录</span></div></Panel>
     <Panel title="运行概览" help="按功能分别查看当前进度与当前条件。这里只读展示；开关仍在挂机页设置。">
       <div className="bar overview-task-filter"><Input id="overview-task-search" className="w-48" type="search" aria-label="查找运行状态" placeholder="功能名称或状态" /><label htmlFor="overview-task-filter">显示</label><select id="overview-task-filter" defaultValue="enabled"><option value="enabled">已开启</option><option value="issues">异常 / 受总控限制</option><option value="all">全部项目</option></select></div>
       <p id="overview-task-summary" className="dim" role="status">等待读取运行状态</p>
@@ -55,13 +56,28 @@ export function overviewPage() {
 
 export function activitiesPage() {
   return renderToStaticMarkup(<div className="grid gap-2">
+    <div className="activity-toolbar"><p className="dim">选择活动，单独执行或设置自动运行。</p><Button id="activities-refresh" variant="outline" size="sm">刷新活动</Button></div>
+    <div id="activities-status" className="dim" role="status" />
+    <div className="activity-shell">
+      <div id="activity-tabs" className="activity-tabs" role="tablist" aria-label="选择活动" />
+      <section id="activity-panel" role="tabpanel" tabIndex={0} hidden>
+        <Card><CardHeader><div className="activity-heading"><CardTitle id="activity-title" /><span id="activity-kind" /></div><p id="activity-end" className="dim" /></CardHeader>
+          <CardContent className="activity-content">
+            <div id="activity-pirates" hidden><div id="pirate-board-view" className="pirate-board" aria-live="polite" /></div>
+            <div id="activity-detail"><div id="activities-list" className="activity-body" /><div id="activities-order" /></div>
+          </CardContent>
+        </Card>
+      </section>
+    </div>
     <Panel title="材料来源查询"><label htmlFor="source-query">游戏材料名称</label><Input id="source-query" placeholder="例如：有机土壤" /><div id="source-results" aria-live="polite" /></Panel>
-    <Panel title="周订单材料"><div className="bar"><Button id="activities-refresh" variant="outline">刷新材料需求</Button></div><div id="activities-order" /></Panel>
+    <template id="ui-event-switch"><Switch className="p-0" /></template>
   </div>)
 }
 
 export function manualPage() {
   return renderToStaticMarkup(<div className="grid gap-2">
+    <Panel title="一键领取" help="领取主线、成就、邮件、挂机收益，以及已拥有英雄的技能展示首领奖励，不花钻石。逐项结果见运行日志。"><div className="bar"><Button id="loot-run">领取现在能领的</Button><span id="loot-hint" role="status" /></div></Panel>
+    <Panel title="任务奖励" help="检查或领取主线、支线、成就和每日订单档位奖励。无法确认目标值的任务会跳过，结果见运行日志。"><div className="bar"><Button id="tasks-plan" variant="outline">检查可领</Button><Button id="tasks-run">领取任务奖励</Button><span id="tasks-hint" role="status" /></div></Panel>
     <Panel title="海面" help="收成品 → 竣工 → 交单 → 按订单缺口排产 → 余料升级建筑。本轮是否允许使用加速器、拒单重刷，由下方本次开关决定。">
     <div className="bar">
       <Option id="world-speedup" label="本轮允许花加速器" />
@@ -108,6 +124,8 @@ export function heroesPage() {
       <div className="bar"><Button id="equipment-refresh" variant="outline">刷新装备</Button></div>
       <div id="equipment-view" className="progression-view" aria-live="polite" />
     </Panel>
+    <Panel title="装备制造"><div className="bar"><Button id="crafting-refresh" variant="outline">刷新装备厂</Button></div><div id="crafting-view" className="progression-view" aria-live="polite" /></Panel>
+    <Panel title="推荐阵容"><div className="bar"><Button id="lineup-refresh" variant="outline">刷新推荐</Button></div><div id="lineup-view" className="progression-view" aria-live="polite" /></Panel>
     <Panel title="远征舰队编队" help="保留空编队的初始化入口。已有编队不会自动重排；舰队状态在总览查看，首杀连续推进在挂机页开启。"><div id="formation-view" className="progression-view" aria-live="polite" /></Panel>
   </div>)
 }

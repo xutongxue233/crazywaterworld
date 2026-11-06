@@ -1,5 +1,18 @@
 // Operation names shared by the server journal and the browser's network errors.
 export const operationLabels = {
+  '/api/activities/run': '单次执行活动',
+  '/api/pirates/board': '查看海盗首杀',
+  '/api/equipment/crafting': '查看装备厂',
+  '/api/equipment/crafting/start': '制造装备',
+  '/api/equipment/crafting/collect': '收取完工装备',
+  '/api/lineups': '查看推荐阵容',
+  '/api/lineups/apply': '应用推荐阵容',
+  '/api/loop/reconnect': '设置自动重连',
+  '/api/notify': '读取通知设置',
+  '/api/notify/save': '保存通知设置',
+  '/api/notify/test': '发送测试通知',
+  '/api/income': '读取收益日报',
+  '/api/loop/compass-spin-count': '设置罗盘抽奖券用量',
   '/api/world/order/reroll':'手动刷新居民订单',
   '/api/guild/tech':'读取联盟科技','/api/guild/tech/upgrade':'升级联盟科技',
   '/api/accounts': '读取账号列表', '/api/accounts/export': '导出账号',

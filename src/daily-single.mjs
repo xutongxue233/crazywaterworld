@@ -76,7 +76,7 @@ export async function runDailySingle(client, protocol, { state, token, paid = fa
     if (state.attempted.has(current.fingerprint)) break;
     if (!enabled()) throw new Error('操作已暂停，已发送动作请刷新核对');
     const ticket = await guard.before({ kind: 'manualDaily', ...action });
-    if (!enabled()) { await guard.cancel(action, ticket); throw new Error('操作已暂停'); }
+    if (!enabled()) { await guard.cancel(action, ticket, { notSent: true }); throw new Error('操作已暂停'); }
     quote.used = true;
     state.attempted.add(current.fingerprint);
     const before = entry.task.progress;
@@ -85,7 +85,7 @@ export async function runDailySingle(client, protocol, { state, token, paid = fa
       else await client.sendWatch(action.request, action.body, { window: 400 });
       sent++;
     } catch (error) {
-      if (error.prompt) { await guard.cancel(action, ticket); state.attempted.delete(current.fingerprint); }
+      if (error.prompt && error.request === action.request) { await guard.cancel(action, ticket, { error }); state.attempted.delete(current.fingerprint); }
       throw error;
     }
     let confirmed = false;

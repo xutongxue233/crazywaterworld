@@ -1,4 +1,19 @@
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
+import { isFleetReserved, registerFleetReservations } from './fleet-reservations.mjs';
+
+const migrationOwner = 'dispatch-ledger';
+// 两代调度器共享舰队占用证据；桥接谓词忽略自身，避免递归检查。
+export function bridgeFleetReservations(client, getSettings, ledger, worldId) {
+ const contains = id => Boolean(fleetRecordReason(ledger?.keyRecords() ?? {}, id, worldId) ||
+  dispatchReservationReason(client, getSettings(), 'legacy', id, {ignoreLegacy:true}));
+ const hasAny = () => {
+  const ids = new Set(Object.values(recordsInWorld(ledger?.keyRecords() ?? {}, worldId))
+   .map(record => record.details?.buildingId).filter(Boolean));
+  for (const record of dispatchStates.get(client)?.values() ?? []) for (const id of record.ids) ids.add(id);
+  return [...ids].some(contains);
+ };
+ registerFleetReservations(client, migrationOwner, contains, hasAny);
+}
 // 配置勾选只表示允许使用；实际占用依据舰队状态与持久化在途记录判断。
 export function fleetRecordReason(records,buildingId,worldId){
  for(const [key,r]of Object.entries(recordsInWorld(records??{},worldId))){
@@ -43,11 +58,16 @@ export function reserveDispatch(client, task, ids, until = Date.now()+60000) {
  const state=dispatchStates.get(client)??new Map();dispatchStates.set(client,state);
  state.set(task,{ids:[...ids],until});
 }
-export function dispatchReservationReason(client,settings,task,id,{ignoreOwners=[]}={}) {
+export function legacyFleetReservationReason(client,id) {
+ return isFleetReserved(client,id,migrationOwner) ? '舰队有原自动任务尚未确认结束' : '';
+}
+export function dispatchReservationReason(client,settings,task,id,{ignoreOwners=[],ignoreLegacy=false}={}) {
+ const legacyReason=ignoreLegacy?'':legacyFleetReservationReason(client,id);
+ if(legacyReason)return legacyReason;
  const order=dispatchOrder(settings);
  for(const [owner,record] of dispatchStates.get(client)??[]) {
   if(ignoreOwners.includes(owner))continue;
-  if(owner==='cityWar'&&(!settings.cityWar?.enabled||!settings.cityWar.reserveDuringWar))continue;
+  if(owner==='cityWar'&&(!settings?.cityWar?.enabled||!settings.cityWar.reserveDuringWar))continue;
   if(owner==='cityWar'&&!settings.cityWar.fleetIds.includes(id))continue;
   if(owner===task || record.until<=Date.now() || !record.ids.includes(id))continue;
   if(owner==='maintenance'||owner==='cityWar' || order.indexOf(owner)<(order.includes(task)?order.indexOf(task):order.length))return '舰队预留给'+({maintenance:'战后维修',cityWar:'城战时段',pirateHunt:'正在运行的首杀',treasure:'巨轮普通参战',follow:'巨轮跟随',worldBoss:'世界Boss首战',radar:'联盟情报'}[owner]);

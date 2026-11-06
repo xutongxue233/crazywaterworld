@@ -71,7 +71,7 @@ export function stagePanel() {
           <Button id="stage-start" disabled>自动挑战</Button>
           <Button id="stage-stop" variant="outline" disabled>停止自动</Button>
         </div>
-        
+
       </CardContent>
     </Card>
     <Card>

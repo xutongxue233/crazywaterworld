@@ -18,7 +18,7 @@ import path from 'node:path';
 import { SERVER, assetUrl } from '../tools/sync-art.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import { normalize } from './worlds.mjs';
-import { residentFilter, resourceReserve, worldPreferenceEnabled, worldActionAllowed, exactAutomationId, AutomationSkip } from './automation-policy.mjs';
+import { residentFilter, resourceReserve, worldPreferenceEnabled, worldActionAllowed, exactAutomationId, AutomationSkip, createActionGuard } from './automation-policy.mjs';
 import { readWeekOrder } from './activities.mjs';
 import { RESOURCE, displayMaterial } from './config.mjs';
 
@@ -1203,6 +1203,14 @@ export async function runWorld(client, protocol, plan, {
     else if (blocked.has(step.kind)) entry = { step, ok: false, skipped: true, error: `同类动作已失败，本轮不再尝试` };
     else if (!protocol[step.request]) entry = { step, ok: false, error: `协议表里没有 ${step.request}` };
     else {
+      // Direct CLI calls and manual orders use the same cross-connection
+      // resource barrier, while a manual order keeps its own explicit consent.
+      const localGuard = step.manualCheck || !beforeStep ? createActionGuard(client,
+        () => step.manualCheck ? null : getSettings?.() ?? settings, null,
+        { player, enabled: () => enabled(step.kind) }) : null;
+      const prepareAction = localGuard?.before ?? beforeStep;
+      const finishAction = localGuard?.after ?? afterStep;
+      const cancelAction = localGuard?.cancel ?? cancelStep;
       let ticket = null, prepared = false, dispatched = false;
       let actual = step;
       try {
@@ -1244,10 +1252,10 @@ export async function runWorld(client, protocol, plan, {
           if (prior && Date.now() < prior.until) { results.push({step,skipped:true,reason:prior.pending?'前次目标调整待确认':'目标调整冷却中'}); continue; }
           checks.set(step.body.buildingId,{until:Date.now()+300000,pending:true});
         }
-        ticket = step.manualCheck ? null : await beforeStep?.(actual);
-        prepared = !step.manualCheck;
+        ticket = await prepareAction?.(actual);
+        prepared = true;
         if (!enabled(step.kind) || (!step.manualCheck && !worldActionAllowed(getSettings?.() ?? settings, actual, config))) {
-          if (prepared) await cancelStep?.(actual, ticket);
+          if (prepared) await cancelAction?.(actual, ticket, { notSent: true });
           if(step.request==='SetFactoryAutoProduceRequest')nativeTargetChecks.get(client)?.delete(step.body.buildingId);
           continue;
         }
@@ -1275,9 +1283,9 @@ export async function runWorld(client, protocol, plan, {
             entry = {step,ok:confirmed,status:confirmed?'confirmed':'unknown',reason:confirmed?'已回读确认自动生产目标；本次未逐项核对原队列':'目标切换结果待确认，暂不重复提交'};
           }
         }
-        await afterStep?.(actual, ticket, entry);
+        await finishAction?.(actual, ticket, entry);
       } catch (error) {
-        if (prepared && !dispatched) await cancelStep?.(actual, ticket);
+        if (prepared && (!dispatched || error.prompt && error.request === actual.request)) await cancelAction?.(actual, ticket, { notSent: !dispatched, error });
         if(['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)&&error.prompt&&error.request===step.request){
           const failures=factoryFailures.get(client)??new Map();factoryFailures.set(client,failures);
           failures.set(JSON.stringify([step.request,step.body]),{signature:step.eligibilityKey,until:/limited item not available/i.test(error.message)?Infinity:Date.now()+300000,reason:error.message});

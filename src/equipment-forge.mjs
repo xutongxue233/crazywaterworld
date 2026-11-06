@@ -2,6 +2,8 @@ import { cleanupAfterClaim } from './claim-cleanup.mjs';
 // 正常装备锻造：读取配方和库存后下单，确认工厂状态，产出入库后才安排下一件。
 import { exactAutomationId } from './automation-policy.mjs';
 import { displayMaterial } from './config.mjs';
+import { reconcileGold, reserveGold, rejectGold, cancelUnsentGold } from './gold-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
@@ -34,6 +36,7 @@ export async function readEquipmentForge(client, protocol, config, player) {
       get('OnWaterRequest', 'OnWaterResponse'), get('AllItemRequest', 'AllItemResponse'),
       get('AllResourceRequest', 'AllResourceResponse'), get('EquipsRequest', 'EquipsResponse'),
     ]);
+    if (exactAutomationId(player?.playerId) !== snapshot.playerId || exactAutomationId(player?.worldId) !== snapshot.worldId) throw new Error('账号已变化，不能使用原账号锻造库存');
     if (![water.building, items.items, resources.list, equips.equip].every(Array.isArray)) throw new Error('工厂、材料、金币或装备数据不完整');
     const allowed = new Set(rows(config, 'BuildingUnlockCfg').filter(row => row.buildingType === '装备厂' && row.playerLevel <= player.level).map(row => row.buildingId));
     snapshot.buildings = water.building.filter(row => allowed.has(row.buildingId) && row.level > 0);
@@ -46,7 +49,10 @@ export async function readEquipmentForge(client, protocol, config, player) {
     const gold = resources.list.find(row => row.res === 3);
     snapshot.gold = gold ? quantity(gold.amount) : null;
     if (!integer(snapshot.gold)) throw new Error('金币余额无法精确确认');
+    reconcileGold(player, snapshot.gold);
     snapshot.stock.set('GOLD', snapshot.gold);
+    try { confirmOrderMaterialSpends(player, snapshot.stock); }
+    catch (error) { if (error.code !== 'ORDER_MATERIAL_SPEND_PENDING') throw error; }
     snapshot.equipment = equips.equip.map(row => ({ uid: exactAutomationId(row.uid), equipId: row.equipId, star: row.star }));
     if (snapshot.equipment.some(row => !row.uid || typeof row.equipId !== 'string' || !integer(row.star))) throw new Error('装备仓库含无法精确识别的记录');
     if (new Set(snapshot.equipment.map(row => row.uid)).size !== snapshot.equipment.length) throw new Error('装备仓库存在重复标识');
@@ -181,7 +187,7 @@ export async function runEquipmentForge(client, protocol, config, player, { getS
     const balances = new Map(snapshot.stock);
     for (const proposed of plan.actions) {
       if (!enabled() || !forgeEnabled(getSettings()) || !client.connected) break;
-      const settings = getSettings(), fresh = await read();
+      const settings = getSettings(), fresh = await read(), actualStock = new Map(fresh.stock);
       for (const [id, amount] of balances) fresh.stock.set(id, Math.min(fresh.stock.get(id) ?? 0, amount));
       const reviewed = planEquipmentForge(fresh, config, settings, { usage: ledger.snapshot(), keys: ledger.keyRecords() });
       const step = reviewed.actions.find(action => action.uniqueKey === proposed.uniqueKey && action.kind === proposed.kind &&
@@ -224,6 +230,13 @@ export async function runEquipmentForge(client, protocol, config, player, { getS
         beforeFinishTime: step.beforeFinishTime, beforeUids: fresh.equipment.map(row => row.uid), sentAt: fresh.now };
       const ticket = ledger.reserve({ forgeStarts: 1, forgeGold: step.gold }, { forgeStarts: settings.forge.dailyLimit, forgeGold: settings.forge.dailyGoldLimit }, {}, { uniqueKey: step.uniqueKey, details });
       if (!enabled() || settings !== getSettings() || !client.connected) { ledger.cancel(ticket); break; }
+      let goldReservation, materialReservation;
+      try {
+        confirmOrderMaterialSpends(player, actualStock);
+        materialReservation = beginOrderMaterialSpend(player, step.costs.filter(cost => cost.id !== 'GOLD').map(cost => ({ id: cost.id, have: actualStock.get(cost.id) ?? 0, need: cost.num })), step.label);
+        goldReservation = reserveGold(player, fresh.gold, step.gold, 'MakeEquipRequest');
+      } catch (error) { cancelOrderMaterialSpend(materialReservation); cancelUnsentGold(goldReservation); ledger.cancel(ticket); report({ step, ok: false, skipped: true, error: error.message }); continue; }
+      if (!enabled() || settings !== getSettings() || !client.connected) { cancelOrderMaterialSpend(materialReservation); cancelUnsentGold(goldReservation); ledger.cancel(ticket); break; }
       let entry;
       try {
         await client.sendWatch('MakeEquipRequest', step.body, { window: 600 });
@@ -234,6 +247,8 @@ export async function runEquipmentForge(client, protocol, config, player, { getS
           note: confirmed ? '服务器已确认新的锻造任务' : '下单结果待确认，保留材料/金币预算并停止重复下单' };
       } catch (error) {
         if (error.prompt && error.request === 'MakeEquipRequest') {
+          cancelOrderMaterialSpend(materialReservation);
+          rejectGold(goldReservation, error);
           ledger.cancel(ticket);
           const failures = rejected.get(client) ?? new Map(); rejected.set(client, failures); failures.set(step.uniqueKey, Date.now() + 300000);
           entry = { step, ok: false, status: 'rejected', error: error.message };

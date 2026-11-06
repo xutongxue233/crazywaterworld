@@ -14,9 +14,11 @@ const protocol = Object.fromEntries(['OnWater', 'AllItem', 'AllResource', 'WeekI
   .flatMap(type => [[type + 'Request', true], [type + 'Response', true]]));
 const order = { index: 1, requirements: [{ id: '烤鱼', num: 3 }] };
 const reward = { asset: [{ id: 'EXP', num: 45 }] };
+let playerSequence = 9100000000000000n;
 
 function mock() {
   return {
+    player: { playerId: String(++playerSequence), worldId: 1001001, level: 16 },
     connected: true, onWater: [order], stock: 50, weekly: 50, otherStock: [], otherWeekly: [], buildings: [], cargo: 0, calls: [],
     async request(name, body, response) {
       this.calls.push(name);
@@ -34,6 +36,13 @@ function mock() {
           return { ship: this.cargo > 0 ? [{ status: 0, orderItem: [{ asset: { id: '烤鱼', num: this.cargo } }] }] : [] };
         case 'FinishWorkerOrderRequest':
           assert.equal(response, 'FinishWorkerOrderResponse');
+          for (const item of this.onWater.find(row => row.index === body.index)?.requirements ?? []) {
+            if (item.id === '烤鱼') { assert(this.stock >= item.num); this.stock -= item.num; }
+            else {
+              const stored = this.otherStock.find(row => row.itemId === item.id);
+              assert(stored && stored.num >= item.num); stored.num -= item.num;
+            }
+          }
           return { reward };
         default: assert.fail('意外请求 ' + name);
       }
@@ -41,7 +50,7 @@ function mock() {
   };
 }
 async function plan(client, withCargo = false, produce = false) {
-  const survey = await surveyWorld(client, protocol, { config, player: { level: 16 }, includeCargo: withCargo });
+  const survey = await surveyWorld(client, protocol, { config, player: client.player, includeCargo: withCargo });
   return planWorld(survey, { config, enabled: key => ['finishOrder', 'denyOrder'].includes(key) || (key === 'startProduce' && produce),
     allowReroll: true, minOrderExp: null });
 }
@@ -72,7 +81,7 @@ export async function testResidentOrders() {
 
   // A reservation must still be read when the player enables ONLY resident orders.
   const only = mock();
-  await runLoop(only, protocol, { rounds: 1, allowMutate: true, config, player: { level: 16 }, isEnabled: key => key === 'finishOrder' });
+  await runLoop(only, protocol, { rounds: 1, allowMutate: true, config, player: only.player, isEnabled: key => key === 'finishOrder' });
   assert(only.calls.includes('WeekOrderInfoRequest'));
   assert(!only.calls.includes('FinishWorkerOrderRequest'));
 
@@ -96,8 +105,8 @@ export async function testResidentOrders() {
 }
 
 async function testManualResidentOrder() {
-  const context = { config, player: { level: 16 }, cargoEnabled: () => true };
-  const survey = client => surveyWorld(client, protocol, { ...context, ordersOnly: true, includeCargo: true });
+  const context = client => ({ config, player: client.player, cargoEnabled: () => true });
+  const survey = client => surveyWorld(client, protocol, { ...context(client), ordersOnly: true, includeCargo: true });
   const setup = () => {
     const client = mock();
     client.weekly = 0;
@@ -107,7 +116,7 @@ async function testManualResidentOrder() {
   const client = setup();
   client.stock = 3; // Enough for just one order; the earlier slot must not take precedence.
   const { orders } = await survey(client);
-  const pick = { ...context, index: 2, orderKey: orders[1].orderKey };
+  const pick = { ...context(client), index: 2, orderKey: orders[1].orderKey };
   assert.equal((await survey(client)).orders[1].orderKey, pick.orderKey, '刷新相同订单时保持按钮标记');
   const writes = [];
   const request = client.request.bind(client);
@@ -131,7 +140,7 @@ async function testManualResidentOrder() {
     if (name === 'FinishWorkerOrderRequest') { attempts++; return {}; }
     return read(name, ...args);
   };
-  const uncertain = () => submitResidentOrder(noAck, protocol, { ...context, index: 2, orderKey: noAckKey });
+  const uncertain = () => submitResidentOrder(noAck, protocol, { ...context(noAck), index: 2, orderKey: noAckKey });
   await assert.rejects(uncertain(), /未返回.*奖励/);
   await assert.rejects(uncertain(), /刷新|处理/);
   assert.equal(attempts, 1, '未确认奖励不可宣告成功，也不重复使用同一按钮');
@@ -147,7 +156,7 @@ async function testManualResidentOrder() {
     const changed = setup();
     const original = (await survey(changed)).orders[1].orderKey;
     update(changed);
-    await assert.rejects(submitResidentOrder(changed, protocol, { ...context, index: 2, orderKey: original }), /刷新|处理/);
+    await assert.rejects(submitResidentOrder(changed, protocol, { ...context(changed), index: 2, orderKey: original }), /刷新|处理/);
     assert(!changed.calls.includes('FinishWorkerOrderRequest'));
     if (changed.onWater.length === 3) assert.equal((await survey(changed)).orders[1].orderKey, null);
   }
@@ -161,33 +170,33 @@ async function testManualResidentOrder() {
   assert.equal((await survey(pushed)).orders[1].orderKey, key);
   receive({ name: 'SCWorkerOrder', body: { order: [pushed.onWater[0]] } });
   receive({ name: 'SCWorkerOrder', body: { order: pushed.onWater } });
-  await assert.rejects(submitResidentOrder(pushed, protocol, { ...context, index: 2, orderKey: key }), /刷新|处理/);
+  await assert.rejects(submitResidentOrder(pushed, protocol, { ...context(pushed), index: 2, orderKey: key }), /刷新|处理/);
   assert(!pushed.calls.includes('FinishWorkerOrderRequest'));
 
   const auto = setup();
   const observed = await survey(auto);
   const actions = planWorld(observed, { config, enabled: kind => kind === 'finishOrder' }).actions.filter(step => step.body.index === 2);
-  await runWorld(auto, protocol, { actions }, { allowMutate: true });
-  await assert.rejects(submitResidentOrder(auto, protocol, { ...context, index: 2, orderKey: observed.orders[1].orderKey }), /刷新|处理/);
+  await runWorld(auto, protocol, { actions }, { allowMutate: true, player: auto.player });
+  await assert.rejects(submitResidentOrder(auto, protocol, { ...context(auto), index: 2, orderKey: observed.orders[1].orderKey }), /刷新|处理/);
   assert.equal(auto.calls.filter(n => n === 'FinishWorkerOrderRequest').length, 1);
 
   const weekly = setup();
   weekly.weekly = weekly.stock = 50;
   weekly.otherWeekly = [{ id: '淡水', num: 1 }];
   const weeklyKey = (await survey(weekly)).orders[1].orderKey;
-  assert.match((await submitResidentOrder(weekly, protocol, { ...context, index: 2, orderKey: weeklyKey })).label, /周订单待补 烤鱼 ×3/);
+  assert.match((await submitResidentOrder(weekly, protocol, { ...context(weekly), index: 2, orderKey: weeklyKey })).label, /周订单待补 烤鱼 ×3/);
 
   for (const block of [c => { c.weekly = 50; }, c => { c.cargo = 49; }, c => { c.cargo = null; }, c => { c.stock = 0; }]) {
     const waiting = setup();
     const id = (await survey(waiting)).orders[1].orderKey;
     block(waiting);
-    await assert.rejects(submitResidentOrder(waiting, protocol, { ...context, index: 2, orderKey: id }), /预留|材料|库存|贸易港/);
+    await assert.rejects(submitResidentOrder(waiting, protocol, { ...context(waiting), index: 2, orderKey: id }), /预留|材料|库存|贸易港/);
     assert(!waiting.calls.includes('FinishWorkerOrderRequest'));
   }
   const cancelled = setup();
   const cancelKey = (await survey(cancelled)).orders[1].orderKey;
   cancelled.calls.length = 0;
-  await assert.rejects(submitResidentOrder(cancelled, protocol, { ...context, index: 2, orderKey: cancelKey,
+  await assert.rejects(submitResidentOrder(cancelled, protocol, { ...context(cancelled), index: 2, orderKey: cancelKey,
     enabled: () => !cancelled.calls.includes('CargoShipsRequest') }), /已取消/);
   assert(!cancelled.calls.includes('FinishWorkerOrderRequest'));
 }
@@ -202,7 +211,7 @@ async function testActualShortages() {
   client.buildings = [{ buildingId: '1食品厂', level: 1, factory: { factoryQ: [], finishedProducts: [] } }];
   const requires = [{ id: '烤鱼', num: 3 }, { id: '晾衣架', num: 1 }];
   client.onWater = [{ index: 3, requirements: requires }];
-  const inspect = async () => planWorld(await surveyWorld(client, protocol, { config: cfg, player: { level: 16 } }),
+  const inspect = async () => planWorld(await surveyWorld(client, protocol, { config: cfg, player: client.player }),
     { config: cfg, enabled: key => ['finishOrder', 'startProduce'].includes(key) });
   const first = await inspect();
   const decision = first.orderDecisions[0];
@@ -221,19 +230,19 @@ async function testActualShortages() {
 }
 
 async function testWeeklyPriority() {
-  const client = mock();
   const pending = [{ id: '淡水', num: 5 }];
-  client.otherWeekly = pending;
   const writeIndices = plan => plan.actions.filter(a => a.request === 'FinishWorkerOrderRequest').map(a => a.body.index);
   for (const [weekly, owned] of [[50, 50], [6, 6]]) {
+    const client = mock(); client.otherWeekly = pending;
     client.weekly = weekly; client.stock = owned;
     const result = await plan(client);
     assert.deepEqual(writeIndices(result), [1], '整份周单缺淡水，居民材料齐全就交，不受能否并存的限制');
     assert(!result.actions.some(step => step.request.includes('WeekOrder') || step.request === 'DenyOrderRequest'));
     client.calls.length = 0;
-    await runWorldRound(client, protocol, result, { config, player: { level: 16 }, allowMutate: true });
+    await runWorldRound(client, protocol, result, { config, player: client.player, allowMutate: true });
     assert(client.calls.includes('FinishWorkerOrderRequest'));
   }
+  const client = mock(); client.otherWeekly = pending;
   client.otherStock = [{ itemId: '淡水', num: 5 }];
   assert.deepEqual(writeIndices(await plan(client)), [], '周单全部材料到齐时保留给玩家手动交付');
 
@@ -286,6 +295,7 @@ async function testWeeklyPriority() {
     live.buildings = structuredClone(client.buildings);
     let wroteResident = false;
     const actor = {
+      player: live.player,
       async request(name, body, response) {
         if (name !== 'FinishWorkerOrderRequest') return live.request(name, body, response);
         wroteResident = true;
@@ -301,7 +311,7 @@ async function testWeeklyPriority() {
     const scopedPlan = await plan(actor, false, true);
     if (outcome === 'weekNowReady') live.otherStock = [{ itemId: '淡水', num: 5 }];
     await runWorldRound(actor, { ...protocol, StartFactoryProduceRequest: true }, scopedPlan,
-      { allowMutate: true, config, player: { level: 16 } });
+      { allowMutate: true, config, player: live.player });
     assert.equal(wroteResident, outcome !== 'weekNowReady', '刚收的淡水凑齐整份周单时，原先的居民借料要取消');
     assert.equal(produced.length, outcome === 'accepted' ? 3 : 0, '只在居民交单已获服务端确认后，才使用它释放的容量排产');
   }
@@ -322,7 +332,7 @@ async function testWeeklyPriority() {
   };
   live.sendWatch = async name => live.calls.push(name);
   const fullProtocol = { ...protocol, GainFactoryProduceRequest: true, GainFactoryProduceResponse: true, StartFactoryProduceRequest: true };
-  const player = { level: 16 };
+  const player = live.player;
   const survey = await surveyWorld(live, fullProtocol, { config, player });
   const enabled = key => ['gainFactory', 'finishOrder', 'startProduce'].includes(key);
   const preliminary = planWorld(survey, { config, enabled });
@@ -372,7 +382,7 @@ async function testHarvestOrders() {
   }
   for (const [cargoAfter, confirmed] of [[0, true], [2, false]]) {
     const { client } = scenario({ pendingWeekly: true, cargoAfter });
-    const player = { level: 16 };
+    const player = client.player;
     const initial = await surveyWorld(client, available, { config, player, includeCargo: true });
     const manual = planWorld(initial, { config, enabled: key => ['gainFactory', 'finishOrder', 'denyOrder'].includes(key),
       allowReroll: true, minOrderExp: null });
@@ -382,20 +392,20 @@ async function testHarvestOrders() {
       '收货后按实时库存再评估周单缺口和货轮，居民可交才发写请求');
   }
   const run = (s, options = {}) => runLoop(s.client, available, { rounds: 1, allowMutate: true, config,
-    player: { level: 16 }, isEnabled: s.enabled, ...options });
+    player: s.client.player, isEnabled: s.enabled, ...options });
 
   for (const options of [{}, { reserved: true }, { confirm: false }, { pause: true }]) {
     const s = scenario(options);
     await run(s);
     assert.equal(s.client.calls.filter(n => n === 'FinishWorkerOrderRequest').length, Object.keys(options).length ? 0 : 1);
     const followup = !options.pause && options.confirm !== false;
-    assert.equal(s.client.calls.filter(n => n === 'AllItemRequest').length, followup ? 2 : 1);
+    assert.equal(s.client.calls.filter(n => n === 'AllItemRequest').length, followup ? (options.reserved ? 2 : 3) : 1);
     assert.equal(s.client.calls.filter(n => n === 'AllResourceRequest').length, 1, '补交只核对订单库存和预留');
   }
   // Manual world run and the CLI share the same round executor, including reroll protection.
   for (const failRead of [false, true]) {
     const { client } = scenario({ failRead });
-    const player = { level: 16 };
+    const player = client.player;
     const initial = await surveyWorld(client, available, { config, player });
     const manual = planWorld(initial, { config, enabled: key => ['gainFactory', 'finishOrder', 'denyOrder'].includes(key),
       allowReroll: true, minOrderExp: null });

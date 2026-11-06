@@ -19,17 +19,21 @@ export async function claimOnce(client,{ledger,key,title,request,body={},respons
  try{const reply=await client.request(request,body,response);if(!await verify(reply))throw Error('服务器尚未确认领取成功');ledger.confirm(ticket);report({label:title,ok:true,status:'confirmed'});return reply;}
  catch(error){if(error.prompt&&error.request===request)ledger.cancel(ticket);report({label:title,ok:false,status:error.prompt&&error.request===request?'rejected':'unknown',error:error.message});return false;}
 }
-export async function claimVipDaily(client,config,{player,enabled,ledger,report}){
+export async function claimVipDaily(client,config,{player,enabled,ledger,report,allLevels=false}){
  if(!enabled())return;
  const clock=watchFreeRewardClock(client),day=dayOf(nowOf(client)),vip=player?.vip;
  if(!vip||!valid(vip.vipLevel)||!Array.isArray(vip.dailyReward)){report({label:'VIP每日免费礼包',skipped:true,reason:'VIP每日领取状态未确认'});return;}
  // 原客户端跨日只重置当前VIP档位，低档首次礼包状态保留。
  if(clock.vipDay!==day){vip.dailyReward=vip.dailyReward.filter(r=>r.vipLevel!==vip.vipLevel);clock.vipDay=day;}
- const level=vip.vipLevel,cfg=rows(config,'VipFreeCfg').find(r=>r.level===level);
- if(!cfg||vip.dailyReward.some(r=>r.vipLevel===level&&r.isGot)){report({label:'VIP每日免费礼包',skipped:true,reason:cfg?'今日礼包已领取':'当前VIP档位没有免费礼包配置'});return;}
- const allowed=()=>enabled()&&dayOf(nowOf(client))===day&&player.vip.vipLevel===level;
+ const levels=allLevels?rows(config,'VipFreeCfg').filter(r=>valid(r.level)&&r.level<=vip.vipLevel).map(r=>r.level):[vip.vipLevel];
+ for(const level of levels){
+ const cfg=rows(config,'VipFreeCfg').find(r=>r.level===level);
+ if(!cfg||vip.dailyReward.some(r=>r.vipLevel===level&&r.isGot)){report({label:'VIP每日免费礼包',skipped:true,reason:cfg?'今日礼包已领取':'当前VIP档位没有免费礼包配置'});continue;}
+ const vipLevel=vip.vipLevel;
+ const allowed=()=>enabled()&&dayOf(nowOf(client))===day&&player.vip.vipLevel===vipLevel;
  const reply=await claimOnce(client,{ledger,key:'vip-free:'+day+':'+level,title:'VIP '+level+' 每日免费礼包',request:'GotVipDailyRewardRequest',body:{vipLevel:level},enabled:allowed,report});
  if(reply&&allowed()){const got=vip.dailyReward.find(r=>r.vipLevel===level);if(got)got.isGot=true;else vip.dailyReward.push({vipLevel:level,isGot:true});}
+ }
 }
 export function limitedFreeCandidates(config,player,type){
  const typeNames={1:'日礼包',2:'周礼包',3:'月礼包',4:'赛季礼包'};

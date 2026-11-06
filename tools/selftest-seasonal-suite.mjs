@@ -305,6 +305,7 @@ await test('旧导出保留显式关闭值，新默认与罗盘阈值入参校�
   const restored = importAutomationSettings(doc);
   assert.equal(restored.schedule.compassReward, false);
   assert.equal(restored.schedule.armsRaceRewards, true);
+  for (const key of ['compassSpin', 'merchantTrade', 'beautyVotes']) assert.equal(restored.schedule[key], false, key + ' 消耗型任务需主动开启');
   assert.deepEqual(restored.eventActions, { compassThreshold: 10, compassDrawCount: 10 });
   restored.eventActions.compassDrawCount = 3;
   assert.throws(() => validateSettings(restored));

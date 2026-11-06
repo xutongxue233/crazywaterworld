@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { defaultSettings, validateSettings, saveAutomationSettings, loadAutomationSettings, exportAutomationSettings, importAutomationSettings, createUsageLedger, beijingDay, nativeTaskValues, applyNativeTask } from '../src/automation-settings.mjs';
+import { defaultSettings, validateSettings, saveAutomationSettings, loadAutomationSettings, exportAutomationSettings, importAutomationSettings, createUsageLedger, beijingDay, nativeTaskValues, applyNativeTask, settingsFromNative } from '../src/automation-settings.mjs';
 import { createActionGuard, budgetPreview, exactAutomationId, automationWireId } from '../src/automation-policy.mjs';
 import { planWorld, runWorld } from '../src/world.mjs';
 import { planBaseAutomation, runBaseAutomation, watchBasePushes, gameSeason, previewNativeAutomation } from '../src/base-automation.mjs';
@@ -87,6 +87,26 @@ try {
     const bytes = fs.readFileSync(file); assert.throws(() => saveAutomationSettings('a', b, { file, revision: 0 }), /其他页面更新/); assert.deepEqual(fs.readFileSync(file), bytes);
     const broken = path.join(directory, 'broken.json'); fs.writeFileSync(broken, '{bad');
     assert.throws(() => loadAutomationSettings('a', { file: broken }), /停止/); assert.equal(fs.readFileSync(broken, 'utf8'), '{bad');
+  });
+
+  await check('两版任务设置迁移保留显式开关，缺省消费任务保持关闭', () => {
+    const keys = ['festivalActive', 'festivalGifts', 'snowballFree', 'weekLotterySpin', 'weekCharge', 'weekChipFree', 'weekUniqueFree', 'weekOrderFinal', 'weekOrderSubmit', 'vipDaily', 'campaignReports', 'openRankRewards',
+      'guildOrders', 'radarAuto', 'radarRepair', 'equipmentCollect', 'equipmentCraft', 'museumCollect', 'museumExplore', 'petCollect', 'petBreed'];
+    for (const enabled of [true, false]) {
+      const tasks = Object.fromEntries(keys.map(key => [key, enabled]));
+      const settings = settingsFromNative(tasks);
+      const restored = importAutomationSettings(exportAutomationSettings(settings));
+      for (const key of keys) {
+        assert.equal(restored.schedule[key], enabled, key + ' 保存值不能被新版默认值覆盖');
+        assert.equal(nativeTaskValues(restored, {})[key], enabled);
+      }
+    }
+    const oldDocument = exportAutomationSettings(defaultSettings());
+    for (const key of keys) delete oldDocument.settings.schedule[key];
+    const restored = importAutomationSettings(oldDocument);
+    for (const key of ['guildOrders', 'radarAuto', 'radarRepair', 'equipmentCollect', 'equipmentCraft', 'museumCollect', 'museumExplore', 'petCollect', 'petBreed', 'weekLotterySpin', 'weekOrderSubmit', 'merchantTrade', 'beautyVotes', 'compassSpin']) assert.equal(restored.schedule[key], false, key);
+    assert.equal(restored.schedule.weekOrderFinal, true);
+    assert.equal(restored.schedule.vipDaily, true);
   });
 
   await check('每日额度持久化、跨账号、跨日、未知结果和发送前取消', () => {
@@ -189,8 +209,8 @@ try {
     const reads = [], writes = [];
     const client = new EventEmitter(); client.connected = true;
     client.request = async name => { reads.push(name); assert.ok(responses.has(name), '不应读取 ' + name); return structuredClone(responses.get(name)); };
-    client.sendWatch = async (name, body) => { writes.push({ name, body }); return {}; };
-    const options = { config, player: { level: 36 }, rounds: 1, allowMutate: true,
+    client.sendWatch = async (name, body) => { writes.push({ name, body }); responses.set('AllItemRequest', { items: [{ itemId: '加速器', num: 2 }] }); return {}; };
+    const options = { config, player: { playerId: '9102000000000001', worldId: 1001001, level: 36 }, rounds: 1, allowMutate: true,
       isEnabled: key => flags[key] === true, getSettings: () => settings };
     const result = await runLoop(client, protocol, options);
     assert.ok(reads.includes('CargoShipsRequest'), '关闭自动贸易和新增排产时仍须读取来源需求');

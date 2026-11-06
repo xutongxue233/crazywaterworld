@@ -1,6 +1,6 @@
 import { radarEvents, radarKey, radarDispatchConfirmed, settleFleetSnapshot, recordsInWorld } from './fleet-settlement.mjs';
 export { radarDispatchConfirmed } from './fleet-settlement.mjs';
-import { fleetRecordReason } from './fleet-availability.mjs';
+import { fleetRecordReason, legacyFleetReservationReason } from './fleet-availability.mjs';
 import { normalize } from './worlds.mjs';
 import { exactAutomationId, automationWireId, resourceReserve } from './automation-policy.mjs';
 const nowOf=c=>Math.floor((Date.now()+(c.serverClockOffsetMs||0))/1000);
@@ -55,7 +55,7 @@ export async function runAllianceRadar(client,config,player,{getSettings,ledger,
   s.fuel=Math.min(s.fuel,fuelCeiling);
   for(const [id,cap]of stockCeiling)if(s.stock.has(id))s.stock.set(id,Math.min(s.stock.get(id),cap));
   const records=recordsInWorld(ledger.keyRecords(),s.world);
-  const fleet=s.fleets.find(f=>p.fleetIds.includes(f.buildingId)&&canUseFleet(f.buildingId)&&!usedFleets.has(f.buildingId)&&f.state===1&&!f.curGridIdx&&!f.treasureLootUid&&!f.chipWar?.rewardTs&&valid(f.maxDura,1)&&f.durability>0&&f.durability>=Math.ceil(f.maxDura*p.minDurabilityPercent/100)&&s.buildings.some(b=>b.buildingId===f.buildingId&&b.level>0&&b.fleet?.formation?.heroPositions?.some(x=>x.heroId))&&!fleetRecordReason(records,f.buildingId));
+  const fleet=s.fleets.find(f=>p.fleetIds.includes(f.buildingId)&&canUseFleet(f.buildingId)&&!legacyFleetReservationReason(client,f.buildingId)&&!usedFleets.has(f.buildingId)&&f.state===1&&!f.curGridIdx&&!f.treasureLootUid&&!f.chipWar?.rewardTs&&valid(f.maxDura,1)&&f.durability>0&&f.durability>=Math.ceil(f.maxDura*p.minDurabilityPercent/100)&&s.buildings.some(b=>b.buildingId===f.buildingId&&b.level>0&&b.fleet?.formation?.heroPositions?.some(x=>x.heroId))&&!fleetRecordReason(records,f.buildingId));
   if(!fleet){note('所选舰队忙碌、被高优先级任务预留、缺编队、耐久不足或有待确认任务');return;}
   let chosen;
   for(const old of events){const e=s.events.find(x=>x.uid===old.uid&&x.eventId===old.eventId&&x.fixed===old.fixed&&x.state===1);if(!e)continue;
@@ -70,7 +70,7 @@ export async function runAllianceRadar(client,config,player,{getSettings,ledger,
   if(s.fuel-Math.max(0,reserved-ownPending)-s.cost<p.petrolReserve){note('出征后汽油低于保留量');return;}
   if(p.dailyPetrolLimit>0&&(ledger.snapshot().counters.radarPetrol??0)+s.cost>p.dailyPetrolLimit){note('每日情报汽油预算不足，停止新增派遣');return;}
   const ticket=ledger.reserve({radarPetrol:s.cost},{radarPetrol:p.dailyPetrolLimit||undefined},{},{uniqueKey:chosen.key,details:{kind:'radarSend',buildingId:fleet.buildingId,eventKey:eventKey(s,chosen.e),active:true,materialCeilings:Object.fromEntries((chosen.e.refugee?.requirements??[]).map(item=>[item.id,(s.stock.get(item.id)??0)-item.num]))}});
-  if(!enabled()||settings!==getSettings()){ledger.cancel(ticket);return;}
+  if(!enabled()||settings!==getSettings()||legacyFleetReservationReason(client,fleet.buildingId)){ledger.cancel(ticket);return;}
   const body={...(chosen.e.fixed?{}:{uid:automationWireId(chosen.e.uid)}),fleetBuildingIds:[fleet.buildingId]};
   usedFleets.add(fleet.buildingId);attempted.add(chosen.key);
   let charged=false;const charge=()=>{if(charged)return;charged=true;fuelCeiling=s.fuel-s.cost;sentCosts.set(chosen.key,s.cost);for(const item of chosen.e.refugee?.requirements??[])stockCeiling.set(item.id,(s.stock.get(item.id)??0)-item.num);};

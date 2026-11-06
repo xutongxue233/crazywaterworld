@@ -8,7 +8,8 @@ import { taskSettings } from './automation.mjs';
 const dataDirectory = () => process.env.CW_DATA_DIR ? path.resolve(process.env.CW_DATA_DIR) : path.resolve(import.meta.dirname, '../data');
 export const settingsFile = () => path.join(dataDirectory(), 'automation-settings.json');
 export const usageFile = () => path.join(dataDirectory(), 'automation-usage.json');
-export const SETTINGS_FORMAT = 'crazywaterword-automation';
+export const SETTINGS_FORMAT = 'crazywaterworld-automation';
+const LEGACY_SETTINGS_FORMAT = 'crazywaterword-automation';
 export const DEMAND_SOURCES = [
   ['cargo', '贸易港口 / 货船'], ['guildRecruit', '联盟募兵'], ['museum', '博物馆探宝'],
   ['guildShip', '联盟商船'], ['heroRaid', '红卡订单'], ['resident', '居民订单'],
@@ -309,7 +310,7 @@ export function saveAutomationSettings(accountId, input, { revision, file = sett
 
 export function exportAutomationSettings(settings) { return { format: SETTINGS_FORMAT, version: 1, settings: validateSettings(settings) }; }
 export function importAutomationSettings(document, options) {
-  if (!plain(document) || document.format !== SETTINGS_FORMAT || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
+  if (!plain(document) || ![SETTINGS_FORMAT, LEGACY_SETTINGS_FORMAT].includes(document.format) || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
   // 原版本1导出没有巨轮分组，只补新增默认值；既有分组仍严格校验。
   const input = plain(document.settings) ? { ...document.settings } : document.settings;
   if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
@@ -321,7 +322,7 @@ export function importAutomationSettings(document, options) {
   }
   if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'targetPriority')) input.cityWar = { ...input.cityWar, targetPriority: DEFAULT_SETTINGS.cityWar.targetPriority };
   if (plain(input?.schedule) && !Object.hasOwn(input.schedule, 'worldOnlineRewards')) input.schedule = { ...input.schedule, worldOnlineRewards: false };
-  if (plain(input?.schedule)) input.schedule = { armsRaceRewards:true, riverScore:true, riverPass:true, riverHelp:true, compassDaily:true, compassSpin:true, merchantTrade:true, merchantRewards:true, beautyVotes:true, beautyGift:true, pirateRankRewards:true,warRankRewards:true,festivalActiveRewards:true,worldBossRewards:true,battleReportRewards:true,weekSupplyFree:true,leagueCollect:true,leaguePassRewards:true,trialPaidSweep: false, trialAdSweep: false, heroRecruitRewards: false, antiqueFloaters: false, weekHeroStar:false, festivalSign:false, festivalFreeGift:false, limitedFreeGifts:true, vipDailyGift:true, heroAdRecruit:false, antiqueAdRecruit:false, ...input.schedule };
+  if (plain(input?.schedule)) input.schedule = { ...taskSettings(), ...input.schedule };
   if (plain(input?.events)) input.events = {otherOption:1,...input.events};
   if (plain(input?.pet)) input.pet={release:false,releaseQualities:[],...input.pet};
   if (plain(input?.forge)) input.forge={decompose:false,decomposeQualities:[],...input.forge};

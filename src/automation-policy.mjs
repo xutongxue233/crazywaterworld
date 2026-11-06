@@ -1,4 +1,6 @@
 import { normalize } from './worlds.mjs';
+import { goldAccountKey, reserveGold, rejectGold, cancelUnsentGold } from './gold-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
 
 export class AutomationSkip extends Error {
   constructor(message) { super(message); this.code = 'AUTOMATION_SKIP'; }
@@ -145,19 +147,27 @@ export function actionCounters(step) {
 }
 
 // 同一计划中的成本按发送顺序扣减。读取失败、额度文件损坏或金额不明均不发送消费动作。
-export function createActionGuard(client, getSettings, ledger, { enabled = () => true } = {}) {
+export function createActionGuard(client, getSettings, ledger, { enabled = () => true, player = null } = {}) {
   const remaining = new Map();
+  const reservations = [];
+  const sameAction = (a, b) => a === b || (a.request === b.request && JSON.stringify(a.body ?? {}) === JSON.stringify(b.body ?? {}) && JSON.stringify(a.costs ?? []) === JSON.stringify(b.costs ?? []));
+  const reservationFor = (step, ticket) => reservations.find(record => ticket ? record.ticket === ticket : sameAction(record.step, step));
+  const forget = record => { if (record) reservations.splice(reservations.indexOf(record), 1); };
   return {
     async before(step) {
       let settings = getSettings?.();
-      if (!settings) return null;
+      if (!settings && !player) return null;
+      const costs = actionCosts(step);
+      // Legacy callers without detailed settings still share resource barriers.
+      if (!settings && !costs.size) return null;
       if (!enabled()) throw new AutomationSkip('操作已暂停');
       if (!worldPreferenceEnabled(settings, step.kind)) throw new AutomationSkip('对应设置已关闭');
-      if (step.setting) {
+      if (settings && step.setting) {
         const [group, key] = step.setting.split('.');
         if (!settings[group]?.[key] || (step.scope === 'base' && !settings.loop.world)) throw new AutomationSkip('对应设置已关闭');
       }
-      const costs = actionCosts(step);
+      const account = player && costs.size ? goldAccountKey(player) : null;
+      let actualGold, materialStock;
       const nextBalances = new Map();
       if (costs.size) {
         const itemIds = [...costs.keys()].filter(id => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id));
@@ -166,7 +176,18 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         if (itemIds.length) {
           const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
           if (!Array.isArray(bag.items)) throw new AutomationSkip('无法确认当前道具余额');
-          for (const id of itemIds) balances.set(id, Number(bag.items.find(row => (row.itemId ?? row.id) === id)?.num ?? 0));
+          materialStock = new Map();
+          for (const row of bag.items) {
+            const id = row?.itemId ?? row?.id;
+            if (typeof id !== 'string' || !id || materialStock.has(id) || !Number.isSafeInteger(row.num) || row.num < 0) throw new AutomationSkip('无法完整确认当前道具库存');
+            materialStock.set(id, row.num);
+          }
+          if (account) {
+            if (goldAccountKey(player) !== account) throw new AutomationSkip('账号已切换，不能使用原账号库存');
+            try { confirmOrderMaterialSpends(player, materialStock); }
+            catch (error) { throw new AutomationSkip(error.message); }
+          }
+          for (const id of itemIds) balances.set(id, materialStock.get(id) ?? 0);
         }
         if (resourceIds.length) {
           const resources = normalize(await client.request('AllResourceRequest', {}, 'AllResourceResponse'));
@@ -175,11 +196,12 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
             const row = resources.list?.find(r => r.res === ids[id]);
             if (!row || !Number.isSafeInteger(row.amount)) throw new AutomationSkip('无法确认当前资源余额');
             balances.set(id, row.amount);
+            if (id === 'GOLD') actualGold = row.amount;
           }
         }
         settings = getSettings?.() ?? settings;
         if (!worldPreferenceEnabled(settings, step.kind)) throw new AutomationSkip('对应设置已关闭');
-        if (step.setting) {
+        if (settings && step.setting) {
           const [group, key] = step.setting.split('.');
           if (!settings[group]?.[key] || (step.scope === 'base' && !settings.loop.world)) throw new AutomationSkip('对应设置已关闭');
         }
@@ -187,7 +209,7 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
           const actual = balances.get(id);
           const balance = Math.min(actual, remaining.get(id) ?? actual);
           if (!Number.isSafeInteger(balance) || balance < 0 || balance - cost < resourceReserve(settings, id)) throw new AutomationSkip(`${({ GOLD: '金币', RUBY: '钻石', EXP: '经验' })[id] ?? id}不足或会低于保留数量`);
-          if (id === 'RUBY' && !settings.resources.allowDiamonds) throw new AutomationSkip('钻石消耗总开关已关闭');
+          if (id === 'RUBY' && settings && !settings.resources.allowDiamonds) throw new AutomationSkip('钻石消耗总开关已关闭');
           balances.set(id, balance);
         }
         if (!enabled()) throw new AutomationSkip('操作已暂停');
@@ -195,16 +217,41 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
       }
       const counters = actionCounters(step);
       let ticket = null;
-      if (Object.values(counters).some(Boolean)) {
+      if (settings && Object.values(counters).some(Boolean)) {
         if (!ledger) throw new AutomationSkip('无法记录当日用量，已跳过本次消费');
         try { ticket = ledger.reserve(counters, usageLimits(settings), step.counterMinimums); }
         catch (error) { throw new AutomationSkip(error.message); }
       }
+      if (account) {
+        let materials, gold;
+        try {
+          if (!enabled() || goldAccountKey(player) !== account) throw new AutomationSkip('操作已暂停或账号已切换');
+          if (materialStock) materials = beginOrderMaterialSpend(player, [...costs].filter(([id]) => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id)).map(([id, need]) => ({ id, need, have: materialStock.get(id) ?? 0 })), step.label || step.request);
+          if (costs.has('GOLD')) gold = reserveGold(player, actualGold, costs.get('GOLD'), step.request);
+          if (materials || gold) reservations.push({ step, ticket, gold, materials, request: step.request });
+        } catch (error) {
+          cancelOrderMaterialSpend(materials); cancelUnsentGold(gold);
+          if (ticket) ledger.cancel(ticket);
+          throw new AutomationSkip(error.message);
+        }
+      }
       for (const [id, balance] of nextBalances) remaining.set(id, balance);
       return ticket;
     },
-    async after(step, ticket, outcome) { if (ticket && outcome?.ok && !('sent' in outcome)) ledger.confirm(ticket); },
-    async cancel(step, ticket) {
+    async after(step, ticket, outcome) {
+      if (ticket && outcome?.ok && !('sent' in outcome)) ledger.confirm(ticket);
+      // A confirmed action does not prove resource snapshots caught up.
+      // Shared barriers wait for later observed debits.
+      forget(reservationFor(step, ticket));
+    },
+    async cancel(step, ticket, { notSent = false, error } = {}) {
+      const record = reservationFor(step, ticket);
+      if (record) {
+        if (notSent) { cancelUnsentGold(record.gold); cancelOrderMaterialSpend(record.materials); }
+        else if (error?.prompt && error.request === record.request) { rejectGold(record.gold, error); cancelOrderMaterialSpend(record.materials); }
+        else return;
+        forget(record);
+      }
       if (ticket) ledger.cancel(ticket);
       for (const [id, amount] of actionCosts(step)) if (remaining.has(id)) remaining.set(id, remaining.get(id) + amount);
     },

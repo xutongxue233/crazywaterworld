@@ -17,6 +17,21 @@
 import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
 import { FREE_DAILY_PACK_ID } from './actions.mjs';
+import { arenaDailyDriver } from './arena.mjs';
+import { pirateSweepProbes, planPirateSweeps, runPirateSweep } from './pirates.mjs';
+
+const pirateDailyDriver = {
+  id: 1010,
+  title: '累计击败野怪',
+  probes: pirateSweepProbes,
+  evaluate(args) {
+    if (!args.player || !args.config?.tables?.ModuleOpenCfg) {
+      return { status: 'waiting', reason: '每日免费扫荡按“游戏配置 → 世界 → 海盗日常扫荡”所选种类及游戏剩余次数独立执行' };
+    }
+    return planPirateSweeps(args);
+  },
+  run: runPirateSweep,
+};
 
 export const TASK_TITLES = {
   1001: '登录游戏',
@@ -201,27 +216,7 @@ export const DAILY_DRIVERS = {
     },
   },
 
-  1005: {
-    id: 1005,
-    title: '竞技场战斗',
-    probes: [['ArenaInfoRequest', {}]],
-    evaluate({ task, probe }) {
-      if (task.progress >= task.targetProgress) return { status: 'done' };
-      const challenges = probe('ArenaInfoRequest')?.challenges ?? [];
-      const remaining = task.targetProgress - task.progress;
-      if (!challenges.length) return { status: 'blocked', reason: '竞技场没有可挑战对手' };
-      // 从战力最低的开始打，胜率最高。
-      const targets = [...challenges].sort((a, b) => lowPower(a.power) - lowPower(b.power)).slice(0, remaining);
-      const actions = targets.map((target) => ({
-        request: 'ArenaChallengeRequest',
-        body: { rank: target.rankNo, challengeId: target.id },
-        response: 'ArenaChallengeResponse',
-        cost: '竞技场次数',
-        note: `挑战 rank=${target.rankNo} 战力=${lowPower(target.power)}`,
-      }));
-      return { status: 'ready', actions };
-    },
-  },
+  1005: arenaDailyDriver,
 
   1006: {
     id: 1006,
@@ -304,25 +299,27 @@ export const DAILY_DRIVERS = {
     },
   },
 
-  1010: {
-    id:1010,title:'累计击败海盗',probes:[],
-    evaluate({task}){return task.progress>=task.targetProgress?{status:'done'}:{status:'waiting',reason:'每日免费扫荡按“游戏配置 → 世界 → 海盗日常扫荡”所选种类及游戏剩余次数独立执行'};},
-  },
+  1010: pirateDailyDriver,
 
-  1011: { id: 1011, title: '累计联盟情报', probes: [['TradeGuildRadarRequest', {}]], evaluate: lockedReason('联盟情报（雷达）') },
-  1012: { id: 1012, title: '累计联盟订单', probes: [['GuildCityInfoRequest', {}]], evaluate: lockedReason('联盟城市募兵') },
+  1011: { id: 1011, title: '累计联盟情报', probes: [], evaluate: automationReason('联盟情报领奖与派舰') },
+  1012: { id: 1012, title: '累计联盟订单', probes: [], evaluate: automationReason('提交联盟订单') },
   1013: { id: 1013, title: '累计联盟互助', probes: [['GuildAidListRequest', { type: 0 }]], evaluate: lockedReason('联盟互助') },
   1014: { id: 1014, title: '累计请求帮助', probes: [], evaluate: lockedReason('联盟求助') },
-  1015: { id: 1015, title: '城战获得功勋', probes: [], evaluate: lockedReason('城战（20:00-21:00 限时）') },
-  1016: { id: 1016, title: '博物馆探险', probes: [['MuseumInfoRequest', {}]], evaluate: lockedReason('博物馆') },
+  1015: { id: 1015, title: '城战获得功勋', probes: [], evaluate: automationReason('城战接续（20:00-21:00 限时）', '世界与挑战') },
+  1016: { id: 1016, title: '博物馆探险', probes: [], evaluate: automationReason('派遣博物馆探险队', '博物馆') },
   1017: { id: 1017, title: '参与积分赛', probes: [['LeagueInfoRequest', {}]], evaluate: lockedReason('跨服积分赛') },
 };
+
+function automationReason(label, group = '联盟') {
+  return ({ task }) => task.progress >= task.targetProgress ? { status: 'done' }
+    : { status: 'waiting', reason: `可在「挂机 → ${group} → ${label}」开启，执行条件与结果见运行日志` };
+}
 
 // 这类任务的入口请求被服务端直接拒绝（未入盟 / 未开放 / 限时），探测结果只用来确认原因。
 function lockedReason(feature) {
   return ({ task }) => {
     if (task.progress >= task.targetProgress) return { status: 'done' };
-    return { status: 'blocked', reason: `${feature}当前不可用（服务端拒绝或功能未开放）` };
+    return { status: 'blocked', reason: `控制台尚未接入${feature}的执行流程，可在游戏内完成` };
   };
 }
 
@@ -362,14 +359,16 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   };
 
   const probeCache = new Map();
+  const independentPirateSweep = Boolean(settings);
   const probe = (name) => {
     for (const [key, value] of probeCache) if (key.startsWith(`${name}|`)) return value;
     return null;
   };
   for (const driver of Object.values(DAILY_DRIVERS)) {
+    if (driver.id === 1010 && independentPirateSweep) continue;
     if (!tasks.some(task => task.id === driver.id && task.progress < task.targetProgress)) continue;
     for (const [name, body, shouldProbe] of driver.probes ?? []) {
-      if (shouldProbe && !shouldProbe(probe)) continue;
+      if (shouldProbe && !shouldProbe(probe, { config, player })) continue;
       const key = `${name}|${JSON.stringify(body)}`;
       if (probeCache.has(key)) continue;
       probeCache.set(key, await fetchProbe(name, body));
@@ -382,6 +381,10 @@ export async function surveyDailies(client, protocol, { config = null, player = 
       evaluations.push({ task, status: 'done', actions: [] });
       continue;
     }
+    if (task.id === 1010 && independentPirateSweep) {
+      evaluations.push({ task, status: 'waiting', reason: '每日免费扫荡由独立服务按“游戏配置 → 世界 → 海盗日常扫荡”执行', actions: [] });
+      continue;
+    }
     const driver = DAILY_DRIVERS[task.id];
     if (!driver) {
       evaluations.push({ task, status: 'unknown', reason: '没有对应的驱动' });
@@ -389,7 +392,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
     }
     let verdict;
     try {
-      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player, settings }));
+      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player, settings, client, dailyResetTime: daily.dailyResetTime }));
     } catch (error) {
       verdict = { status: 'error', reason: error.message };
     }
@@ -406,7 +409,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   }
   const gold = probe('ClickGoldInfoRequest')?.info;
   const freeLimit = config?.tables?.OfflineParamCfg?.data?.find(row => row.paramName === '免费点金次数')?.paramValue;
-  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config,
+  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config, player,
     freeRecruitAt: probe('RecruitInfoRequest')?.hero?.freeEndTimeSeconds,
     freeGoldAt: freeLimit > 0 && gold?.freeTimes >= freeLimit ? gold.resetTime : undefined,
   };
@@ -426,7 +429,7 @@ async function sendAction(client, protocol, action, timeout) {
 // claimRewards 走的是「收尾」：驱动动作发完服务端才更新完成数，所以这里重新问一次
 // DailyTaskInfoResponse，先把达标任务的奖励领了（奖励里的活跃度会把活跃度顶上去），
 // 再领活跃度宝箱。少了这一步，任务做完了奖励还挂在服务端上。
-export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, onStep, allowAction = () => true, settings = null, beforeAction, afterAction } = {}) {
+export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, onStep, allowAction = () => true, settings = null, beforeAction, afterAction, cancelAction } = {}) {
   if (!allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
   const results = [];
   if (settings && !settings.dailies.enabled) return results;
@@ -443,14 +446,44 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
         const outcome = { id: entry.task.id, title: entry.task.title, skipped: true, reason: '本次操作未允许花钻石' };
         results.push(outcome); onStep?.(outcome); continue;
       }
+      let ticket;
+      let prepared = false;
       try {
-        const ticket = await beforeAction?.({ kind: 'daily', scope: 'daily', setting: 'dailies.enabled', label: action.note, ...action });
-        const body = await sendAction(client, protocol, action, timeout);
+        ticket = await beforeAction?.({ kind: 'daily', scope: 'daily', setting: 'dailies.enabled', label: action.note, ...action });
+        prepared = true;
+        if (!allowAction(entry.task.id, action)) {
+          await cancelAction?.(action, ticket, { notSent: true });
+          const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, skipped: true, reason: '日常行动已关闭或账号已暂停' };
+          results.push(outcome); onStep?.(outcome); continue;
+        }
+        let body;
+        if (entry.task.id === 1010 && typeof DAILY_DRIVERS[1010].run === 'function') {
+          const sweepResult = await DAILY_DRIVERS[1010].run({ client, survey, action, timeout, allowAction, config });
+          if (sweepResult?.skipped) {
+            await cancelAction?.(action, ticket, { notSent: true });
+            const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, skipped: true, reason: sweepResult.reason };
+            results.push(outcome); onStep?.(outcome); continue;
+          }
+          body = sweepResult?.body;
+        } else if (action.request === 'ArenaChallengeRequest' && typeof arenaDailyDriver.run === 'function') {
+          const arenaResult = await arenaDailyDriver.run({ client, protocol, action, timeout, allowAction });
+          if (arenaResult?.skipped) {
+            await cancelAction?.(action, ticket, { notSent: true });
+            const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, skipped: true, reason: arenaResult.reason };
+            results.push(outcome); onStep?.(outcome); continue;
+          }
+          body = arenaResult?.body;
+        } else {
+          body = await sendAction(client, protocol, action, timeout);
+        }
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: true, body };
         results.push(outcome);
         onStep?.(outcome);
         await afterAction?.(action, ticket, action.response ? outcome : { ...outcome, sent: true });
       } catch (error) {
+        if (prepared && (error.code === 'AUTOMATION_SKIP' || error.notSent === true || error.prompt && error.request === action.request)) {
+          await cancelAction?.(action, ticket, { notSent: error.code === 'AUTOMATION_SKIP' || error.notSent === true, error });
+        }
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, way: action.body?.way, note: action.note, ok: false,
           ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true, reason: error.message } : {}), error: error.message };
         results.push(outcome);

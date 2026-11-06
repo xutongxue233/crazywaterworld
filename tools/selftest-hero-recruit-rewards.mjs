@@ -34,4 +34,3 @@ const loopClient={connected:true,async request(name){
 await runLoop(loopClient,protocol,{config,player:{worldId:1000001},allowMutate:true,rounds:2,everyMs:1,sleep:async()=>{},isEnabled:key=>key==='heroRecruitRewards'});
 assert.equal(loopWrites,1);
 console.log('英雄累计招募奖励专项 12/12 通过（真实协议、虚构业务数据，含挂机链路）');
-

@@ -26,12 +26,13 @@ export async function readWeekCalendar(client){
  return data.activityTime.map(r=>({...r,name:weekActivityNames[r.type]||'周活动 '+r.type,stage:now(client)<r.startTime?'即将开始':now(client)<r.endTime?'进行中':'已结束'}));
 }
 export async function claimOpenRank(client,config,{player,enabled,ledger,report},type){
- const label=type===3?'剿匪榜达标奖励':'杀敌榜达标奖励',readState=()=>read(client,'OpenRankInfo',{type});
+ const ranks={1:['订单榜达标奖励','OpenRankOrderTaskCfg'],2:['闯关榜达标奖励','OpenRankStageTaskCfg'],3:['剿匪榜达标奖励','OpenRankPirateTaskCfg'],4:['杀敌榜达标奖励','OpenRankWarTaskCfg']};
+ const [label,table]=ranks[type],readState=()=>read(client,'OpenRankInfo',{type});
  const state=await readState();
  if(!integer(state.progress)||!Array.isArray(state.gotRewardId)||!integer(state.endTime))throw Error(label+'状态未完整返回');
  if(now(client)>=state.endTime)return wait(report,label,'本期活动未开放或已结束');
- const all=rows(config,type===3?'OpenRankPirateTaskCfg':'OpenRankWarTaskCfg'),s=season(player),chosen=all.some(r=>r.season===s)?s:Math.max(0,...all.map(r=>r.season));
- const eligible=all.filter(r=>r.season===chosen&&integer(r.score)&&r.score<=state.progress&&!state.gotRewardId.includes(r.score));
+ const all=rows(config,table),s=season(player),chosen=all.some(r=>r.season===s)?s:Math.max(0,...all.map(r=>r.season??0));
+ const eligible=all.filter(r=>(r.season===undefined||r.season===chosen)&&integer(r.score)&&r.score<=state.progress&&!state.gotRewardId.includes(r.score));
  if(!eligible.length)return wait(report,label,'当前进度 '+state.progress+'，暂无未领取的达标档位');
  for(const tier of eligible){
   if(!enabled()||now(client)>=state.endTime)break;

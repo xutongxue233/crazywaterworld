@@ -31,7 +31,7 @@ export async function testResidentHttp(app) {
   const game = new EventEmitter();
   game.connected = true;
   game.stop = () => { game.connected = false; };
-  session.player = { level: 1, scenarioId: 1.5 }; // no real map fetch for this fixture
+  session.player = { playerId: '9101000000000001', worldId: 1001001, level: 1, scenarioId: 1.5 }; // no real map fetch for this fixture
   session.client = game;
   const orders = [1, 2].map(index => ({ index, workerId: index, textId: index, requirements: [{ id: '烤鱼', num: 3 }] }));
   const writes = [];

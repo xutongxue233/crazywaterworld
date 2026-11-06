@@ -7,7 +7,7 @@ const rows = (config, table) => config?.tables?.[table]?.data ?? [];
 const maxUid = (1n << 63n) - 1n;
 
 // Equipment IDs are int64. Never round-trip them through an unsafe JS number.
-function uidText(uid) {
+export function uidText(uid) {
   let n;
   if (typeof uid === 'string' && /^[1-9]\d{0,18}$/.test(uid)) n = BigInt(uid);
   else if (Number.isSafeInteger(uid)) n = BigInt(uid);

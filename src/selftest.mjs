@@ -119,19 +119,21 @@ let checked = 0;
     playerLevel: 1, condition: [], consume: [['木材', 2]],
   })) } } };
   const attempts = [];
+  let wood = 6;
   const client = {
     connected: true,
     request: async (name) => {
       if (name === 'MainTaskInfoRequest' || name === 'DailyTaskInfoRequest') throw new Error('fixture timeout');
-      return name === 'AllItemRequest' ? { items: [{ itemId: '木材', num: 6 }] } : {};
+      return name === 'AllItemRequest' ? { items: [{ itemId: '木材', num: wood }] } : {};
     },
     sendWatch: async (name, body) => {
       assert.equal(name, 'BuildBuildingRequest');
       attempts.push(body.buildingId);
-      if (attempts.length === 1) throw new Error('fixture rejection');
+      if (attempts.length === 1) throw Object.assign(new Error('fixture rejection'), { request: name, prompt: {} });
+      wood -= 2;
     },
   };
-  const { history } = await runLoop(client, protocol, { config, player: { level: 1 }, allowMutate: true });
+  const { history } = await runLoop(client, protocol, { config, player: { level: 1, playerId: 710001, worldId: 9001 }, allowMutate: true });
   assert.equal(history[0].world.planned, 3, 'four plots share materials for three builds');
   assert.equal(attempts.length, 3);
   assert.equal(new Set(attempts).size, 3);

@@ -4,6 +4,7 @@ import { loadProtocol } from '../../src/proto.mjs';
 import { defaultSettings } from '../../src/automation-settings.mjs';
 const protocol = loadProtocol();
 const table = data => ({ data });
+let playerSequence = 9007199254800000n;
 
 export function warForgeSettings() {
   const s = defaultSettings();
@@ -18,7 +19,8 @@ export function warForgeSettings() {
 export function warForgeFixture() {
   const f = treasureFixture(), now = Math.floor(Date.now() / 1000), read = f.client.request;
   f.protocol = protocol;
-  f.player = protocol.LoginResponse.decode(protocol.LoginResponse.encode({ playerInfo: { ...f.player, vip: { vipLevel: 3 }, forgeLevel: 1, scenarioId: 1 } }).finish()).playerInfo;
+  f.player = protocol.LoginResponse.decode(protocol.LoginResponse.encode({ playerInfo: { ...f.player, playerId: String(++playerSequence), vip: { vipLevel: 3 }, forgeLevel: 1, scenarioId: 1 } }).finish()).playerInfo;
+  for (const fleet of f.state.fleets) fleet.owner.playerId = f.player.playerId;
   f.config.materialName = id => id;
   f.config.tables.ModuleOpenCfg.data.push({ moduleId: '世界', playerLevel: 16 });
   f.config.tables.GameplayOpenCfg.data.push({ gameplay: '国战', openDays: [2, 1] });

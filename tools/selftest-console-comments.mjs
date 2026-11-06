@@ -88,7 +88,7 @@ await check('未知钻石结果保留额度，明确拒绝才释放', async () =
   assert.equal(f.ledger.snapshot().counters.diamonds, 16);
   const g = setup(); g.settings.resources.allowDiamonds = true;
   const token = option(await g.view(), 1007).token;
-  g.client.sendWatch = async () => { throw Object.assign(new Error('服务器明确拒绝'), { prompt: { prompt: 1 } }); };
+  g.client.sendWatch = async name => { throw Object.assign(new Error('服务器明确拒绝'), { request: name, prompt: { prompt: 1 } }); };
   await assert.rejects(g.run(token, { paid: true }), /明确拒绝/);
   assert.equal(g.ledger.snapshot().counters.diamonds ?? 0, 0);
   assert(option(await g.view(), 1007).token);
@@ -196,6 +196,7 @@ try {
   });
   await check('手动海面加速默认不授权，已保存农田加速也不能绕过本轮开关', async () => {
     const session = app.sessions.get('a'), f = commentsFixture();
+    f.player.worldId = 9001;
     session.client = f.client; session.player = f.player; session.paused = false;
     session.preferences = defaultSettings();
     session.preferences.building.enabled = session.preferences.factory.enabled = session.preferences.resident.enabled = false;

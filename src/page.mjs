@@ -7,6 +7,8 @@ const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
 const settingsScript = readFileSync(new URL('./settings-ui.js', import.meta.url), 'utf8');
+const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
+const connectionScript = readFileSync(new URL('./ui/connection.js', import.meta.url), 'utf8');
 const settingsCss = readFileSync(new URL('./settings.css', import.meta.url), 'utf8');
 const giftCodeScript=readFileSync(new URL('./gift-codes-ui.js',import.meta.url),'utf8');
 const rankingScript=readFileSync(new URL('./activity-rankings-ui.js',import.meta.url),'utf8');
@@ -591,6 +593,7 @@ async function refreshOverview() {
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
+    void refreshIncome();
     if(!$('tab-overview').classList.contains('hidden'))void refreshActivityRanks();
     if(!$('tab-overview').classList.contains('hidden'))void refreshActivityStatistics();
     if(!$('tab-overview').classList.contains('hidden'))maybeRefreshWorldMap();
@@ -683,7 +686,7 @@ for(const button of document.querySelectorAll('[data-idle-group]')) {
     if(next!==null){event.preventDefault();buttons[next].click();buttons[next].focus();}
   };
 }
-const taskInputs = [...document.querySelectorAll('[data-auto-task]')];
+const taskInputs = [...document.querySelectorAll('[data-auto-task]:not([data-legacy])')];
 function setTaskSwitch(input, enabled) {
   input.setAttribute('aria-checked', String(enabled));
   input.dataset.state = enabled ? 'checked' : 'unchecked';
@@ -767,6 +770,7 @@ function renderLoop(data) {
   $('runtime-version').textContent='当前服务加载时间：'+(data.runVersion?new Date(data.runVersion).toLocaleString('zh-CN'):'旧版服务，等待加载本次更新');
   if(data.singleTasks)$('single-task-status').textContent='需单独启动 · 首杀：'+(data.singleTasks.pirate?.running?'运行中':'未启动')+' · 主线：'+(data.singleTasks.stages?.running?'运行中':'未启动')+' · 互助：'+(data.singleTasks.mutual?.running?'运行中':'未启动')+'。入口：世界 / 挑战 / 资源与玩法 → 联盟。';
   loopSettingsRevision = data.settingsRevision;
+  if (typeof renderReconnect === 'function') renderReconnect(data);
   for (const input of taskInputs) {
     if (savingTasks.has(current + ':' + input.dataset.autoTask)) continue;
     const task = (data.controls ?? []).find(t => t.key === input.dataset.autoTask);
@@ -787,13 +791,15 @@ function renderLoop(data) {
   $('loop-stop').disabled = !data.running || data.stopping;
   $('loop-hint').textContent = (data.running ? '挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
+  if (data.recovery) $('loop-hint').textContent = '等待自动重连 · 第 ' + data.recovery.attempts + ' 次' + (data.recovery.nextAt ? ' · ' + when(data.recovery.nextAt) : '');
+  $('loop-stop').disabled = (!data.running && !data.recovery) || data.stopping;
 
 }
 
 async function refreshLoop() {
   if(document.hidden)return;
   const account = current, version = ++loopVersion;
-  if ($('tab-idle').classList.contains('hidden')&&$('tab-overview').classList.contains('hidden')) return;
+  if ($('tab-idle').classList.contains('hidden')&&$('tab-overview').classList.contains('hidden')&&$('tab-settings').classList.contains('hidden')) return;
   if (loopAccount !== account || !account) {
     $('loop-hint').textContent = account ? '正在读取设置' : '请选择账号';
     for (const input of taskInputs) {
@@ -825,9 +831,12 @@ async function toggleAutoTask(input) {
   input.disabled = true;
   ++loopVersion;
   try {
-    const updated = await call('/api/loop/control', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled, revision: loopSettingsRevision }) });
+    const eventTask = Boolean(input.dataset.eventTask);
+    if (eventTask) activityTaskEdits.set(saving, { enabled, pending: true, version: ++activitiesVersion });
+    const updated = await call(eventTask ? '/api/loop/task' : '/api/loop/control', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled, ...(eventTask ? {} : { revision: loopSettingsRevision }) }) });
+    if (eventTask) { syncActivityTask(key, enabled, account); activityTaskEdits.set(saving, { enabled, pending: false, version: ++activitiesVersion }); }
     if (account === current) { loopSettingsRevision = updated.settingsRevision; configEditor.owner = null; }
-  } catch (error) { if(account===current){setTaskSwitch(input, !enabled); reportError(error);} }
+  } catch (error) { if (input.dataset.eventTask) activityTaskEdits.delete(saving); if(account===current){setTaskSwitch(input, !enabled); reportError(error);} }
   finally {
     savingTasks.delete(saving);
     if (account === current) {
@@ -871,6 +880,47 @@ $('loop-stop').onclick = async () => {
 };
 
 let orderClockOffset=0;
+bindGameAction('loot-run', async () => {
+  const account = current;
+  if (snapshot.paused || disconnected.has(account)) return;
+  $('loot-hint').textContent = '领取中…';
+  try {
+    const data = await call('/api/loot/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+    if (current === account) $('loot-hint').textContent = data.summary || '本轮领取结束，结果见运行日志';
+  } catch (error) {
+    if (current === account) $('loot-hint').textContent = '';
+    throw error;
+  }
+});
+bindGameAction('tasks-plan', async () => {
+  const account = current;
+  if (snapshot.paused || disconnected.has(account)) return;
+  $('tasks-hint').textContent = '检查中…';
+  try {
+    const data = await call('/api/tasks');
+    if (current !== account) return;
+    $('tasks-hint').textContent = '可领 ' + data.plan.length + ' 项';
+    logReport('任务奖励：可领 ' + data.plan.length + ' 条', data.text);
+  } catch (error) {
+    if (current === account) $('tasks-hint').textContent = '';
+    throw error;
+  }
+});
+bindGameAction('tasks-run', async () => {
+  const account = current;
+  if (snapshot.paused || disconnected.has(account)) return;
+  $('tasks-hint').textContent = '领取中…';
+  try {
+    const data = await call('/api/tasks/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+    if (current !== account) return;
+    const summary = '本轮成功领取 ' + data.results.filter(entry => entry.ok).length + ' 项';
+    $('tasks-hint').textContent = summary;
+    logReport('任务奖励：' + summary, data.text);
+  } catch (error) {
+    if (current === account) $('tasks-hint').textContent = '';
+    throw error;
+  }
+});
 function orderRefreshLabel(at){
  const left=Math.max(0,Math.ceil(at-(Date.now()+orderClockOffset)/1000));
  const time=new Date(at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
@@ -1259,37 +1309,7 @@ function renderSourceSearch() {
 }
 $('source-query').oninput = renderSourceSearch;
 
-let activitiesVersion = 0;
-async function refreshActivities() {
-  if ($('tab-activities').classList.contains('hidden')) return;
-  const version=++activitiesVersion,account=current,materials=$('activities-order');
-  if(materials.dataset.owner!==account){clear(materials);materials.dataset.owner=account||'';}
-  if(!account||snapshot.paused||disconnected.has(account)){materials.textContent='连接账号后查看材料需求';return;}
-  if(!materials.children.length)materials.textContent='正在读取周订单材料…';
-  try{
-    const [data,sources]=await Promise.all([call('/api/activities'),sourceIndex??call('/api/material-sources')]);
-    if(version!==activitiesVersion||account!==current)return;
-    sourceIndex=sources;renderSourceSearch();clear(materials);
-    if(data.order?.materials.length&&!data.order.finished){
-      const order=data.order;
-      const run=(action,payload,detail)=>openConfirm(action==='buy'?'钻石购买材料':'提交整份周订单',[el('p','',detail)],async()=>{
-        if(account!==current)throw Error('账号已切换，请刷新');
-        const result=await call('/api/week-order/'+action,{method:'POST',body:JSON.stringify({confirm:true,orderKey:order.orderKey,...payload})});
-        if(account===current){$('hint').textContent=result.message;await refreshActivities();}
-      });
-      const submit=smallButton('提交整单');submit.disabled=!order.ready;
-      submit.onclick=()=>run('submit',{},order.materials.map(r=>r.name+' ×'+r.required).join('、'));
-      materials.append(submit);
-      materials.append(table(['材料','需要','库存','缺口','来源','购买'],order.materials.map(r=>{
-        const cost=r.price*r.missing,buy=smallButton(cost+' 钻');
-        buy.onclick=()=>run('buy',{itemId:r.id,quantity:r.missing,cost},r.name+' ×'+r.missing+'，共 '+cost+' 钻石');
-        const source=r.seed?'农田 · '+r.farmStatus:r.factory?r.factory.name+' · 需'+r.factory.required+'级（'+(r.factory.level==null?'未同步':r.factory.level+'级')+'）':'—';
-        return [r.name,String(r.required),String(r.owned),r.missing?String(r.missing):'齐',source,r.missing&&r.price?buy:r.missing?'无售价':'—'];
-      })));
-    }else materials.textContent=data.orderError?'材料未同步，请刷新重试':!data.order?'本期未开放周订单':data.order.finalReady?'本期周订单已全部交付，最终奖励待领取。':data.order.finished?'本期周订单已完成':'当前没有材料需求';
-  }catch{if(version===activitiesVersion&&account===current)materials.textContent='材料需求读取失败，请刷新重试';}
-}
-$('activities-refresh').onclick=refreshActivities;
+${activitiesScript}
 
 function table(headers, rows) {
   const box = component('ui-table');
@@ -1607,6 +1627,7 @@ ${rankingScript}
 ${activityStatisticsScript}
 ${inventoryScript}
 ${settingsScript}
+${connectionScript}
 for(const button of document.querySelectorAll('[data-panel-toggle]'))button.onclick=()=>{const panel=$(button.dataset.panelToggle),open=panel.hidden;panel.hidden=!open;button.setAttribute('aria-expanded',String(open));button.textContent=open?'收起':'展开';};
 ${giftCodeScript}
 let selectedResource = 'dailies';
@@ -1633,7 +1654,7 @@ function activateConsolePage(button, resource = selectedResource) {
     }
     if (button.dataset.tab === 'manual') refreshManualWorld();
     if (button.dataset.tab === 'idle') refreshLoop();
-    if (button.dataset.tab === 'settings') void configLoad();
+    if (button.dataset.tab === 'settings') { void configLoad(); void refreshLoop(); void refreshNotify(); }
     if(target==='giftcodes')void refreshGiftCodes();
     if (target === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();

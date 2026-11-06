@@ -25,7 +25,8 @@ export async function runSinglePirateHunt(client,config,player,{targetKey,fleetK
   report?.(event);
  };
  try{
-  const result=await startPirateHunt(client,config,player,{targetKey,fleetKey,enabled,report:update,beforeSend({view,target,fleet}){
+  const result=await startPirateHunt(client,config,player,{targetKey,fleetKey,enabled,report:update,
+   reservationReason:fleet=>dispatchReservationReason(client,getSettings(),'pirateHunt',fleet.buildingId),beforeSend({view,target,fleet}){
    const settings=getSettings(),p=settings.pirateHunt;
    const reason=fleetRecordReason(ledger.keyRecords(),fleet.buildingId,String(normalize(player.worldId)))||dispatchReservationReason(client,settings,'pirateHunt',fleet.buildingId);
    if(reason)throw Error(reason);
@@ -114,6 +115,7 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
    const label=fleet.name+' → '+target.name+' '+target.level+'级';state.target=label;
    try {
     const reply=await startPirateHunt(client,config,player,{targetKey:target.targetKey,fleetKey:fleet.key,enabled:live,
+     reservationReason:raw=>dispatchReservationReason(client,getSettings(),'pirateHunt',raw.buildingId),
      beforeSend({view,target:reviewed,fleet:raw}) {
       for(const f of view.fleets)f.reason ||= fleetRecordReason(ledger.keyRecords(),f.buildingId,world) || dispatchReservationReason(client,getSettings(),'pirateHunt',f.buildingId);
       if(fuelCeiling!==null && Number.isSafeInteger(view.fuel))view.fuel=Math.min(view.fuel,fuelCeiling);

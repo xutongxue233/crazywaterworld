@@ -1,4 +1,4 @@
-import {fleetRecordReason} from './fleet-availability.mjs';
+import {fleetRecordReason,legacyFleetReservationReason} from './fleet-availability.mjs';
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
 // 原生委任额度用尽后的城战接续。只移动本人舰队和正常维修，不宣战、不修改原生委任。
 import { exactAutomationId } from './automation-policy.mjs';
@@ -223,13 +223,13 @@ export async function runCityWar(client, protocol, config, player, { getSettings
     const plan = planCityWar(snapshot, getSettings(), { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingPetrol: pending() });
     let remainingFuel = snapshot.fuel;
     for (const proposed of plan.actions) {
-      if(!canUseFleet(proposed.buildingId))continue;
+      if(!canUseFleet(proposed.buildingId)||legacyFleetReservationReason(client,proposed.buildingId))continue;
       if (!enabled() || !cityWarEnabled(getSettings()) || !client.connected) break;
       const settings = getSettings(), fresh = await read(); fresh.attackDura = snapshot.attackDura;
       fresh.fuel = Math.min(fresh.fuel, remainingFuel);
       const reviewed = planCityWar(fresh, settings, { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingPetrol: pending() });
       const step = reviewed.actions.find(row => row.uniqueKey === proposed.uniqueKey && row.kind === proposed.kind && row.cityId === proposed.cityId && row.cost === proposed.cost);
-      if (!step || !canUseFleet(step.buildingId) || settings !== getSettings() || !enabled() || exactAutomationId(player.guildId) !== fresh.guildId) continue;
+      if (!step || !canUseFleet(step.buildingId) || legacyFleetReservationReason(client,step.buildingId) || settings !== getSettings() || !enabled() || exactAutomationId(player.guildId) !== fresh.guildId) continue;
       const currentVip = rows(config, 'VipLevelCfg').find(row => row.level === player.vip?.vipLevel);
       const currentLimit = currentVip?.effects?.find(row => row[0] === '每日城战委任次数')?.[1];
       if (currentLimit !== fresh.nativeLimit || exactAutomationId(player.worldId) !== fresh.worldId ||
@@ -239,7 +239,7 @@ export async function runCityWar(client, protocol, config, player, { getSettings
       const details = { kind: step.kind, buildingId: step.buildingId, cityId: step.cityId, beforeDurability: step.beforeDurability, sentAt: fresh.now };
       const ticket = ledger.reserve({ cityWarPetrol: step.cost, cityWarDispatches: step.kind === 'cityDispatch' ? 1 : 0, cityWarRepairs: step.kind === 'cityRepair' ? 1 : 0 },
         { cityWarPetrol: settings.cityWar.dailyPetrolLimit || undefined, cityWarDispatches: settings.cityWar.dailyDispatchLimit }, {}, { uniqueKey: step.uniqueKey, details });
-      if (!enabled() || settings !== getSettings() || !client.connected) { ledger.cancel(ticket); break; }
+      if (!enabled() || settings !== getSettings() || !client.connected || legacyFleetReservationReason(client,step.buildingId)) { ledger.cancel(ticket); break; }
       let entry;
       try {
         await client.sendWatch(step.request, step.body, { window: 600 });

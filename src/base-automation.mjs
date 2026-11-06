@@ -8,6 +8,7 @@ import { serviceCargo } from './cargo.mjs';
 import { collectFloaters } from './collections.mjs';
 import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
+import { readOrderReservedStock } from './order-reservations.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const quantities = list => (list ?? []).map(item => Array.isArray(item) ? { id: item[0], num: Number(item[1]) } : { id: item.id, num: Number(item.num) });
@@ -343,8 +344,8 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
   }
 }
 
-export async function runBaseAutomation(client, protocol, config, plan, { getSettings, ledger, enabled = () => true, onStep } = {}) {
-  const guard = createActionGuard(client, getSettings, ledger, { enabled });
+export async function runBaseAutomation(client, protocol, config, plan, { player = null, getSettings, ledger, enabled = () => true, onStep } = {}) {
+  const guard = createActionGuard(client, getSettings, ledger, { enabled, player });
   const results = [];
   for (const step of plan.actions) {
     if (!enabled()) break;
@@ -361,8 +362,19 @@ export async function runBaseAutomation(client, protocol, config, plan, { getSet
         if(ledger.hasKey(choiceKey))throw new AutomationSkip('此随机事件已处理或结果待确认，不重复选择');
         choiceTicket=ledger.reserve({},{},{},{uniqueKey:choiceKey,details:{kind:'choiceEvent',eventUid:step.body.uid}});
       }
+      if (step.kind === 'museumStart' && player) {
+        const reserved = await readOrderReservedStock(client, protocol, config, { player, enabled: () => enabled() && current === getSettings() });
+        const costs = new Map();
+        for (const cost of step.costs ?? []) {
+          if (typeof cost.id !== 'string' || !Number.isSafeInteger(cost.num) || cost.num <= 0) throw new AutomationSkip('博物馆派遣消耗未确认');
+          const total = (costs.get(cost.id) ?? 0) + cost.num;
+          if (!Number.isSafeInteger(total)) throw new AutomationSkip('博物馆派遣消耗无法精确确认');
+          costs.set(cost.id, total);
+        }
+        if (!costs.size || [...costs].some(([id, need]) => (reserved.available.get(id) ?? 0) < need)) throw new AutomationSkip('博物馆派遣材料不足，或已为周订单、贸易港和居民订单预留');
+      }
       ticket = await guard.before(step); prepared = true;
-      if (!enabled()) { await guard.cancel(step, ticket); if(choiceTicket)ledger.cancel(choiceTicket); break; }
+      if (!enabled()) { await guard.cancel(step, ticket, { notSent: true }); if(choiceTicket)ledger.cancel(choiceTicket); break; }
       if (['petBreed', 'petClaim', 'petFeed'].includes(step.kind)) {
         const fresh = normalize(await client.request('OnWaterRequest', {}, 'OnWaterResponse', 8000));
         if (!Array.isArray(fresh.building)) throw new AutomationSkip('海兽培育：未取得最新队列状态，等待下次检查');
@@ -436,7 +448,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { getSet
       await guard.after(step, ticket, entry);
     } catch (error) {
       if(choiceTicket && (!sent || error.prompt&&error.request==='SelectChoiceRequest'))ledger.cancel(choiceTicket);
-      if (prepared && !sent) await guard.cancel(step, ticket);
+      if (prepared && (!sent || error.prompt && error.request === step.request)) await guard.cancel(step, ticket, { notSent: !sent, error });
       entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
     }
     results.push(entry); onStep?.(entry);

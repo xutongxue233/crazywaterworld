@@ -59,7 +59,10 @@ export async function runWorldBoss(client,config,player,{getSettings,ledger,enab
   if(fresh.reason||fresh.boss.bossId!==state.boss.bossId||fresh.boss.gridIdx!==state.boss.gridIdx||!fresh.fleets.some(f=>f.buildingId===id&&!f.reason)){report({label,skipped:true,reason:fresh.reason||'出征前Boss或舰队状态已变化'});return fresh;}
   const ticket=ledger.reserve({worldBossPetrol:fresh.cost},{},{},{uniqueKey:key,details:{kind:'worldBoss',buildingId:id,bossId:fresh.boss.bossId,grid:fresh.boss.gridIdx,day:day(state.checkedAt),sentAt:fresh.checkedAt,active:true}});
   try{
-   if(!enabled()){ledger.cancel(ticket);return fresh;}
+   const held=dispatchReservationReason(client,getSettings(),'worldBoss',id);
+   if(!enabled()||client.connected===false||settings!==getSettings()||!getSettings().worldBoss.enabled||day(now(client))!==day(state.checkedAt)||held){
+    ledger.cancel(ticket);report({label,skipped:true,reason:held||'发送前账号、设置或日期已变化，出征已取消'});return fresh;
+   }
    await client.request('ChallengeWorldBossRequest',{bossId:fresh.boss.bossId,fleetBuildingIds:[id]},'OkResponse');
    const [counter,own]=await Promise.all([read(client,'CounterInfo'),read(client,'MyFleets')]);
    const fleet=own.fleets?.find(f=>f.buildingId===id);

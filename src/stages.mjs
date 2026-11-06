@@ -7,7 +7,7 @@ export function stageFailureLimit(value = 3) {
 }
 
 export async function runStages(client, player, config, {
-  maxFailures = 3, allowMutate = false, onStep = () => {}, onBattle = () => {},
+  maxFailures = 3, maxWins = Infinity, allowMutate = false, onStep = () => {}, onBattle = () => {},
   signal, wait = sleep, beforeBattle, schedule = work => work(),
 } = {}) {
   maxFailures = stageFailureLimit(maxFailures);
@@ -21,6 +21,7 @@ export async function runStages(client, player, config, {
   let failures = 0;
   for (;;) {
     signal?.throwIfAborted();
+    if (wins >= maxWins) return { wins, reachedLimit: true, reason: `本次已通过 ${wins} 关` };
     const row = rows.find((entry) => entry.stage === stage);
     if (!row || !Number.isInteger(row.playerLevel)) return { wins, reason: `配置表中没有第 ${stage} 关的等级要求` };
     if (player.level < row.playerLevel) return { wins, reason: `第 ${stage} 关需要角色等级 ${row.playerLevel}，本次登录等级 ${player.level}` };

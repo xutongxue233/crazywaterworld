@@ -146,7 +146,7 @@ async function snowGift(client, config, ctx, event, allowed) {
     return detail.giftBuy.find((r) => r.packId === id)?.bought ?? 0;
   };
   for (const pack of table(config, 'SnowBallGiftCfg').filter(
-    (r) => !r.chargeId && (r.price === 0 || r.price === -1)
+    (r) => !r.chargeId && (r.price === 0 || r.price === -1 && !ctx.freeOnly)
   )) {
     const count = await getCount(pack.packId);
     if (!natural(count) || count >= pack.limitCount || !allowed()) continue;
