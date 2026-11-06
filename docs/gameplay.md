@@ -629,9 +629,20 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 
 ### 13.4 网页控制台
 
-- 控制台有总览、挂机、单次操作、挑战、英雄、日常、活动、账号八个页签。运行日志显示操作结果和跳过原因，可筛选警告与错误。
+- 控制台有总览、挂机、游戏配置、建筑一览、挑战、资源与玩法、账号七个页签。资源与玩法下分日常、联盟、仓库、英雄与装备、材料与订单、礼包兑换；原活动入口保留在材料与订单中，按限时、周期、常驻分类。运行日志显示操作结果和跳过原因，可筛选警告与错误。
 - 账号页支持从电脑微信或抖音添加账号，以及导出、暂停和恢复托管。开始采集前有勾选和倒计时确认。
 - 手动交居民订单、装备强化、试炼挑战和海盗出征等操作按账号排队，点击后可在主日志查看结果。
+- 挂机页展示模块开关，旁边的“配置”跳到游戏配置对应项目；游戏配置分基地、世界、英雄、日常与活动四类。保存只更新当前账号设置，不会启动挂机；已在运行的挂机在后续检查时使用新设置。首杀连续推进、主线自动挑战和联盟互助仍需单独启动。
+
+原主分支保存的开关继续保留，原有消费项目不会因迁移而自动开启。下面这些原有规则可在游戏配置中编辑；开启对应详细模块后，由详细模块接管，日志说明跳过原因，避免两套规则重复执行。关闭详细模块后，仍按已明确开启的原有规则运行。
+
+| 原有功能 | 配置入口 | 与详细模块的关系 |
+| --- | --- | --- |
+| 联盟订单 | 游戏配置 → 世界 → 联盟订单 | 保留原有独立服务。 |
+| 联盟情报派遣、舰队维修 | 游戏配置 → 世界 → 联盟情报 | 开启联盟情报自动处理后，由详细情报模块接管。 |
+| 装备制造领取、续产 | 游戏配置 → 英雄 → 装备制造原有规则 | 开启基地中的装备自动锻造后，由详细锻造模块接管。 |
+| 博物馆领奖、探险 | 游戏配置 → 基地 → 博物馆探宝 | 基地执行总开关与自动探宝同时开启时，由详细博物馆模块接管。 |
+| 海兽成熟领取、培育 | 游戏配置 → 基地 → 海兽培育室 | 基地执行总开关与海兽培育总开关同时开启时，由详细海兽模块接管。 |
 
 ### 13.5 v75 客户端核对的挂机规则
 
@@ -646,6 +657,8 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 
 ### 13.6 16 级玩法如何确认结果
 
+本次迁移的入口兼容、跨模块资源保护与战报防重经过离线模拟回包和 HTTP 测试，未操作真实游戏账号。文中其他章节标注的历史账号实测结论仍按原验证范围理解。
+
 | 操作 | 确认依据 |
 | --- | --- |
 | 保存远征舰队首次编队 | 发送 `FleetSaveFormationRequest` 后，从海面建筑重读每个站位的英雄，再用 `MyFleetsRequest` 单独检查世界地图是否列出该队。 |
@@ -657,9 +670,11 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 | 抽奖 | `SpinCompassWheelRequest{num:1}` 只在 `CompassWheelInfoResponse.cost` 是抽奖券时发送，`WeekLotteryPrizeRequest{times:1}` 只在持有周转盘币时发送。各开关默认关闭。罗盘张数按账号设置，默认 10 张，周抽奖每轮最多 10 次。 |
 | 周活动奖励 | 累充 `WeekChargeGotRewardRequest`、升星 `WeekHeroStarGotRewardRequest`、芯片 `WeekChipGotFreeRequest`、翻牌 `GotUniqueLotteryFreeRequest`、周订单 `WeekOrderGotFinalRequest`。提交周订单 `FinishWeekOrderRequest` 接入材料预留，默认关闭。 |
 | VIP 每日奖励 | `GotVipDailyRewardRequest{vipLevel}`，只领不高于当前等级且未领的档位。 |
-| 战报奖励 | 奖励留在 `CampaignReport`（`rewards`、`received`）里，不会自动到账。`CampaignReportsRequest{pageNo:0}` 读列表，`QuickGotCampaignReportRequest{all:true}` 一键领取，没有响应类型，靠重读列表确认。`SCNewCampaignReport` 推送新战报。 |
+| 战报奖励 | 奖励留在 `CampaignReport`（`rewards`、`received`）里，不会自动到账。从 `CampaignReportsRequest{pageNo:0}` 开始完整分页，列表不完整时不发领取。对确有奖励且 `received:false` 的战报发送 `QuickGotCampaignReportRequest{all:true}`，必须收到含实际奖励的通用 `GotRewardResponse`，并完整重读确认本批每个精确 UID 均为 `received:true`，才记录成功。`SCNewCampaignReport` 推送新战报。 |
 | 开服冲榜 | `OpenRankType`：1 订单、2 闯关、3 剿匪、4 战力。`OpenRankInfoRequest{type}` 返回 `progress`、`gotRewardId`、`leaderBoard`，`GotOpenRankRewardRequest{type, id: 配置 score}` 领积分奖励。排名奖励含联盟礼包，由服务端结算。协议里没有海盗组队或集结，"多人"体现在共享地图目标和全服排名。 |
 | 海盗首杀 | 派遣前重新核对目标、舰队、耐久和汽油。出征走 `ChallengePirateRequest`，战斗推送只说明目标战况，个人首杀以角色自己的击杀记录为准。 |
 | 装备穿戴和强化 | 穿戴后核对装备归属。强化前核对画面中显示的等级和材料费，发包后从 `EquipsResponse` 核对新等级。 |
 | 联盟福利 | `GuildAidListRequest` 读取成员求助。免费福利走 `GotGuildWelfarePackRequest`，回包中的领取时间和奖励共同确认到账。 |
 | 免费试炼扫荡 | 先查最高已通关关卡，再用 `buySweepTimes` 查下一次价格。仅在零钻档位执行，读取次数增长后才记录成功。 |
+
+战报的手动活动、单次领奖、挂机和新战报推送入口共用账号队列及持久领取记录。超时、断线或回执不全时保留未确认记录；只有回读证实该批全部 UID 已领取后才核销，在此之前新增战报也不会触发再次一键领取。服务器明确拒绝同一请求时才撤销未确认记录。新战报推送可在挂机未启动时处理，但仍需开启战报奖励开关、账号未暂停且连接有效。
