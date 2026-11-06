@@ -1,7 +1,7 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { Button } from "./button"
-import { Card, CardContent, CardHeader, CardTitle } from "./card"
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "./card"
 import { Input } from "./input"
 import { Switch } from "./switch"
 import { HelpTip } from "./help-tip"
@@ -11,28 +11,32 @@ type AutoTask = { key: string; label: string; group: string; help?: string; idle
 export function idlePanel(tasks: AutoTask[]) {
   const modules=tasks.filter(t=>t.idleGroup);
   const groups=["基地","世界","英雄","日常与活动"];
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Card className="idle-schedule">
       <CardHeader>
         <CardTitle className="title-with-help">定时挂机<HelpTip title="定时挂机">轮数填 0 表示持续运行。每轮只执行当前账号已开启的任务。</HelpTip><span className="dim heading-status" id="loop-hint" role="status" /></CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="bar">
-          <label htmlFor="loop-rounds">轮数</label>
-          <Input id="loop-rounds" type="number" min="0" defaultValue="0" className="w-20" />
-          <label htmlFor="loop-every">间隔（秒）</label>
-          <Input id="loop-every" type="number" min="1" max="86400" defaultValue="60" className="w-24" />
+        <div className="loop-form">
+          <label htmlFor="loop-rounds">轮数<Input id="loop-rounds" type="number" min="0" defaultValue="0" /></label>
+          <label htmlFor="loop-every">间隔（秒）<Input id="loop-every" type="number" min="1" max="86400" defaultValue="60" /></label>
           <Button id="loop-start" disabled>开始挂机</Button>
           <Button id="loop-stop" variant="outline" disabled>暂停挂机</Button>
         </div>
       </CardContent>
     </Card>
-    <div className="bar"><label htmlFor="idle-search">查找功能</label><Input id="idle-search" type="search" placeholder="输入功能名称" className="w-56" /><label htmlFor="idle-filter">显示</label><select id="idle-filter" defaultValue="all"><option value="all">全部</option><option value="enabled">已开启</option></select><span id="idle-filter-count" role="status" /></div>
-    <p className="dim" id="single-task-status">单独启动：首杀推进、主线推关、联盟互助。开始挂机不会自动启动这些任务。</p>
-    <div className="bar"><Button id="single-go-pirate" variant="outline" size="sm">前往首杀推进</Button><Button id="single-go-stages" variant="outline" size="sm">前往主线推关</Button><Button id="single-go-mutual" variant="outline" size="sm">前往联盟互助</Button></div>
-    <p className="dim" id="runtime-version" />
-    <p className="dim">这里只控制模块开启；建造、收取、换单、招募与活动领奖等细项在<button id="idle-go-settings" type="button" className="inline-link">游戏配置</button>设置。</p>
-    <p className="dim">当前进度和条件统一在<button id="idle-go-overview" type="button" className="inline-link">总览 → 运行概览</button>查看。</p>
+    <Card className="idle-notes">
+      <CardContent>
+        <p className="dim" id="single-task-status">单独启动：首杀推进、主线推关、联盟互助。开始挂机不会自动启动这些任务。</p>
+        <div className="bar"><Button id="single-go-pirate" variant="outline" size="sm">前往首杀推进</Button><Button id="single-go-stages" variant="outline" size="sm">前往主线推关</Button><Button id="single-go-mutual" variant="outline" size="sm">前往联盟互助</Button></div>
+        <details className="idle-more"><summary>使用说明</summary>
+          <p className="dim">这里只控制模块开启；建造、收取、换单、招募与活动领奖等细项在<button id="idle-go-settings" type="button" className="inline-link">游戏配置</button>设置。</p>
+          <p className="dim">当前进度和条件统一在<button id="idle-go-overview" type="button" className="inline-link">总览 → 运行概览</button>查看。</p>
+          <p className="dim" id="runtime-version" />
+        </details>
+      </CardContent>
+    </Card>
+    <div className="bar idle-filter-bar"><Input id="idle-search" type="search" aria-label="查找功能" placeholder="查找功能名称" /><label htmlFor="idle-filter">显示</label><select id="idle-filter" defaultValue="all"><option value="all">全部</option><option value="enabled">已开启</option></select><span id="idle-filter-count" role="status" /></div>
     <nav className="config-subtabs" aria-label="挂机设置分组" role="tablist">
       {groups.map((group,index) => <button type="button" key={group} role="tab" id={'idle-tab-'+index} data-idle-group={index} aria-selected={index===0} aria-controls={'idle-group-'+index}>{group}</button>)}
     </nav>
@@ -59,7 +63,7 @@ export function action(id: string, label: string, variant: React.ComponentProps<
 
 export function stagePanel() {
   return renderToStaticMarkup(
-    <div className="grid gap-2">
+    <div className="grid gap-3">
     <Card>
       <CardHeader>
         <CardTitle className="title-with-help">挑战主线关卡<HelpTip title="挑战主线关卡">“次数”指同一关连续失败多少次后停止自动挑战。手动开启后每场间隔5秒，通关后连续失败次数清零。</HelpTip><span id="stage-view" className="heading-status" role="status" aria-live="polite">未同步</span></CardTitle>
@@ -75,7 +79,7 @@ export function stagePanel() {
       </CardContent>
     </Card>
     <Card>
-      <CardHeader className="trial-section-header"><CardTitle className="title-with-help">试炼副本<HelpTip title="试炼副本">自动挑战逐关推进，次数指同一关连续失败后的停止上限。“挑战一次”只挑战下一关。扫荡掉落和次数规则在各副本说明中。</HelpTip></CardTitle><Button id="trial-refresh" variant="outline" size="sm">刷新试炼进度</Button></CardHeader>
+      <CardHeader><CardTitle className="title-with-help">试炼副本<HelpTip title="试炼副本">自动挑战逐关推进，次数指同一关连续失败后的停止上限。“挑战一次”只挑战下一关。扫荡掉落和次数规则在各副本说明中。</HelpTip></CardTitle><CardAction className="row-span-1 self-center"><Button id="trial-refresh" variant="outline" size="sm">刷新试炼进度</Button></CardAction></CardHeader>
       <CardContent>
         <div id="trial-view" className="progression-view" aria-live="polite" />
       </CardContent>

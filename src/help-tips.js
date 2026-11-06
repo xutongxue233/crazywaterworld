@@ -6,7 +6,6 @@ function makeHelpTip(title, text) {
   button.dataset.helpTitle = title; button.dataset.helpText = text;
   button.setAttribute('aria-label', title + '说明'); button.setAttribute('aria-haspopup', 'dialog');
   button.setAttribute('aria-controls', 'ui-help-popover'); button.setAttribute('aria-expanded', 'false');
-  const mark = document.createElement('span'); mark.textContent = '!'; mark.setAttribute('aria-hidden', 'true'); button.append(mark);
   return button;
 }
 

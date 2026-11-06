@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { automationControls } from './automation-controls.mjs';
 import { operationLabels } from './operation-labels.mjs';
-import { iconEntry } from './art.mjs';
 import { chrome, journal, dialogs, templates, giftCodesPage, overviewPage, manualPage, inventoryPage, heroesPage, dailiesPage, guildPage, activitiesPage, accountPage, idlePanel, stagePanel, settingsPage } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
@@ -24,11 +23,13 @@ export const PAGE = `<!doctype html>
 <meta charset="utf-8">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect fill='%23102d39' width='40' height='40' rx='8'/%3E%3Cpath fill='%23ffbd77' d='m20 3 4 13 13 4-13 4-4 13-4-13-13-4 13-4z'/%3E%3C/svg%3E">
 <title>疯狂水世界</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} ${settingsCss} } ${componentCss}</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="format-detection" content="telephone=no">
+<style>@layer properties, theme, base, components, page, utilities; @layer page { ${consoleCss} ${settingsCss} } ${componentCss}</style>
 </head>
 <body>
-${chrome(iconEntry)}
+${chrome()}
 <div class="deck"><main>
   <nav id="resource-tabs" class="resource-tabs" aria-label="资源与玩法分类" hidden>
     <button type="button" data-resource-tab="dailies">日常</button><button type="button" data-resource-tab="guild">联盟</button><button type="button" data-resource-tab="inventory">仓库</button><button type="button" data-resource-tab="heroes">英雄与装备</button><button type="button" data-resource-tab="activities">材料与订单</button><button type="button" data-resource-tab="giftcodes">礼包兑换</button>
@@ -110,6 +111,18 @@ function when(iso) {
   return d.toLocaleString('zh-CN', { hour12: false });
 }
 
+let callsInFlight = 0, callProgressTimer = 0;
+function trackCall(delta) {
+  callsInFlight += delta;
+  if (callsInFlight > 0) {
+    if (!callProgressTimer) callProgressTimer = setTimeout(() => { callProgressTimer = 0; if (callsInFlight > 0) document.body.setAttribute('data-loading', ''); }, 400);
+    return;
+  }
+  clearTimeout(callProgressTimer);
+  callProgressTimer = 0;
+  document.body.removeAttribute('data-loading');
+}
+
 async function call(path, options) {
   const opts = options || {};
   let url = path;
@@ -117,6 +130,7 @@ async function call(path, options) {
     url += (url.indexOf('?') < 0 ? '?' : '&') + 'account=' + encodeURIComponent(current);
   }
   const account = current;
+  trackCall(1);
   try {
     const res = await fetch(url, opts);
     const data = await res.json();
@@ -133,6 +147,8 @@ async function call(path, options) {
     if (!error.logged && account === current) reportError(error, path);
     error.logged = true;
     throw error;
+  } finally {
+    trackCall(-1);
   }
 }
 
@@ -149,36 +165,28 @@ function clear(node) {
 }
 
 // ---- 图标 ------------------------------------------------------------------
-// 图集页整张给到浏览器，靠 CSS 裁。FGUI 里约 15% 的图是转 90 度打包的，
-// 这些要把裁好的矩形转回来再摆正，否则显示出来是躺着的。
+// 每个图标单独下载缩略图；屏幕外的不加载，取不到时退回名字首字。
 
 function iconEl(entry, size, name) {
-  const box = el('span', 'ico');
-  box.style.width = size + 'px';
-  box.style.height = size + 'px';
-  if (!entry) {
+  if (!entry?.thumb) {
+    const box = el('span', 'ico');
+    box.style.width = size + 'px';
+    box.style.height = size + 'px';
     box.appendChild(el('span', 'fallback', (name || '?').slice(0, 1)));
     box.title = name || '';
     return box;
   }
-  // 显示尺寸就是矩形本身 w×h，转不转都一样。
   const k = size / Math.max(entry.w, entry.h);
-  const wrap = el('span', 'ico');
-  wrap.style.width = Math.round(entry.w * k) + 'px';
-  wrap.style.height = Math.round(entry.h * k) + 'px';
-  const inner = el('i', 'atlas');
-  // 但旋转打包的贴图在图集里占的是 h 宽、w 高（跟显示尺寸正好差一个 90 度），
-  // 所以元素盒子要按 h×w 铺，再整体转回来：占位 [0,w*k]×[0,h*k] 就是显示尺寸。
-  inner.style.width = (entry.rotated ? entry.h : entry.w) + 'px';
-  inner.style.height = (entry.rotated ? entry.w : entry.h) + 'px';
-  inner.style.backgroundImage = 'url(' + entry.url + ')';
-  inner.style.backgroundPosition = '-' + entry.x + 'px -' + entry.y + 'px';
-  inner.style.transform = entry.rotated
-    ? 'translate(0,' + Math.round(entry.h * k) + 'px) rotate(-90deg) scale(' + k + ')'
-    : 'scale(' + k + ')';
-  inner.title = name || '';
-  wrap.appendChild(inner);
-  return wrap;
+  const img = el('img', 'ico');
+  img.width = Math.max(1, Math.round(entry.w * k));
+  img.height = Math.max(1, Math.round(entry.h * k));
+  img.alt = '';
+  img.title = name || '';
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.onerror = () => img.replaceWith(iconEl(null, size, name));
+  img.src = entry.thumb;
+  return img;
 }
 
 // 一项东西：图标 + 名字 + 数量
@@ -422,6 +430,16 @@ function subscribe() {
 }
 
 // ---- 账号 ------------------------------------------------------------------
+function setBusy(text, state) {
+  const pill = $('busy');
+  pill.textContent = text;
+  pill.dataset.state = state;
+}
+function paintConnection() {
+  if (snapshot.paused) setBusy('已暂停 · 可自行上号', 'paused');
+  else if (snapshot.connected) setBusy('已连接', 'on');
+  else setBusy('未连接', 'off');
+}
 let snapshot = { connected: false, state: 'IDLE', busy: null, looping: false };
 const disconnected = new Set();
 
@@ -433,7 +451,7 @@ function renderAccountSelect() {
     $('dailies-hint').textContent = snapshot.paused ? '账号已暂停' : '点击探测查看当前日常';
   }
   const box=$('account');
-  const choices=accounts.length?accounts.map(a=>[a.id,a.title+(a.active?'（当前）':'')]):[['','没有账号']];
+  const choices=accounts.length?accounts.map(a=>[a.id,a.title]):[['','没有账号']];
   if(box.options.length!==choices.length||choices.some(([id,label],i)=>box.options[i]?.value!==id||box.options[i]?.text!==label)){
     box.replaceChildren(...choices.map(([id,label])=>new Option(label,id)));
   }
@@ -450,7 +468,7 @@ function renderAccountSelect() {
   $('account-pause').disabled = !current;
   $('account-pause').textContent = snapshot.paused ? '恢复托管' : '暂停托管';
   $('account-pause').title = snapshot.paused ? '结束自行上号，允许控制台重新登录游戏' : '断开游戏连接，方便自行上号';
-  $('busy').textContent = snapshot.paused ? '已暂停 · 可自行上号' : snapshot.connected ? '已连接' : '未连接';
+  paintConnection();
   $('connect').disabled = snapshot.paused || snapshot.connected || !accounts.length;
   $('disconnect').disabled = !snapshot.connected;
 }
@@ -511,7 +529,7 @@ $('account-pause').onclick = async () => {
 };
 
 $('connect').onclick = async () => {
-  $('hint').textContent = '正在连接 ...';
+  setBusy('连接中…', 'busy');
   try {
     await call('/api/connect', { method: 'POST' });
     disconnected.delete(current);
@@ -520,9 +538,8 @@ $('connect').onclick = async () => {
     renderAccountSelect();
     refreshProgression();
     refreshOverview();
-    $('hint').textContent = '';
   } catch (error) {
-    $('hint').textContent = '';
+    paintConnection();
     reportError(error);
   }
 };
@@ -534,7 +551,7 @@ $('disconnect').onclick = async () => {
   await call('/api/disconnect', { method: 'POST' });
   if (account !== current) return;
   snapshot.connected = false;
-  $('busy').textContent = '未连接';
+  paintConnection();
   renderAccountSelect();
 };
 
@@ -587,6 +604,7 @@ async function refreshOverview() {
   if (overviewPending===current || !current || snapshot.paused || disconnected.has(current) || document.hidden || ($('tab-overview').classList.contains('hidden')&&$('tab-heroes').classList.contains('hidden')&&$('tab-account').classList.contains('hidden'))) return;
   const account = current;
   overviewPending = account;
+  if (!snapshot.connected) setBusy('连接中…', 'busy');
   try {
     const data = await call('/api/overview');
     if (account !== current || snapshot.paused || disconnected.has(account)) return;
@@ -598,9 +616,10 @@ async function refreshOverview() {
     if(!$('tab-overview').classList.contains('hidden'))void refreshActivityStatistics();
     if(!$('tab-overview').classList.contains('hidden'))maybeRefreshWorldMap();
     $('hint').textContent = '';
-    $('busy').textContent = data.status.connected ? '已连接' : '未连接';
+    paintConnection();
   } catch (error) {
     reportError(error, '刷新总览');
+    paintConnection();
   } finally { if(overviewPending===account)overviewPending=false; }
 }
 
@@ -770,7 +789,6 @@ function renderLoop(data) {
   $('runtime-version').textContent='当前服务加载时间：'+(data.runVersion?new Date(data.runVersion).toLocaleString('zh-CN'):'旧版服务，等待加载本次更新');
   if(data.singleTasks)$('single-task-status').textContent='需单独启动 · 首杀：'+(data.singleTasks.pirate?.running?'运行中':'未启动')+' · 主线：'+(data.singleTasks.stages?.running?'运行中':'未启动')+' · 互助：'+(data.singleTasks.mutual?.running?'运行中':'未启动')+'。入口：世界 / 挑战 / 资源与玩法 → 联盟。';
   loopSettingsRevision = data.settingsRevision;
-  if (typeof renderReconnect === 'function') renderReconnect(data);
   for (const input of taskInputs) {
     if (savingTasks.has(current + ':' + input.dataset.autoTask)) continue;
     const task = (data.controls ?? []).find(t => t.key === input.dataset.autoTask);
@@ -791,11 +809,10 @@ function renderLoop(data) {
   $('loop-stop').disabled = !data.running || data.stopping;
   $('loop-hint').textContent = (data.running ? '挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
-  if (data.recovery) $('loop-hint').textContent = '等待自动重连 · 第 ' + data.recovery.attempts + ' 次' + (data.recovery.nextAt ? ' · ' + when(data.recovery.nextAt) : '');
-  $('loop-stop').disabled = (!data.running && !data.recovery) || data.stopping;
 
 }
 
+let loopReads = 0;
 async function refreshLoop() {
   if(document.hidden)return;
   const account = current, version = ++loopVersion;
@@ -814,11 +831,14 @@ async function refreshLoop() {
     $('loop-start').disabled = $('loop-stop').disabled = true;
   }
   if (!account) return;
+  loopReads++;
   try {
     const data = await call('/api/loop');
     if (account === current && version === loopVersion) renderLoop(data);
   } catch {
     /* call 已记录错误 */
+  } finally {
+    loopReads--;
   }
 }
 
@@ -1326,13 +1346,16 @@ function table(headers, rows) {
   const rowTemplate = body.firstElementChild;
   const cellTemplate = rowTemplate.firstElementChild;
   rowTemplate.remove();
+  const labels = headers.map(h => typeof h === 'string' ? h : h.label);
+  if (labels.length >= 4) box.classList.add('table-stack');
   for (const row of rows) {
     const tr = rowTemplate.cloneNode(false);
-    for (const spec of row) {
+    row.forEach((spec, index) => {
       const td = cellTemplate.cloneNode(false);
+      td.dataset.label = labels[index] ?? '';
       putCell(td, spec);
       tr.appendChild(td);
-    }
+    });
     body.appendChild(tr);
   }
   return box;
@@ -1636,7 +1659,11 @@ function activateConsolePage(button, resource = selectedResource) {
     const target = isResource ? resource : button.dataset.tab;
     if (isResource) selectedResource = resource;
     $('resource-tabs').hidden = !isResource;
-    for (const tab of document.querySelectorAll('[data-resource-tab]')) tab.setAttribute('aria-current', tab.dataset.resourceTab === target ? 'page' : 'false');
+    for (const tab of document.querySelectorAll('[data-resource-tab]')) {
+      const selected = tab.dataset.resourceTab === target;
+      tab.setAttribute('aria-current', selected ? 'page' : 'false');
+      if (selected && isResource) tab.scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
     closeHelpTip(false);
     for (const other of document.querySelectorAll('#tabs button')) other.removeAttribute('aria-current');
     button.setAttribute('aria-current', 'page');
@@ -1654,7 +1681,7 @@ function activateConsolePage(button, resource = selectedResource) {
     }
     if (button.dataset.tab === 'manual') refreshManualWorld();
     if (button.dataset.tab === 'idle') refreshLoop();
-    if (button.dataset.tab === 'settings') { void configLoad(); void refreshLoop(); void refreshNotify(); }
+    if (button.dataset.tab === 'settings') { void configLoad(); void refreshLoop(); }
     if(target==='giftcodes')void refreshGiftCodes();
     if (target === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();
@@ -1662,6 +1689,12 @@ function activateConsolePage(button, resource = selectedResource) {
 document.querySelectorAll('#tabs button').forEach(button => { button.onclick = () => activateConsolePage(button); });
 for(const link of document.querySelectorAll('#tab-idle a[href^="#config-group-"]'))link.onclick=event=>{if(location.hash===link.getAttribute('href')){event.preventDefault();activateConsolePage(document.querySelector('#tabs [data-tab="settings"]'));configApplyHash();}};
 document.querySelectorAll('[data-resource-tab]').forEach(button => { button.onclick = () => activateConsolePage(document.querySelector('#tabs [data-tab="resources"]'), button.dataset.resourceTab); });
+
+// 配置页工具栏吸在页头下方；页头高度随触屏尺寸和提示文字变化，手机上页头不吸顶。
+new ResizeObserver(() => {
+  const header = document.querySelector('header');
+  document.documentElement.style.setProperty('--header-h', (getComputedStyle(header).position === 'sticky' ? header.offsetHeight : 0) + 'px');
+}).observe(document.querySelector('header'));
 
 async function boot() {
   try {
@@ -1681,7 +1714,7 @@ async function boot() {
 boot();
 setInterval(refreshOverview, 20000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){refreshLoop();refreshStages();}});
-setInterval(refreshLoop, 3000);
+setInterval(() => { if (!loopReads) refreshLoop(); }, 3000);
 setInterval(refreshStages, 3000);
 </script>
 </body>

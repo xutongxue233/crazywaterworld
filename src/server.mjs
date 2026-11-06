@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 import { GameClient, toNumber } from './client.mjs';
 import { challengeTrial, trialProgress, createTrialTask } from './trials.mjs';
 import { readTrialSweeps, executeTrialSweep } from './trial-sweeps.mjs';
@@ -38,6 +39,7 @@ import { createGuildMutualTask, readMutualOptions } from './guild-mutual.mjs';
 import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
+import { iconThumb } from './art-thumbs.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
 import { claimRewards } from './claim-rewards.mjs';
@@ -58,8 +60,6 @@ import { classifyLog } from './log-categories.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey, dailyTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
-import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDecision } from './reconnect.mjs';
-import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
 import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
 import { beijingDay, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative, nativeTaskValues, applyNativeTask, hasExtraWork, createUsageLedger, exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
 import { budgetPreview, exactAutomationId, createActionGuard, nativePreferenceEnabled, needsCargoDemand, AutomationSkip } from './automation-policy.mjs';
@@ -75,8 +75,6 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
-const OUTAGE_ALERT_ATTEMPT = 3;
-const TASK_FAILURE_ALERT_ROUNDS = 5;
 const INCOME_SAMPLE_MS = 10 * 60 * 1000;
 const RUN_VERSION = new Date().toISOString();
 const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
@@ -97,13 +95,19 @@ const STATE_TEXT = {
   STOPPED: '已停止',
 };
 
+const pageRaw = Buffer.from(PAGE);
+const pageAsset = {
+  raw: pageRaw,
+  gzip: zlib.gzipSync(pageRaw, { level: 9 }),
+  etag: '"' + createHash('sha1').update(pageRaw).digest('hex').slice(0, 16) + '"',
+};
+
 export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
   let logId = 0;
-  const notifier = createNotifier({ onError: message => emit(null, 'warn', '通知发送失败：' + message) });
 
   const logLimit = (list) => {
     while (list.length > LOG_LIMIT) list.shift();
@@ -181,8 +185,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       appointmentJob: null,
       residentJobs: new Map(),
       progressionJobs: new Map(),
-      recovery: null,
-      failStreak: new Map(),
       stats: { rounds: 0, failures: 0, outages: 0 },
       incomeAt: 0,
       log: [],
@@ -196,7 +198,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         everyMs: (preferences?.loop.everySeconds ?? saved?.everySeconds ?? 60) * 1000,
         tasks: preferences ? nativeTaskValues(preferences, taskSettings(saved?.tasks)) : taskSettings(saved?.tasks),
         fishingGoldReserve: preferences?.gather.fishingGoldReserve ?? saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
-        reconnect: normalizeReconnect(saved?.reconnect),
         compassSpinCount: validSpinCount(saved?.compassSpinCount) ? saved.compassSpinCount : defaultCompassSpinCount,
         controller: null, job: null,
         history: [],
@@ -206,15 +207,26 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   // Share identical clicks until this account's queued operation has finished.
-  function progressionJob(session, account, key, label, action) {
+  // 页面读取：队列空闲时照常排队；挂机一轮可持续一分钟以上，此时改在它两次请求之间读取，不等整轮结束。
+  function readJob(session, work) {
+    const client = session.client, generation = session.generation;
+    if (!session.queueTail || !client?.connected || !client.interleaveRead) return enqueue(session, work);
+    return client.interleaveRead(() => {
+      if (session.paused || generation !== session.generation) throw new Error('账号已暂停，已取消排队操作');
+      return work();
+    });
+  }
+
+  function progressionJob(session, account, key, label, action, { read = false } = {}) {
     if (!session.progressionJobs.has(key)) {
       const generation = session.generation;
-      const job = enqueue(session, async () => {
+      const schedule = read ? work => readJob(session, work) : work => enqueue(session, work, label);
+      const job = schedule(async () => {
         const client = await ensureConnected(session, account);
         const enabled = () => session.client === client && client.connected && !session.paused && generation === session.generation;
         if (!enabled()) throw new Error('账号连接已变化，请刷新后再试');
         return action(client, enabled);
-      }, label).finally(() => session.progressionJobs.delete(key));
+      }).finally(() => session.progressionJobs.delete(key));
       session.progressionJobs.set(key, job);
     }
     return session.progressionJobs.get(key);
@@ -395,20 +407,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     });
   }
 
-  function alert(session, event, title, message) {
-    const account = loadStore().accounts.find(item => item.id === session.id);
-    const name = account ? describeAccount(account).title : session.id;
-    notifier.send(event, session.id, name + '：' + title, message)
-      .catch(error => emit(session, 'warn', '通知发送失败：' + error.message));
-  }
-
-  function cancelRecovery(session) {
-    const waiting = Boolean(session.recovery);
-    clearTimeout(session.recovery?.timer);
-    session.recovery = null;
-    return waiting;
-  }
-
   function connectionLost(session, instance) {
     if (instance.lostHandled || instance.stopping || session.client !== instance) return;
     instance.lostHandled = true;
@@ -420,73 +418,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     for (const task of session.trials.values()) task.stop(reason);
     const loop = session.loop;
     if (!loop.running || loop.controller?.signal.aborted) return;
-    if (loop.rounds !== 0) { stopLoop(session, reason); return; }
-    session.stats.outages += 1;
-    loop.controller.abort();
-    emit(session, 'info', reason);
-    requestRecovery(session, kicked ? 'kicked' : 'network', reason);
-  }
-
-  function requestRecovery(session, kind, reason) {
-    const settings = session.loop.reconnect;
-    const attempt = (session.recovery?.attempts ?? 0) + 1;
-    const decision = recoveryDecision(settings, kind, attempt);
-    clearTimeout(session.recovery?.timer);
-    if (decision.action === 'stop') {
-      session.recovery = null;
-      saveAutomation(session.id, { enabled: false });
-      if (decision.reason === 'kicked') {
-        emit(session, 'warn', '账号被顶号，已停止挂机。需要时请在挂机页重新开始，或在设置中改为自动重连');
-        alert(session, 'kicked', '账号被顶号', '已停止挂机，需要时请手动恢复。');
-      } else {
-        const message = decision.reason === 'exhausted' ? '已重连 ' + settings.maxAttempts + ' 次仍未恢复，已停止挂机' : '未开启自动重连，已停止挂机';
-        emit(session, 'warn', message);
-        alert(session, 'disconnect', '挂机已停止', message + '（' + reason + '）');
-      }
-      return;
-    }
-    const seconds = reconnectDelaySeconds(settings, attempt, kind);
-    const recovery = { kind, attempts: attempt, reason, nextAt: Date.now() + seconds * 1000, connected: false, timer: null };
-    recovery.timer = setTimeout(() => recoverSession(session, recovery), seconds * 1000);
-    recovery.timer.unref?.();
-    session.recovery = recovery;
-    emit(session, 'info', seconds + ' 秒后自动重连（第 ' + attempt + ' 次）');
-    if (kind === 'kicked' && attempt === 1) alert(session, 'kicked', '账号被顶号', settings.kickedMinutes + ' 分钟后自动重连，这可能把正在玩的游戏顶下线。');
-    if (kind !== 'kicked' && attempt === OUTAGE_ALERT_ATTEMPT) alert(session, 'disconnect', '掉线后仍未恢复', '已尝试重连 ' + attempt + ' 次，会继续重试。原因：' + reason);
-  }
-
-  async function recoverSession(session, recovery) {
-    recovery.timer = null;
-    recovery.nextAt = null;
-    await session.loop.job;
-    if (session.recovery !== recovery || session.loop.running) return;
-    const account = loadStore().accounts.find(item => item.id === session.id);
-    if (session.paused || !account) { cancelRecovery(session); return; }
-    if (!session.client?.connected) {
-      session.client?.stop();
-      session.client = null;
-      session.player = null;
-    }
-    try { startLoop(session, account); }
-    catch (error) { requestRecovery(session, recovery.kind, error.message); }
+    if (loop.rounds === 0) session.stats.outages += 1;
+    stopLoop(session, reason + '，已停止挂机');
   }
 
   function trackRound(session, summary) {
-    if (session.recovery && !session.recovery.timer) session.recovery = null;
     const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
     const failed = results.filter(entry => !entry.skipped && entry.ok === false);
     session.stats.rounds += 1;
     session.stats.failures += failed.length;
-    const streak = new Map();
-    for (const entry of failed) {
-      const id = entry.key || entry.label || entry.title || entry.step?.label || '自动任务';
-      const count = (session.failStreak.get(id) ?? 0) + 1;
-      streak.set(id, count);
-      if (count === TASK_FAILURE_ALERT_ROUNDS) {
-        alert(session, 'taskFailing', '自动任务连续失败', (entry.label || entry.title || id) + ' 已连续 ' + count + ' 轮失败：' + (entry.error || '未返回原因'));
-      }
-    }
-    session.failStreak = streak;
     if (Date.now() - session.incomeAt < INCOME_SAMPLE_MS) return;
     session.incomeAt = Date.now();
     enqueue(session, async () => {
@@ -576,7 +516,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       state: session.client?.snapshot?.().state ?? 'IDLE',
       busy: session.busy,
       looping: session.loop.running,
-      recovering: Boolean(session.recovery),
     };
   }
 
@@ -800,9 +739,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   async function handle(req, res, body) {
     const parsed = new URL(req.url, 'http://localhost');
     const route = `${req.method} ${parsed.pathname}`;
+    const acceptsGzip = /\bgzip\b/.test(req.headers['accept-encoding'] ?? '');
     const json = (value, code = 200) => {
-      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(value));
+      const text = JSON.stringify(value);
+      const headers = { 'content-type': 'application/json; charset=utf-8' };
+      // 轮询和地图响应动辄几十上百 KB，通过隧道用手机访问时差别明显。
+      if (acceptsGzip && text.length >= 1024) {
+        res.writeHead(code, { ...headers, 'content-encoding': 'gzip', vary: 'Accept-Encoding' });
+        res.end(zlib.gzipSync(text, { level: 1 }));
+        return;
+      }
+      res.writeHead(code, headers);
+      res.end(text);
     };
     const jsonBody = () => JSON.parse(body || '{}');
     const needConfirm = (payload) => {
@@ -827,8 +775,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         });
       }
       if (route === 'GET /') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(PAGE);
+        const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache', etag: pageAsset.etag, vary: 'Accept-Encoding' };
+        if (req.headers['if-none-match'] === pageAsset.etag) {
+          res.writeHead(304, headers);
+          res.end();
+        } else if (acceptsGzip) {
+          res.writeHead(200, { ...headers, 'content-encoding': 'gzip' });
+          res.end(pageAsset.gzip);
+        } else {
+          res.writeHead(200, headers);
+          res.end(pageAsset.raw);
+        }
         return;
       }
       if (parsed.pathname.startsWith('/api/settings') && body.length > 262144) throw new SettingsError({ import: '配置文件不能超过 256 KB' });
@@ -1044,6 +1001,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/art/index') {
         json(iconIndex());
+        return;
+      }
+      if (route.startsWith('GET /api/art/icon/') && route.endsWith('.png')) {
+        const name = decodeURIComponent(parsed.pathname.slice('/api/art/icon/'.length, -'.png'.length));
+        const png = await iconThumb(name);
+        if (!png) {
+          json({ error: 'not found' }, 404);
+          return;
+        }
+        // 地址带图标在图集里的位置，内容变了地址也会变。
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=31536000, immutable' });
+        res.end(png);
         return;
       }
       // 图标是游戏自己的贴图，从 FairyGUI 图集里按图集页整张给出去，裁切交给浏览器。
@@ -1291,17 +1260,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           if(parsed.searchParams.get('refresh')!=='1'&&cached?.client===client&&Date.now()-cached.at<60000)return cached.value;
           const value=await readActivityStatistics(client,loadConfigSafe(),session.player,usageFor(session));
           session.activityStatistics={client,at:Date.now(),value};return value;
-        });json(result);return;
+        },{read:true});json(result);return;
       }
       if(route==='GET /api/activity-ranks'||route==='GET /api/activity-ranks/view'){
         const {account,session}=scoped_(parsed);
-        const result=await progressionJob(session,account,route+':'+(parsed.searchParams.get('key')||'catalog')+':'+(parsed.searchParams.get('page')||1),null,client=>route.endsWith('/view')?readActivityRanking(client,loadConfigSafe(),session.player,parsed.searchParams.get('key'),Number(parsed.searchParams.get('page')||1)):{tabs:activityRankCatalog(client,loadConfigSafe(),session.player).map(({key,label})=>({key,label}))});
+        const result=await progressionJob(session,account,route+':'+(parsed.searchParams.get('key')||'catalog')+':'+(parsed.searchParams.get('page')||1),null,client=>route.endsWith('/view')?readActivityRanking(client,loadConfigSafe(),session.player,parsed.searchParams.get('key'),Number(parsed.searchParams.get('page')||1)):{tabs:activityRankCatalog(client,loadConfigSafe(),session.player).map(({key,label})=>({key,label}))},{read:true});
         json(result);return;
       }
       if (route === 'GET /api/overview') {
         const { account, session } = scoped_(parsed);
         if (session.claiming) await session.claiming;
-        session.overviewRead ??= overview(session, account).finally(() => { session.overviewRead = null; });
+        session.overviewRead ??= (session.queueTail && session.client?.connected && session.client.interleaveRead
+          ? session.client.interleaveRead(() => overview(session, account)) : overview(session, account)).finally(() => { session.overviewRead = null; });
         json(await session.overviewRead);
         return;
       }
@@ -1319,14 +1289,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/pirates') {
         const { account, session } = scoped_(parsed);
-        const result = await progressionJob(session, account, route, null, client => pirateTracker(client, loadConfigSafe(), session.player));
+        const result = await progressionJob(session, account, route, null, client => pirateTracker(client, loadConfigSafe(), session.player), { read: true });
         for (const message of result.errors) emit(session, 'warn', '海盗首杀查询：' + message);
         json(result);
         return;
       }
       if (route === 'GET /api/equipment/crafting') {
         const { account, session } = scoped_(parsed);
-        json(await progressionJob(session, account, route, null, client => readEquipmentCrafting(client, loadConfigSafe(), session.player)));
+        json(await progressionJob(session, account, route, null, client => readEquipmentCrafting(client, loadConfigSafe(), session.player), { read: true }));
         return;
       }
       if (route === 'POST /api/equipment/crafting/start' || route === 'POST /api/equipment/crafting/collect') {
@@ -1344,7 +1314,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/pirates/board') {
         const { account, session } = scoped_(parsed);
-        json(await progressionJob(session, account, route, null, client => pirateBoard(client, loadConfigSafe(), session.player)));
+        json(await progressionJob(session, account, route, null, client => pirateBoard(client, loadConfigSafe(), session.player), { read: true }));
         return;
       }
       if (route === 'GET /api/guild/tech' || route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
@@ -1370,7 +1340,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             usage: ledger.snapshot(), records: ledger.keyRecords(), pendingDiamonds: ledger.pendingCounters().diamonds ?? 0 });
           for (const row of rows.filter(r => r.failed)) emit(session, 'warn', row.name + '：' + row.reason);
           return rows;
-        }));
+        }, { read: true }));
         return;
       }
       if (route === 'POST /api/guild/tech/upgrade' || route === 'POST /api/equipment/wear' || route === 'POST /api/equipment/enhance' || route === 'POST /api/guild/welfare' || route === 'POST /api/guild/aid/claim' || route === 'POST /api/pirates/hunt' || route === 'POST /api/fleets/formation') {
@@ -1416,7 +1386,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/lineups') {
         const { account, session } = scoped_(parsed);
-        json(await progressionJob(session, account, route, null, client => readLineups(client, loadConfigSafe(), session.player)));
+        json(await progressionJob(session, account, route, null, client => readLineups(client, loadConfigSafe(), session.player), { read: true }));
         return;
       }
       if (route === 'POST /api/lineups/apply') {
@@ -1502,19 +1472,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if(route==='GET /api/world/target'){
         const {session}=scoped_(parsed);
         if(!session.client?.connected||session.paused)throw Error('请先连接当前账号，再读取目标详情');
-        const result=await enqueue(session,()=>readWorldTarget(session.client,protocol,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{layer:parsed.searchParams.get('layer'),key:parsed.searchParams.get('key'),pirateSpent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0}));json(result);return;
+        const result=await readJob(session,()=>readWorldTarget(session.client,protocol,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{layer:parsed.searchParams.get('layer'),key:parsed.searchParams.get('key'),pirateSpent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0}));json(result);return;
       }
       if (route === 'GET /api/world/overview') {
         const {session}=scoped_(parsed);
         if(!session.client?.connected||session.paused)throw new Error('请先连接当前账号，再读取世界概览');
-        if(!session.mapRead) { const job=enqueue(session,()=>readWorldOverview(session.client,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{pirateSpent:session.pirateAdvance.view().spent??0})).finally(()=>{if(session.mapRead===job)session.mapRead=null;});session.mapRead=job; }
+        if(!session.mapRead) { const job=readJob(session,()=>readWorldOverview(session.client,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{pirateSpent:session.pirateAdvance.view().spent??0})).finally(()=>{if(session.mapRead===job)session.mapRead=null;});session.mapRead=job; }
         json(await session.mapRead);return;
       }
       if (route === 'GET /api/world') {
         const { account, session } = scoped_(parsed);
         const allowAccelerators = parsed.searchParams.get('speedUp') === 'true';
         if (!session.worldRead || session.worldReadSpeedUp !== allowAccelerators) {
-          const job = enqueue(session, () => world(session, account, allowAccelerators)).finally(() => { if (session.worldRead === job) session.worldRead = null; });
+          const job = readJob(session, () => world(session, account, allowAccelerators)).finally(() => { if (session.worldRead === job) session.worldRead = null; });
           session.worldRead = job; session.worldReadSpeedUp = allowAccelerators;
         }
         json(await session.worldRead);
@@ -1591,7 +1561,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (route === 'GET /api/guild/mutual') { json(mutualView(scoped_(parsed).session)); return; }
       if (route === 'GET /api/guild/mutual/options') {
         const {session,account}=scoped_(parsed);
-        json(await progressionJob(session,account,route,null,client=>readMutualOptions(client,loadConfigSafe(),session.player)));return;
+        json(await progressionJob(session,account,route,null,client=>readMutualOptions(client,loadConfigSafe(),session.player),{read:true}));return;
       }
       if (route === 'POST /api/guild/mutual/start' || route === 'POST /api/guild/mutual/stop') {
         const payload=jsonBody();needConfirm(payload);const {session,account}=scoped_(parsed);
@@ -1865,17 +1835,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // 循环：开启后立刻返回，进度走 /api/loop 与事件流。
       if (route === 'GET /api/loop') {
         const { session } = scoped_(parsed);
-        await refreshTreasureRewards(session);
+        void refreshTreasureRewards(session);
         const client=session.client;
         if(client?.connected && session.player && (!client.freeRecruitTimes || !Number.isSafeInteger(client.freeRecruitTimes.hero) || !Number.isSafeInteger(client.freeRecruitTimes.antique))
           && Date.now()-(client.recruitTimeAttempt||0)>60000){
           client.recruitTimeAttempt=Date.now();
-          await enqueue(session,async()=>{
+          void readJob(session,async()=>{
             if(session.client!==client || !client.connected)return;
             try {const r=await client.request('RecruitInfoRequest',{},'RecruitInfoResponse',8000);
               client.freeRecruitTimes={hero:r.hero?.freeEndTimeSeconds,antique:r.antique?.freeEndTimeSeconds};
             }catch { /* 未取到时间时沿用已有的实际观察，不推算冷却。 */ }
-          });
+          }).catch(()=>{});
         }
         json(loopView(session));
         return;
@@ -1884,39 +1854,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
-        cancelRecovery(session);
         startLoop(session, account, { rounds: payload.rounds ?? 0, everySeconds: payload.everySeconds });
         json(loopView(session));
-        return;
-      }
-      if (route === 'POST /api/loop/reconnect') {
-        const { session } = scoped_(parsed);
-        const reconnect = parseReconnect(jsonBody());
-        saveAutomation(session.id, { reconnect });
-        session.loop.reconnect = reconnect;
-        if (!reconnect.enabled && cancelRecovery(session)) {
-          saveAutomation(session.id, { enabled: false });
-          emit(session, 'info', '已关闭自动重连，取消等待中的重连');
-        } else emit(session, 'info', '自动重连设置已保存');
-        json(loopView(session));
-        return;
-      }
-      if (route === 'GET /api/notify') {
-        json({ settings: loadNotifySettings(), events: notifyEvents, formats: webhookFormats });
-        return;
-      }
-      if (route === 'POST /api/notify/save') {
-        const settings = parseNotifySettings(jsonBody());
-        saveNotifySettings(settings);
-        emit(null, 'info', '通知设置已保存');
-        json({ settings });
-        return;
-      }
-      if (route === 'POST /api/notify/test') {
-        const result = await notifier.test();
-        if (result.failures.length) throw new Error(result.failures.join('；'));
-        emit(null, 'info', '测试通知已发送');
-        json(result);
         return;
       }
       if (route === 'GET /api/income') {
@@ -2008,10 +1947,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   function stopLoop(session, reason) {
     session.pirateAdvance?.stop(reason);
-    if (cancelRecovery(session)) {
-      if (!session.paused) saveAutomation(session.id, { enabled: false });
-      emit(session, 'info', reason);
-    }
     const loop = session.loop;
     if (!loop.running || loop.controller?.signal.aborted) return;
     if (!session.paused) saveAutomation(session.id, { enabled: false });
@@ -2033,18 +1968,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，每 ${everySeconds} 秒检查一次`);
     let credentialFailed = false;
-    let retryReason = null;
     loop.job = (async () => {
       try {
         const client = await ensureConnected(session, account);
         if (signal.aborted) return;
-        if (session.recovery && !session.recovery.connected) {
-          session.recovery.connected = true;
-          emit(session, 'info', '已自动重连，继续挂机');
-          if (session.recovery.attempts >= OUTAGE_ALERT_ATTEMPT || session.recovery.kind === 'kicked') {
-            alert(session, 'recovered', '已恢复挂机', '重连 ' + session.recovery.attempts + ' 次后恢复。');
-          }
-        }
         const { appId, channelId, originVersion } = account.login?.eworldClientInfo ?? {};
         await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
           adChannel: { clientInfo: { appId, channelId, originVersion }, language: account.login?.language },
@@ -2095,12 +2022,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         if (!signal.aborted) {
           loop.error = error.message;
           if (error.loginResponse) credentialFailed = true;
-          else if (rounds === 0 && loop.reconnect.enabled) retryReason = error.message;
-          else {
-            saveAutomation(account.id, { enabled: false });
-            alert(session, 'loopError', '挂机异常停止', error.message);
-          }
-          emit(session, retryReason ? 'warn' : 'error', `自动挂机中止：${error.message}`);
+          else saveAutomation(account.id, { enabled: false });
+          emit(session, 'error', `自动挂机中止：${error.message}`);
         }
       } finally {
         loop.running = false;
@@ -2108,12 +2031,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         loop.job = null;
         emit(session, 'info', '自动挂机结束');
         if (credentialFailed) {
-          cancelRecovery(session);
           saveAutomation(account.id, { enabled: false });
           emit(session, 'error', '服务器拒绝登录，凭证可能已失效。请在账号页重新采集后再开始挂机');
-          alert(session, 'credential', '登录凭证可能已失效', '服务器拒绝登录，挂机已停止。请重新采集账号凭证。');
-        } else if (retryReason) {
-          requestRecovery(session, session.recovery?.kind === 'kicked' ? 'kicked' : 'network', retryReason);
         }
       }
     })();
@@ -2146,7 +2065,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     if (!Number.isSafeInteger(level) || !(session.player.level >= level)) return;
     treasureRewards.set(client, { at, day: beijingDay(at), text: '今日奖励未同步' });
     try {
-      await enqueue(session, async () => {
+      await readJob(session, async () => {
         if (session.client !== client || !client.connected) return;
         const stats = await client.request('TreasureLootStatsRequest', {}, 'TreasureLootStatsResponse', 8000);
         recordTreasureRewards(client, stats);
@@ -2182,9 +2101,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       })),
       fishingGoldReserve: loop.fishingGoldReserve,
       compassSpinCount: session.preferences?.eventActions.compassDrawCount ?? loop.compassSpinCount,
-      reconnect: loop.reconnect,
-      recovery: session.recovery ? { kind: session.recovery.kind, attempts: session.recovery.attempts,
-        nextAt: session.recovery.nextAt, reason: session.recovery.reason } : null,
       settingsRevision: session.preferencesRevision,
       rounds: loop.rounds,
       completed: loop.completed,
@@ -2220,7 +2136,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }),
     close: () => {
       for (const session of sessions.values()) {
-        cancelRecovery(session);
         session.loop.controller?.abort();
         session.pirateAdvance.stop('控制台已关闭'); session.stages.stop('控制台已关闭'); session.mutualAid.stop('控制台已关闭'); for (const task of session.trials.values()) task.stop('控制台已关闭');
         session.client?.stop();
@@ -2233,21 +2148,31 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   };
 }
 
-export function openBrowser(url) {
-  const attempts = [
-    ['msedge', [`--app=${url}`]],
-    ['chrome', [`--app=${url}`]],
-    ['cmd', ['/c', 'start', '', url]],
-  ];
-  for (const [command, args] of attempts) {
-    try {
-      const child = spawn(command, args, { detached: true, stdio: 'ignore' });
-      child.on('error', () => {});
-      child.unref();
-      return command;
-    } catch {
-      /* try next */
+// Edge、Chrome 通常不在 PATH 里，按安装位置找；找不到就交给系统默认浏览器。
+export function findAppBrowser(env = process.env) {
+  const roots = [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA].filter(Boolean);
+  const apps = [['Microsoft', 'Edge', 'Application', 'msedge.exe'], ['Google', 'Chrome', 'Application', 'chrome.exe']];
+  for (const app of apps) {
+    for (const root of roots) {
+      const file = path.join(root, ...app);
+      if (fs.existsSync(file)) return file;
     }
   }
   return null;
+}
+
+export function openBrowser(url) {
+  const launch = (command, args, onFail) => {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    child.on('error', onFail);
+    child.unref();
+  };
+  const systemDefault = () => launch('cmd', ['/c', 'start', '', url], () => {});
+  const app = findAppBrowser();
+  if (app) {
+    launch(app, ['--app=' + url], systemDefault);
+    return path.basename(app, '.exe');
+  }
+  systemDefault();
+  return 'cmd';
 }

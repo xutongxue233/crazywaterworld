@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { EventEmitter } from 'node:events';
 import { createCodec } from './codec.mjs';
 
@@ -14,6 +16,10 @@ export const PING_TIMEOUT_MS = 1000;
 export const LOGIN_TIMEOUT_MS = 15000;
 export const ACK_DELAY_MS = 1000;
 export const HEARTBEAT_DEADLINE_MS = 604800000 + TICK_INTERVAL_MS;
+
+// 一次页面读取最多拦住普通请求这么久；各请求自身也有超时，这里只防读取卡死拖住挂机。
+const READ_GATE_LIMIT_MS = 20000;
+const readScope = new AsyncLocalStorage();
 
 export const DEFAULT_GATEWAY = 'wss://dhyaoj-gate.khlgamen.com/ws';
 
@@ -64,6 +70,8 @@ export class GameClient extends EventEmitter {
     this.watchers = [];
     this.sendOrder = 0;
     this.stopping = false;
+    this.readGate = null;
+    this.readTail = null;
   }
 
   get connected() {
@@ -178,7 +186,36 @@ export class GameClient extends EventEmitter {
     return true;
   }
 
+  // 页面只读请求插在队列任务的两次请求之间：先拦住新的普通请求，等在途请求都有结果再发送。
+  // PromptResponse 没有请求编号，必须保持同一时刻只有一方在途，拒绝才不会记到别的请求头上。
+  // 只能用于不改变游戏状态的读取。
+  interleaveRead(work) {
+    const run = async () => {
+      let open;
+      this.readGate = new Promise((resolve) => { open = resolve; });
+      const deadline = Date.now() + READ_GATE_LIMIT_MS;
+      const release = () => { clearTimeout(limit); this.readGate = null; open(); };
+      const limit = setTimeout(release, READ_GATE_LIMIT_MS);
+      try {
+        while (this.connected && Date.now() < deadline && (this.pending.length || this.watchers.length)) await sleep(5);
+        return await readScope.run(this, work);
+      } finally {
+        release();
+      }
+    };
+    const job = (this.readTail ?? Promise.resolve()).then(run, run);
+    this.readTail = job;
+    const clear = () => { if (this.readTail === job) this.readTail = null; };
+    job.then(clear, clear);
+    return job;
+  }
+
+  heldByRead() {
+    return this.readGate !== null && readScope.getStore() !== this;
+  }
+
   request(name, body, responseName = `${name.slice(0, -7)}Response`, timeout = 15000) {
+    if (this.heldByRead()) return this.readGate.then(() => this.request(name, body, responseName, timeout));
     return new Promise((resolve, reject) => {
       const entry = { name, responseName, resolve, reject, timer: null, order: this.sendOrder };
       entry.timer = setTimeout(() => {
@@ -200,6 +237,7 @@ export class GameClient extends EventEmitter {
   // 有一部分请求服务端没有配套的 *Response，成功时静默，失败时只推一条 PromptResponse。
   // 这类请求用 sendWatch：发送后守着 prompt 一小段时间，守到了就是被拒，没守到就当作成功。
   sendWatch(name, body, { window = 350 } = {}) {
+    if (this.heldByRead()) return this.readGate.then(() => this.sendWatch(name, body, { window }));
     const order = this.sendOrder;
     this.sendOrder += 1;
     const seq = this.send(name, body);

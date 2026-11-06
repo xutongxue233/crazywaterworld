@@ -13,7 +13,7 @@ npm start                     # prestart 先构建界面，再启动；端口 17
 .\start-console.cmd           # 用户入口，端口 17323，检查 MITM 根证书状态
 npm run build:ui              # 改 TSX 或 theme.css 后运行，提交 src/ui/dist 产物
 npm test                      # pretest 先构建，再依次执行下面三组，遇错即停
-npm run test:core             # 核心协议、日常、原有玩法、阵容与重连
+npm run test:core             # 核心协议、日常、原有玩法、阵容与掉线处理
 npm run test:progression      # 装备、情报、订单、博物馆、海兽、预留与迁移接线
 npm run test:extra            # 详细配置、活动、调度、维修、城战/锻造、礼包与地图
 npm run test:level16          # core 子集
@@ -55,6 +55,8 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - 玩法模块先读取状态，再计算计划，最后在发送前复查。明确未发送可释放预留；超时或结果不明需保留记录，按对应玩法查询确认。
 - `loop.mjs` 编排自动任务，结合开关、状态、到期时间、推送和账本决定何时复查，并非第二轮计划必然为空。CLI 与控制台共用它，是否传 `isEnabled` 会影响路径，修改需检查两侧。
 - `server.mjs` 管理 HTTP API 与账号会话；同账号手动和挂机写操作经 `enqueue` 串行执行，新增写路由也必须接入。暂停、切号或等待期间关闭开关后，发送前再次检查。
+- 挂机一轮是一个 `enqueue` 任务，可持续一分钟以上。新增只读路由用 `readJob` 或 `progressionJob(..., { read: true })`，队列忙时经 `GameClient.interleaveRead` 插在两次请求之间。`PromptResponse` 没有请求编号，不能让读取与其他请求同时在途；这条通道只能用于确实不改变游戏状态的读取。
+- 连接断开或被顶号时，`connectionLost` 停止挂机并清除持久开关，不自动重连。自动重连和 Webhook 通知已暂时移除，需要时从 git 历史恢复 `reconnect.mjs`、`notify.mjs`。
 - `reward-schedule.mjs` 记录奖励下次检查时间，相关推送提前唤醒。推送只触发串行检查，不能另开并行派遣绕过预算。
 - `accounts.mjs`、`capture.mjs`、`tools/mitm-*.mjs` 管理账号与采集；采集会临时改系统代理和用户证书。
 
@@ -64,9 +66,11 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 
 - `src/ui/*.tsx` 经 esbuild 输出 `src/ui/dist/console.mjs`，服务端渲染静态标记；浏览器没有 React，组件不能依赖 hooks 或事件属性。
 - 行为使用原生 JS：`page.mjs` 的脚本与 `settings-ui.js`、`ui/progression.js`、`ui/activities.js`、`ui/connection.js`、地图、礼包、仓库和活动统计/排行脚本共享页面作用域。
-- 样式由 `console.css`、`settings.css` 和 Tailwind 产物组成。修改 TSX 或 `theme.css` 后执行 `npm run build:ui`，将 `src/ui/dist/` 一起提交；`npm start`、`npm test` 也会先构建。
+- 界面采用 shadcn/ui new-york-v4 的默认 neutral 主题。`src/ui/{button,card,table,switch,badge,dialog}.tsx` 用官方样式字符串；`theme.css` 的 `@layer components` 按官方样式定义 input、select、textarea、checkbox、radio、range、summary、页签、弹窗和气泡，运行时脚本直接创建原生元素也能得到相同外观，不要再给控件写专用外观。换主色只改 `:root` 的 `--primary`、`--primary-foreground`。
+- 样式层顺序为 `properties, theme, base, components, page, utilities`。`console.css`、`settings.css` 在 `page` 层，只放布局和间距，不用 Tailwind 处理，所以不能写 `@apply`。模板克隆元素带工具类，变体颜色写在 `theme.css` 的 `@layer utilities`。新增运行时模板需在 `layout.tsx` 的 `templates()` 声明。修改 TSX 或 `theme.css` 后执行 `npm run build:ui`，将 `src/ui/dist/` 一起提交；`npm start`、`npm test` 也会先构建。
+- 手机布局以 768px 为界：导航固定到底部，页头不吸顶。`table()` 生成的四列以上表格在 `main` 窄于 600px 时变为卡片，列名来自 `td[data-label]`。图标走 `art-thumbs.mjs` 的单图缩略图，页面不要再引用整张图集。
 - 顶层导航为总览、挂机、游戏配置、建筑一览、挑战、资源与玩法、账号。总览提供收益、运行状态、只读活动统计/排行和世界地图；手动玩法归建筑一览、挑战或资源与玩法。
-- 游戏配置按账号草稿编辑。导入、保存、预览分别处理，保存不启动挂机；预览可连接读取真实状态但不写资源，运行安排预览无需连接。连接与通知设置保留在配置页底部。
+- 游戏配置按账号草稿编辑。导入、保存、预览分别处理，保存不启动挂机；预览可连接读取真实状态但不写资源，运行安排预览无需连接。
 
 ## 自动任务接线
 

@@ -1,13 +1,13 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { Button } from "./button"
-import { Card, CardHeader, CardTitle, CardContent } from "./card"
+import { Card, CardAction, CardHeader, CardTitle, CardContent } from "./card"
 import { Input } from "./input"
 import { Switch } from "./switch"
 import { HelpTip } from "./help-tip"
 
 function Panel({title, help, titleAfter, collapseId, children}: {title: string; help?: string; titleAfter?: React.ReactNode; collapseId?: string; children: React.ReactNode}) {
-  return <Card><CardHeader><CardTitle className="title-with-help">{title}{help && <HelpTip title={title}>{help}</HelpTip>}{titleAfter}{collapseId && <Button type="button" size="sm" variant="ghost" className="panel-toggle" data-panel-toggle={collapseId} aria-controls={collapseId} aria-expanded="false">展开</Button>}</CardTitle></CardHeader><CardContent id={collapseId} hidden={!!collapseId}>{children}</CardContent></Card>
+  return <Card><CardHeader><CardTitle className="title-with-help">{title}{help && <HelpTip title={title}>{help}</HelpTip>}</CardTitle>{titleAfter && <CardAction className="row-span-1 self-center max-md:col-span-2 max-md:col-start-1 max-md:row-start-2 max-md:justify-self-start">{titleAfter}</CardAction>}{collapseId && <CardAction className="row-span-1 self-center"><Button type="button" size="sm" variant="ghost" data-panel-toggle={collapseId} aria-controls={collapseId} aria-expanded="false">展开</Button></CardAction>}</CardHeader><CardContent id={collapseId} hidden={!!collapseId}>{children}</CardContent></Card>
 }
 
 function Option({id, label, checked = false}: {id: string; label: string; checked?: boolean}) {
@@ -15,7 +15,7 @@ function Option({id, label, checked = false}: {id: string; label: string; checke
 }
 
 export function giftCodesPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="礼包兑换" help="每个账号独立排队，兑换请求逐个发送。账号登录失败或结果未知只停止该账号；任一账号遇到服务器限频时，同批尚未发送的账号全部停止，之后可重新提交。"><label htmlFor="gift-code-input">礼包码（换行或逗号分隔）</label>
       <textarea id="gift-code-input" rows={3} maxLength={12000} className="w-full" placeholder="每批最多100个" />
       <fieldset className="gift-accounts"><legend>兑换账号</legend>
@@ -30,10 +30,10 @@ export function giftCodesPage() {
 }
 
 export function overviewPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="收益日报" help="按北京时间统计当前账号的金币、钻石、汽油、加速器、战力、等级和主线关卡净变化。挂机运行后定期采样。"><div id="income-view" className="income-view"><span className="dim">挂机运行后开始记录</span></div></Panel>
     <Panel title="运行概览" help="按功能分别查看当前进度与当前条件。这里只读展示；开关仍在挂机页设置。">
-      <div className="bar overview-task-filter"><Input id="overview-task-search" className="w-48" type="search" aria-label="查找运行状态" placeholder="功能名称或状态" /><label htmlFor="overview-task-filter">显示</label><select id="overview-task-filter" defaultValue="enabled"><option value="enabled">已开启</option><option value="issues">异常 / 受总控限制</option><option value="all">全部项目</option></select></div>
+      <div className="bar overview-task-filter"><Input id="overview-task-search" type="search" aria-label="查找运行状态" placeholder="功能名称或状态" /><label htmlFor="overview-task-filter">显示</label><select id="overview-task-filter" defaultValue="enabled"><option value="enabled">已开启</option><option value="issues">异常 / 受总控限制</option><option value="all">全部项目</option></select></div>
       <p id="overview-task-summary" className="dim" role="status">等待读取运行状态</p>
       <div id="overview-task-groups" />
     </Panel>
@@ -51,16 +51,16 @@ export function overviewPage() {
       <div id="world-map-fleets" className="fleet-summary" aria-label="我的舰队" />
       <details className="world-map-stats"><summary>城战与货轮详情</summary><div id="world-map-wars" /><div id="world-map-treasures" /></details>
       <details className="world-map-stats"><summary>汽油用量</summary><div id="world-map-resources" /></details>
-      <div className="bar world-map-toolbar"><Button id="world-map-refresh" variant="outline" size="sm">刷新地图</Button><Button id="world-map-reset" variant="outline" size="sm">全图</Button><Button id="world-map-home" variant="outline" size="sm">定位舰队</Button><label htmlFor="world-map-zoom">缩放</label><input id="world-map-zoom" type="range" min="1" max="8" step="0.25" defaultValue="1" /><span id="world-map-time" role="status">尚未读取</span></div>
+      <div className="bar world-map-toolbar"><Button id="world-map-refresh" variant="outline" size="sm">刷新地图</Button><Button id="world-map-pan" variant="outline" size="sm" aria-pressed="false">移动地图</Button><Button id="world-map-reset" variant="outline" size="sm">全图</Button><Button id="world-map-home" variant="outline" size="sm">定位舰队</Button><label htmlFor="world-map-zoom">缩放</label><input id="world-map-zoom" type="range" min="1" max="8" step="0.25" defaultValue="1" /><span id="world-map-time" role="status">尚未读取</span></div>
       <div id="world-map-layers" className="bar" />
-      <div className="world-map-layout"><div id="world-map-scroll" className="world-map-scroll"><svg id="world-map" role="group" aria-label="只读世界地图" /></div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help">拖动平移 · Ctrl+滚轮缩放 · 放大查看舰队名和攻守优先+排队数</p><aside id="world-map-detail" className="world-map-detail" hidden /></div>
+      <div className="world-map-layout"><div id="world-map-scroll" className="world-map-scroll"><svg id="world-map" role="group" aria-label="只读世界地图" /></div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help"><span className="for-mouse">拖动平移 · Ctrl+滚轮缩放 · </span><span className="for-touch">点「移动地图」后单指拖动 · 用缩放滑块放大 · </span>放大查看舰队名和攻守优先+排队数</p><aside id="world-map-detail" className="world-map-detail" hidden /></div>
       <p id="world-map-notes" className="dim" />
     </Panel>
   </div>)
 }
 
 export function activitiesPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <div className="activity-toolbar"><p className="dim">选择活动，单独执行或设置自动运行。</p><Button id="activities-refresh" variant="outline" size="sm">刷新活动</Button></div>
     <div id="activities-status" className="dim" role="status" />
     <div className="activity-shell">
@@ -80,7 +80,7 @@ export function activitiesPage() {
 }
 
 export function manualPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="一键领取" help="领取主线、成就、邮件、挂机收益，以及已拥有英雄的技能展示首领奖励，不花钻石。逐项结果见运行日志。"><div className="bar"><Button id="loot-run">领取现在能领的</Button><span id="loot-hint" role="status" /></div></Panel>
     <Panel title="任务奖励" help="检查或领取主线、支线、成就和每日订单档位奖励。无法确认目标值的任务会跳过，结果见运行日志。"><div className="bar"><Button id="tasks-plan" variant="outline">检查可领</Button><Button id="tasks-run">领取任务奖励</Button><span id="tasks-hint" role="status" /></div></Panel>
     <Panel title="海面" help="收成品 → 竣工 → 交单 → 按订单缺口排产 → 余料升级建筑。本轮是否允许使用加速器、拒单重刷，由下方本次开关决定。">
@@ -100,7 +100,7 @@ export function manualPage() {
 }
 
 export function inventoryPage() {
-  return renderToStaticMarkup(<div className="grid gap-2"><Panel title="仓库">
+  return renderToStaticMarkup(<div className="grid gap-3"><Panel title="仓库">
     <div className="bar"><Button id="inventory-refresh" variant="outline">刷新库存</Button><span id="inventory-status" className="dim" role="status">尚未读取</span></div>
     <div className="bar inventory-search"><label htmlFor="inventory-query">资源名称</label><Input id="inventory-query" type="search" placeholder="搜索资源名称" /><span id="inventory-match-count" className="dim" /></div>
     <details id="world-stock-panel"><summary>展开分类库存</summary><div id="world-stock" /></details>
@@ -108,7 +108,7 @@ export function inventoryPage() {
 }
 
 export function heroesPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="主力英雄"><div className="icons" id="hero-strip"><span className="dim">连接后显示</span></div></Panel>
     <Panel title="英雄养成" help="升级、升星、升技能的条件取自游戏客户端的红点逻辑；执行前会先算一遍计划。">
 <div className="bar">
@@ -136,7 +136,7 @@ export function heroesPage() {
 }
 
 export function dailiesPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="每日任务" help="先“探测”查看当前能做哪些任务及不能执行的原因。点金与折扣店默认跳过，勾选允许花钻石才会消费。">
 <div className="bar">
       <Button id="dailies-plan" variant="outline">探测</Button>
@@ -151,7 +151,7 @@ export function dailiesPage() {
 }
 
 export function accountPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="账号" help="导出的账号备份含登录凭证，请妥善保管。账号切换与暂停状态分别保存。">
     <div className="bar"><Button id="export-accounts" variant="outline">导出全部账号</Button><span className="dim">备份含登录凭证</span></div>
     <div id="accounts"></div>
@@ -189,7 +189,7 @@ export function accountPage() {
 
 
 export function guildPage() {
-  return renderToStaticMarkup(<div className="grid gap-2">
+  return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="联盟福利">
       <div className="bar"><Button id="guild-refresh" variant="outline">刷新联盟</Button></div>
       <div id="guild-view" className="progression-view" aria-live="polite" />

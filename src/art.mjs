@@ -55,6 +55,7 @@ export function iconEntry(name) {
   return {
     name: icon.name,
     url: `/api/art/atlas/${icon.bundle}/${encodeURIComponent(icon.page)}`,
+    thumb: `/api/art/icon/${encodeURIComponent(icon.name)}.png?v=${[icon.x, icon.y, icon.w, icon.h].join('.')}`,
     x: icon.x,
     y: icon.y,
     w: icon.w,
