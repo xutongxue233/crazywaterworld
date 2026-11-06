@@ -1,4 +1,4 @@
-// 掉线、被顶号和登录失败时停止挂机且不重连，以及收益日报。经真实控制台路由驱动，全程离线。
+// 掉线、被顶号和登录失败时停止挂机且不重连。经真实控制台路由驱动，全程离线。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,36 +10,7 @@ process.env.CW_DATA_DIR = dir;
 process.env.CW_CONFIG_PACK = path.join(dir, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
-const { beijingDate, incomeView, readIncomeSnapshot, recordIncome } = await import('../src/income-report.mjs');
-
-// ---- 收益日报 ----
-const fakeReader = {
-  request: async name => (name === 'AllResourceRequest'
-    ? { list: [{ res: 3, amount: { low: 500, high: 0, unsigned: false } }, { res: 4, amount: { low: 7, high: 0, unsigned: false } }] }
-    : { items: [{ itemId: '汽油', num: 20 }, { itemId: '汽油', num: 5 }, { itemId: '加速器', num: 3 }] }),
-};
-const snapshot = await readIncomeSnapshot(fakeReader, { power: { low: 900, high: 0, unsigned: false }, level: 21, mainlineStage: 40 });
-assert.deepEqual(snapshot, { gold: 500, ruby: 7, petrol: 25, speedUp: 3, power: 900, level: 21, stage: 40 });
-const dayOne = Date.UTC(2026, 10, 4, 15, 59);
-assert.equal(beijingDate(dayOne), '2026-11-04');
-assert.equal(beijingDate(dayOne + 60_000), '2026-11-05', '按北京时间切日');
-recordIncome('x', { ...snapshot, gold: 100 }, { rounds: 1 }, dayOne - 3600_000);
-recordIncome('x', { ...snapshot, gold: 300 }, { rounds: 2, failures: 1 }, dayOne);
-recordIncome('x', { ...snapshot, gold: 250, power: null }, { outages: 1 }, dayOne + 3600_000);
-const report = incomeView('x');
-assert.deepEqual(report.days.map(day => day.date), ['2026-11-05', '2026-11-04'], '新的日期排在前面');
-assert.equal(report.days[1].delta.gold, 200);
-assert.equal(report.days[1].rounds, 3);
-assert.equal(report.days[1].failures, 1);
-assert.equal(report.days[0].delta.gold, -50, '起点取前一天收盘值，净消耗显示为负');
-assert.equal(report.days[0].delta.power, null, '缺值时不能算成 0');
-assert.equal(report.days[0].outages, 1);
-assert.deepEqual(incomeView('never').days, []);
-for (let i = 0; i < 40; i++) recordIncome('old', snapshot, {}, dayOne + i * 86400_000);
-assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'income-old.json'), 'utf8')).days['2026-11-04'], undefined, '只保留最近 35 天');
-
 // ---- 控制台路由 ----
-const protocol = (await import('../src/proto.mjs')).loadProtocol();
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore } = await import('../src/accounts.mjs');
 const { createConsole } = await import('../src/server.mjs');
@@ -101,7 +72,6 @@ try {
   let before = logins;
   dropConnection(session().client);
   await assertStayedStopped(before, '掉线后停止挂机');
-  assert.equal(session().stats.outages, 1, '收益日报仍统计掉线次数');
 
   // 被顶号，旧账号设置为“等待后重连”也不再生效
   await startAndConnect('重新开始');
@@ -138,21 +108,19 @@ try {
     assert.equal((await post(pathname, {})).status, 404, pathname);
   }
   assert.equal((await fetch(url('/api/notify'))).status, 404);
+  assert.equal((await fetch(url('/api/income?account=a'))).status, 404);
   const view = await (await fetch(url('/api/loop?account=a'))).json();
   assert.equal('reconnect' in view, false);
   assert.equal('recovery' in view, false);
   assert.deepEqual(automation().reconnect, legacyReconnect, '恢复功能时旧设置还能用');
   for (const id of ['reconnect-form', 'notify-form', 'reconnect-enabled', 'notify-webhook']) assert.ok(!PAGE.includes('id="' + id + '"'), id);
   assert.ok(!PAGE.includes('连接与通知'));
-  for (const route of ['/api/loop/reconnect', '/api/notify', '/api/notify/save', '/api/notify/test']) assert.equal(operationLabels[route], undefined, route);
+  assert.ok(!PAGE.includes('收益日报'));
+  assert.ok(!PAGE.includes('id="income-view"'));
+  for (const route of ['/api/loop/reconnect', '/api/notify', '/api/notify/save', '/api/notify/test', '/api/income']) assert.equal(operationLabels[route], undefined, route);
 
-  // 收益日报路由
-  const income = await (await fetch(url('/api/income?account=a'))).json();
-  assert(Array.isArray(income.days));
-  assert(income.fields.some(field => field.key === 'gold'));
-  for (const name of ['AllResourceRequest', 'AllResourceResponse', 'AllItemRequest', 'AllItemResponse']) assert(protocol[name], name);
 } finally {
   await app.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }
-console.log('connection loss ok: stops without reconnect on drop, kick and login failure; income report');
+console.log('connection loss ok: stops without reconnect on drop, kick and login failure');

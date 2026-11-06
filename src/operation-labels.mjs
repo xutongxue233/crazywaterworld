@@ -10,7 +10,6 @@ export const operationLabels = {
   '/api/equipment/crafting/collect': '收取完工装备',
   '/api/lineups': '查看推荐阵容',
   '/api/lineups/apply': '应用推荐阵容',
-  '/api/income': '读取收益日报',
   '/api/loop/compass-spin-count': '设置罗盘抽奖券用量',
   '/api/world/order/reroll':'手动刷新居民订单',
   '/api/guild/tech':'读取联盟科技','/api/guild/tech/upgrade':'升级联盟科技',

@@ -60,7 +60,6 @@ import { classifyLog } from './log-categories.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey, dailyTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
-import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
 import { beijingDay, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative, nativeTaskValues, applyNativeTask, hasExtraWork, createUsageLedger, exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
 import { budgetPreview, exactAutomationId, createActionGuard, nativePreferenceEnabled, needsCargoDemand, AutomationSkip } from './automation-policy.mjs';
 import { readTreasureLoot, planTreasureLoot, treasureAutomationEnabled } from './treasure-loot.mjs';
@@ -75,7 +74,6 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
-const INCOME_SAMPLE_MS = 10 * 60 * 1000;
 const RUN_VERSION = new Date().toISOString();
 const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
@@ -185,8 +183,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       appointmentJob: null,
       residentJobs: new Map(),
       progressionJobs: new Map(),
-      stats: { rounds: 0, failures: 0, outages: 0 },
-      incomeAt: 0,
       log: [],
       logClearBefore: 0,
       logClearAt: 0,
@@ -418,24 +414,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     for (const task of session.trials.values()) task.stop(reason);
     const loop = session.loop;
     if (!loop.running || loop.controller?.signal.aborted) return;
-    if (loop.rounds === 0) session.stats.outages += 1;
     stopLoop(session, reason + '，已停止挂机');
-  }
-
-  function trackRound(session, summary) {
-    const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
-    const failed = results.filter(entry => !entry.skipped && entry.ok === false);
-    session.stats.rounds += 1;
-    session.stats.failures += failed.length;
-    if (Date.now() - session.incomeAt < INCOME_SAMPLE_MS) return;
-    session.incomeAt = Date.now();
-    enqueue(session, async () => {
-      const client = session.client;
-      if (!client?.connected) return;
-      const snapshot = await readIncomeSnapshot(client, session.player);
-      recordIncome(session.id, snapshot, session.stats);
-      session.stats = { rounds: 0, failures: 0, outages: 0 };
-    }).catch(error => emit(session, 'warn', '记录收益日报失败：' + error.message));
   }
 
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
@@ -1858,10 +1837,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(loopView(session));
         return;
       }
-      if (route === 'GET /api/income') {
-        json(incomeView(scoped_(parsed).session.id));
-        return;
-      }
       if (route === 'POST /api/loop/stop') {
         const payload = jsonBody();
         needConfirm(payload);
@@ -1993,7 +1968,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           getEveryMs: () => loop.everyMs,
           onMaintenance:view=>{loop.fleetMaintenance=view;},
           onRound(summary) {
-            trackRound(session, summary);
             if (summary.world.factories?.length) {
               try {
                 fs.writeFileSync(factoryReportFile(session.id), JSON.stringify({ time: new Date().toLocaleString('zh-CN'), lines: summary.world.factories }));

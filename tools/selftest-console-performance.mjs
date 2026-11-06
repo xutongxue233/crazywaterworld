@@ -162,7 +162,7 @@ await test('较大的 JSON 按需压缩，小响应不压缩', async () => {
   const large = await raw('/api/settings?account=a', { 'accept-encoding': 'gzip' });
   assert.equal(large.headers['content-encoding'], 'gzip');
   assert.ok(JSON.parse(zlib.gunzipSync(large.body).toString()).settings);
-  const small = await raw('/api/income?account=a', { 'accept-encoding': 'gzip' });
+  const small = await raw('/api/stages?account=a', { 'accept-encoding': 'gzip' });
   assert.ok(JSON.parse(small.body.toString()), '小响应保持原文');
   assert.equal(small.headers['content-encoding'], undefined);
 });
@@ -265,7 +265,7 @@ await test('按安装位置找 Edge/Chrome，找不到时不返回假路径', ()
 
 // ---- 页面标记 ----
 await test('运行时用到的组件模板都存在', () => {
-  const sources = ['src/page.mjs', 'src/settings-ui.js', 'src/ui/progression.js', 'src/ui/activities.js', 'src/ui/connection.js', 'src/gift-codes-ui.js', 'src/activity-rankings-ui.js', 'src/activity-statistics-ui.js', 'src/inventory-ui.js', 'src/world-map-ui.js'];
+  const sources = ['src/page.mjs', 'src/settings-ui.js', 'src/ui/progression.js', 'src/ui/activities.js', 'src/gift-codes-ui.js', 'src/activity-rankings-ui.js', 'src/activity-statistics-ui.js', 'src/inventory-ui.js', 'src/world-map-ui.js'];
   const ids = new Set(sources.flatMap(file => [...fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8').matchAll(/component\('(ui-[a-z-]+)'\)/g)].map(match => match[1])));
   for (const id of ['ui-table', 'ui-button', 'ui-select', 'ui-badge', 'ui-number', 'ui-event-switch']) assert.ok(ids.has(id) || id === 'ui-button', id);
   for (const id of ids) assert.ok(PAGE.includes('<template id="' + id + '">'), '缺少模板 ' + id);

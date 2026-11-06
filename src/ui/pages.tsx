@@ -31,7 +31,6 @@ export function giftCodesPage() {
 
 export function overviewPage() {
   return renderToStaticMarkup(<div className="grid gap-3">
-    <Panel title="收益日报" help="按北京时间统计当前账号的金币、钻石、汽油、加速器、战力、等级和主线关卡净变化。挂机运行后定期采样。"><div id="income-view" className="income-view"><span className="dim">挂机运行后开始记录</span></div></Panel>
     <Panel title="运行概览" help="按功能分别查看当前进度与当前条件。这里只读展示；开关仍在挂机页设置。">
       <div className="bar overview-task-filter"><Input id="overview-task-search" type="search" aria-label="查找运行状态" placeholder="功能名称或状态" /><label htmlFor="overview-task-filter">显示</label><select id="overview-task-filter" defaultValue="enabled"><option value="enabled">已开启</option><option value="issues">异常 / 受总控限制</option><option value="all">全部项目</option></select></div>
       <p id="overview-task-summary" className="dim" role="status">等待读取运行状态</p>

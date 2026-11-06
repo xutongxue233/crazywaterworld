@@ -74,13 +74,8 @@ section h2:first-child { margin-top:0 }
 #ui-help-body { color:var(--muted-foreground); white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6 }
 
 /* ---- 表格 ---- */
-[data-slot=table-container]::-webkit-scrollbar,.income-scroll::-webkit-scrollbar { height:6px }
-[data-slot=table-container]::-webkit-scrollbar-thumb,.income-scroll::-webkit-scrollbar-thumb { background:var(--border); border-radius:6px }
-.income-scroll { overflow-x:auto }
-.income-scroll table { min-width:640px }
-.income-scroll td,.income-scroll th { white-space:nowrap; font-variant-numeric:tabular-nums }
-.income-scroll th:first-child,.income-scroll td:first-child { position:sticky; left:0; background:var(--card); z-index:1 }
-.income-view p { margin:12px 0 0 }
+[data-slot=table-container]::-webkit-scrollbar { height:6px }
+[data-slot=table-container]::-webkit-scrollbar-thumb { background:var(--border); border-radius:6px }
 
 /* ---- 物品与角色 ---- */
 .who { display:flex; align-items:center; flex-wrap:wrap; gap:6px 16px; background:var(--muted); padding:10px 12px; border-radius:8px }

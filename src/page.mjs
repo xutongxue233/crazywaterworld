@@ -7,7 +7,6 @@ const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
 const settingsScript = readFileSync(new URL('./settings-ui.js', import.meta.url), 'utf8');
 const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
-const connectionScript = readFileSync(new URL('./ui/connection.js', import.meta.url), 'utf8');
 const settingsCss = readFileSync(new URL('./settings.css', import.meta.url), 'utf8');
 const giftCodeScript=readFileSync(new URL('./gift-codes-ui.js',import.meta.url),'utf8');
 const rankingScript=readFileSync(new URL('./activity-rankings-ui.js',import.meta.url),'utf8');
@@ -611,7 +610,6 @@ async function refreshOverview() {
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
-    void refreshIncome();
     if(!$('tab-overview').classList.contains('hidden'))void refreshActivityRanks();
     if(!$('tab-overview').classList.contains('hidden'))void refreshActivityStatistics();
     if(!$('tab-overview').classList.contains('hidden'))maybeRefreshWorldMap();
@@ -1650,7 +1648,6 @@ ${rankingScript}
 ${activityStatisticsScript}
 ${inventoryScript}
 ${settingsScript}
-${connectionScript}
 for(const button of document.querySelectorAll('[data-panel-toggle]'))button.onclick=()=>{const panel=$(button.dataset.panelToggle),open=panel.hidden;panel.hidden=!open;button.setAttribute('aria-expanded',String(open));button.textContent=open?'收起':'展开';};
 ${giftCodeScript}
 let selectedResource = 'dailies';
