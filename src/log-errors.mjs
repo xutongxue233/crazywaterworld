@@ -33,6 +33,7 @@ const connectionLabels = new Map([
 const connectionPattern = new RegExp('\\b(?:' + [...connectionLabels.keys()].join('|') + ')\\b', 'g');
 
 function explainPrompt(reason, context) {
+  if (reason === 'adv not finished') return '服务器判定广告未完成，等待时间不足';
   // 免费英雄招募从广播站进入；其他玩法也可能返回同一个建筑提示。
   if (reason === 'building not built' && context?.request === 'RecruitStartRequest' && context.way === 1) {
     return '所需建筑尚未建造（广播站）';

@@ -226,7 +226,7 @@ export async function runActivity(client, config, { activityId, taskKey, enabled
       () => allowed(taskKey), 'submit', { orderKey: orderKey ?? view.orderKey }, { player });
     collect({ label: '周订单提交', ok: true, note: result.message });
   } else if (['riverScore', 'riverPass', 'riverHelp'].includes(taskKey)) {
-    await riverActivity(client, config, { ...channel, player, key: taskKey, label: activity.name, ledger,
+    await riverActivity(client, config, { ...channel, player, key: taskKey, label: activity.name, ledger, manual: true,
       settings: getSettings, enabled: () => allowed(taskKey), report: collect });
   } else if (taskKey === 'vipDaily') await claimVipDaily(client, config, player, allowed, collect);
   else if (taskKey === 'campaignReports') await claimReportRewards(client, config, {

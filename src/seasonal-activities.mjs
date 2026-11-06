@@ -1,6 +1,6 @@
 import { claimOnce } from './extra-free-rewards.mjs';
 import { exactAutomationId } from './automation-policy.mjs';
-import { channelUnavailable, hasSkipPrivilege } from './ad-shop.mjs';
+import { adAccess, takeAdSlot, prepareAd, coolAd, isAdNotFinished, AD_PACED_REASON, AD_NOT_FINISHED_REASON, AD_PAUSED_REASON } from './ad-shop.mjs';
 import {
   checkedAction,
   clock,
@@ -164,11 +164,13 @@ async function snowGift(client, config, ctx, event, allowed) {
       });
       continue;
     }
-    const unavailable = channelUnavailable(config.tables, ctx.player, ctx.clientInfo, ctx.language);
-    if (unavailable || !(await hasSkipPrivilege(client, config.tables, ctx.player))) {
-      waiting(ctx, unavailable || '广告礼包需要游戏内观看或已有免广告权益');
+    const access = await adAccess(client, config.tables, { ...ctx, settings: ctx.settings?.() });
+    if (access.reason) {
+      waiting(ctx, access.reason === '当前账号没有免广告权益' ? '广告礼包需要游戏内观看、已有免广告权益或开启无权益领取' : access.reason);
       continue;
     }
+    const adTarget = 'pack:4:' + pack.packId;
+    let rewarded = false;
     await checkedAction(ctx, {
       scope: 'river-ad:' + event.id + ':' + today + ':' + pack.packId,
       before: count,
@@ -176,11 +178,21 @@ async function snowGift(client, config, ctx, event, allowed) {
       label: '走江助力 · 免广告权益礼包',
       allowed: stillAllowed,
       send: async () => {
-        await client.request('WatchAdvRequest', { type: 4, id: pack.packId }, 'OkResponse');
-        if (!ctx.enabled() || !stillAllowed()) throw Error('活动或账号状态已变化');
-        return client.sendWatch('GotAdvRewardRequest', { type: 4, id: pack.packId }, { window: 500 });
+        if (!takeAdSlot(client, access, { manual: ctx.manual, target: adTarget }))
+          throw Object.assign(new Error(AD_PACED_REASON), { released: true });
+        const ready = await prepareAd(client, access, { type: 4, id: pack.packId }, () => ctx.enabled() && stillAllowed());
+        if (!ready) throw Object.assign(new Error(AD_PAUSED_REASON), { released: true });
+        try {
+          const reply = await client.request('GotAdvRewardRequest', { type: 4, id: pack.packId }, 'GotRewardResponse');
+          rewarded = hasReward(reply);
+          return reply;
+        } catch (error) {
+          if (!isAdNotFinished(error)) throw error;
+          coolAd(client, adTarget);
+          throw Object.assign(new Error(AD_NOT_FINISHED_REASON), { released: true });
+        }
       },
-      inspect: () => getCount(pack.packId),
+      inspect: async () => (rewarded ? count + 1 : getCount(pack.packId)),
       matches: (e, after) => after > e.count,
       accept: () => true
     });
@@ -220,6 +232,48 @@ export async function riverActivity(client, config, ctx) {
   });
 }
 
+// 客户端按 price<0 走 ADV_FESTIVAL_GIFT，领取状态与免费档同在 DAILY_SELECT_GIFT 子活动。
+async function compassAdGift(client, config, ctx, event, allowed) {
+  const packEvent = liveSeries(client, 10);
+  if (packEvent?.id !== event.id || !packEvent.sub.dailySelectGift?.boughtTimes)
+    return waiting(ctx, '每日礼包领取状态未同步');
+  const today = dayOf(clock(client));
+  if (natural(client.seriesSnapshotDay) && client.seriesSnapshotDay < today) {
+    packEvent.sub.dailySelectGift.boughtTimes = {};
+    client.seriesSnapshotDay = today;
+  }
+  const stillAllowed = () => allowed() && dayOf(clock(client)) === today && liveSeries(client, 10)?.id === event.id;
+  for (const pack of table(config, 'LinkageLSRLimitPackCfg').filter((p) => p.price < 0 && !p.chargeId)) {
+    const map = packEvent.sub.dailySelectGift.boughtTimes;
+    const count = map[pack.packId] ?? 0;
+    const key = 'compass-ad-gift:' + event.id + ':' + today + ':' + pack.packId;
+    if (!natural(count) || count >= pack.limitCount || ctx.ledger?.hasKey(key)) continue;
+    const access = await adAccess(client, config.tables, { ...ctx, settings: ctx.settings?.() });
+    if (access.reason) return waiting(ctx, access.reason);
+    const target = 'pack:3:' + pack.packId;
+    if (!takeAdSlot(client, access, { manual: ctx.manual, target })) return waiting(ctx, AD_PACED_REASON);
+    if (!(await prepareAd(client, access, { type: 3, id: pack.packId }, stillAllowed))) return waiting(ctx, AD_PAUSED_REASON);
+    let rejected = false, notFinished = false;
+    const reply = await claimOnce(client, {
+      ledger: ctx.ledger,
+      key,
+      report: (entry) => {
+        rejected = entry.status === 'rejected';
+        notFinished = rejected && /adv not finished/.test(entry.error ?? '');
+        ctx.report(notFinished ? { label: ctx.label, skipped: true, reason: AD_NOT_FINISHED_REASON } : entry);
+      },
+      title: '龙王罗盘 · 广告礼包',
+      request: 'GotAdvRewardRequest',
+      body: { type: 3, id: pack.packId },
+      enabled: stillAllowed,
+      verify: hasReward
+    });
+    // 该状态只在登录快照同步：其他拒绝说明今日已在游戏内领过，不再反复申请广告。
+    if (reply || (rejected && !notFinished)) map[pack.packId] = count + 1;
+    if (notFinished) coolAd(client, target);
+  }
+}
+
 export async function compassActivity(client, config, ctx) {
   const event = liveSeries(client, 28);
   if (!event) return waiting(ctx, '龙王罗盘当前未开放');
@@ -246,6 +300,7 @@ export async function compassActivity(client, config, ctx) {
         hasReward(reply) && reply.claimedId > state.claimedId && (await view()).claimedId >= reply.claimedId
     });
   }
+  if (ctx.key === 'compassAdGift') return compassAdGift(client, config, ctx, event, allowed);
   if (ctx.key === 'compassDaily') {
     const packEvent = liveSeries(client, 10);
     if (packEvent?.id !== event.id || !packEvent.sub.dailySelectGift?.boughtTimes)

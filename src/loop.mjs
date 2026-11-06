@@ -26,7 +26,8 @@ import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { serviceHeroRecruitRewards } from './hero-recruit-rewards.mjs';
 import { serviceAntiqueRecruit } from './antique-recruit.mjs';
-import { claimAdShop } from './ad-shop.mjs';
+import { claimAdShop, beginAdRound } from './ad-shop.mjs';
+import { claimAfkAd, claimAdSpeedUps } from './ad-rewards.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
 import { normalize } from './worlds.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
@@ -313,8 +314,15 @@ export async function runLoop(client, protocol, {
       finally { rewards?.expect('装备锻造',rewards.now()+(getSettings()?.forge?.checkEverySeconds??30));forgeAt = Date.now() + (getSettings()?.forge?.checkEverySeconds ?? 30) * 1000; }
     }
 
+    const adContext = { ...adChannel, player, getSettings, enabled, ledger: usageLedger, scheduler: rewards };
+    const claimAfkAdNow = () => isEnabled && enabled('afkAd') && observed(['afkAd'], () => claimAfkAd(client, config, { ...adContext, report(entry) {
+      summary.tasks.results.push(entry);
+      if (!entry.skipped) summary.tasks.planned++;
+      logReward(entry, '领奖');
+    } }));
     await schedule(async () => {
       if (stop.aborted) return;
+      beginAdRound(client);
       if (!isEnabled && enabled('tasks')) {
         try {
           const survey = await surveyTasks(client, protocol, { config, player });
@@ -373,9 +381,10 @@ export async function runLoop(client, protocol, {
       if (isEnabled && groupEnabled('领奖')) {
         const results = await observed(['tasks','dailyRewards','chests','gift','mail','afk'],()=>claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player, { settings }));
         summary.tasks = { planned: results.length, results };
+        try { await claimAfkAdNow(); } catch (error) { phaseFailure('tasks', '闯关挂机广告收益', error); }
       }
       if (isEnabled && enabled('adShop')) {
-        await observed(['adShop'],()=>claimAdShop(client, config, { ...adChannel, player, enabled: () => enabled('adShop'),
+        await observed(['adShop'],()=>claimAdShop(client, config, { ...adChannel, player, getSettings, enabled: () => enabled('adShop'),
           schedule: rewards, report(entry) {
             summary.tasks.results.push(entry);
             if (!entry.skipped) summary.tasks.planned++;
@@ -421,7 +430,7 @@ export async function runLoop(client, protocol, {
           if(serviceEnabled(key))try{let reports=0;await service(client,config,{player,allLevels:active('vipDaily'),enabled:()=>serviceActive(key),ledger:usageLedger,report:entry=>{reports++;extraReport({...entry,taskKey:key});}});if(!reports)extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,skipped:true,reason:'已检查，当前没有新增可执行的领取动作'});}catch(error){extraReport({taskKey:key,label:automationTasks.find(t=>t.key===key).label,ok:false,error:error.message});}
         }
         const activityServices = { armsRaceRewards:militaryRewards, riverScore:riverActivity, riverPass:riverActivity,
-          riverHelp:riverActivity, compassDaily:compassActivity, compassSpin:compassActivity, compassReward:compassActivity,
+          riverHelp:riverActivity, compassDaily:compassActivity, compassAdGift:compassActivity, compassSpin:compassActivity, compassReward:compassActivity,
           merchantTrade:merchantActivity, merchantRewards:merchantActivity, beautyVotes:beautyActivity, beautyGift:beautyActivity };
         for (const [key,service] of Object.entries(activityServices)) {
           if (!settings && key === 'compassSpin') continue;
@@ -441,7 +450,7 @@ export async function runLoop(client, protocol, {
           } catch(error) {report({label,ok:false,error:error.message});}
         }
         if(enabled('festivalSign')||serviceEnabled('festivalFreeGift'))try{await observed(['festivalSign','festivalFreeGift'],()=>claimLinkageFree(client,config,{player,enabled:serviceActive,ledger:usageLedger,report:extraReport}));}catch(error){phaseFailure('tasks','酆都免费奖励',error);}
-        if(enabled('heroAdRecruit')||enabled('antiqueAdRecruit'))try{await observed(['heroAdRecruit','antiqueAdRecruit'],()=>recruitWithSkipAds(client,config,{...adChannel,player,enabled,ledger:usageLedger,report:extraReport,scheduler:rewards}));}catch(error){phaseFailure('tasks','免广告招募',error);}
+        if(enabled('heroAdRecruit')||enabled('antiqueAdRecruit'))try{await observed(['heroAdRecruit','antiqueAdRecruit'],()=>recruitWithSkipAds(client,config,{...adChannel,player,getSettings,enabled,ledger:usageLedger,report:extraReport,scheduler:rewards}));}catch(error){phaseFailure('tasks','免广告招募',error);}
       }
       if (isEnabled && enabled('heroRecruitRewards')) {
         await serviceHeroRecruitRewards(client, config, { player, enabled, scheduler: rewards, report(entry) {
@@ -608,6 +617,16 @@ export async function runLoop(client, protocol, {
         } catch (error) { phaseFailure('tasks', '周活动检查', error); }
       }
       if (groupEnabled('海面')) {
+        const adSpeedUpResults = [];
+        const adSpeedUpKeys = ['adSpeedUpProduce', 'adSpeedUpBuilding', 'adSpeedUpMuseum'];
+        if (isEnabled && adSpeedUpKeys.some(enabled)) {
+          try {
+            await observed(adSpeedUpKeys, () => claimAdSpeedUps(client, config, { ...adContext, report(entry) {
+              adSpeedUpResults.push(entry);
+              stepLog('world')({ ...entry, title: entry.label });
+            } }));
+          } catch (error) { phaseFailure('world', '广告加速', error); }
+        }
         const usesOrders = allowWorld('finishOrder') || allowWorld('denyOrder');
         const survey = await surveyWorld(client, protocol, { config, player,
           includeCargo: needsCargoDemand(settings) || (!!isEnabled && enabled('cargo') && (allowWorld('startProduce') || usesOrders)),
@@ -629,8 +648,8 @@ export async function runLoop(client, protocol, {
           rewards?.observe(key,actions.length?'本次计划 '+actions.length+' 项，执行结果见日志':'已读取基地状态，当前无符合设置的可执行动作');
           rewards?.expect(key,rewards.now()+Math.ceil(getEveryMs()/1000));
         }
-        summary.world = { planned: plan.actions.length, population: survey.population + '/' + survey.maxPopulation,
-          notes: [...survey.notes, ...plan.notes], results: [] };
+        summary.world = { planned: plan.actions.length + adSpeedUpResults.filter(entry => !entry.skipped).length, population: survey.population + '/' + survey.maxPopulation,
+          notes: [...survey.notes, ...plan.notes], results: adSpeedUpResults };
         const nextWait = new Map();
         if (isEnabled && allowWorld('finishOrder')) {
           for (const decision of plan.orderDecisions) {
@@ -791,7 +810,11 @@ export async function runLoop(client, protocol, {
 
           if (afkAt <= Date.now() && enabled('afk')) {
             afkDeadline = undefined;
-            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player, { settings: getSettings() }));
+            await schedule(async () => {
+              if (!enabled('afk')) return;
+              await claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player, { settings: getSettings() });
+              try { await claimAfkAdNow(); } catch (error) { phaseFailure('tasks', '闯关挂机广告收益', error); }
+            });
             if (!afkDeadline || afkDeadline <= Date.now()) afkDeadline = Date.now() + 60_000;
           }
           const checkUpgrade = enabled('upgrade') && upgradeAt <= Date.now();

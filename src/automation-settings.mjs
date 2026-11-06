@@ -31,6 +31,7 @@ export const DEFAULT_SETTINGS = {
   pet: { release: false, releaseQualities: [], enabled: false, claim: true, breed: false, species: [], quality: 'BLUE', universal: false, feed: false, advance: false },
   museum: { enabled: false, upgrade: false, factor: 1, materialFactor: false, factorMaterials: [], stockThreshold: 0, matchedFactor: 1, maps: [], useGuide: false, dailyGuideLimit: 0 },
   resources: { keepAccelerators: 0, allowDiamonds: false, diamondThreshold: 0, diamondDailyLimit: 2000 },
+  ads: { noPrivilege: false, waitSeconds: 15 },
   gold: { enabled: false, times: 3 },
   heroes: { enabled: true, level: true, star: true, skill: true, heroIds: [], universal: true, keepExp: 0, targetLevel: 0, targetStar: 0 },
   dailies: { enabled: true, claimTasks: true, claimDailyChest: true, claimWeeklyChest: true, claimGift: true },
@@ -56,6 +57,7 @@ const int = (max = 1_000_000_000, min = 0) => ({ kind: 'number', min, max });
 const strings = (max = 300) => ({ kind: 'list', max });
 const constraints = {
   'eventActions.compassThreshold':int(999999,1), 'eventActions.compassDrawCount':int(50,1),
+  'ads.waitSeconds':int(120,5),
   'fleetDispatch.priority': {...strings(6),values:['cityWar','pirateHunt','worldBoss','follow','treasure','radar']},
   'worldBoss.fleetIds': strings(10), 'worldBoss.minDurabilityPercent': int(100), 'worldBoss.petrolReserve': int(),
   'events.otherOption': int(2,1), 'radar.fleetIds': strings(10), 'radar.types': {...strings(5),values:['pirate','collect','refugee','spy','fixed']},
@@ -313,7 +315,7 @@ export function importAutomationSettings(document, options) {
   if (!plain(document) || ![SETTINGS_FORMAT, LEGACY_SETTINGS_FORMAT].includes(document.format) || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
   // 原版本1导出没有巨轮分组，只补新增默认值；既有分组仍严格校验。
   const input = plain(document.settings) ? { ...document.settings } : document.settings;
-  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
   if (plain(input?.treasure)) {
     input.treasure = { ...input.treasure };
     for (const key of ['avoidPlayerIds', 'participationMode', 'repeatAttack', 'autoRepair', 'maxRepairCost', 'dailyRepairPetrolLimit', 'personalProgressLimit']) {

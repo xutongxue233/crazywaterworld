@@ -1,6 +1,6 @@
 import { normalize } from './worlds.mjs';
 import { exactAutomationId, automationWireId } from './automation-policy.mjs';
-import { channelUnavailable, hasSkipPrivilege } from './ad-shop.mjs';
+import { adAccess, takeAdSlot, prepareAd, coolAd, isAdNotFinished, AD_PACED_REASON, AD_NOT_FINISHED_REASON, AD_PAUSED_REASON } from './ad-shop.mjs';
 
 const nowOf=c=>Math.floor((Date.now()+(c.serverClockOffsetMs||0))/1000);
 const dayOf=t=>Math.floor((t+28800)/86400);
@@ -127,11 +127,11 @@ export async function claimLinkageFree(client,config,{player,enabled,ledger,repo
   }
  }
 }
-export async function recruitWithSkipAds(client,config,{player,clientInfo,language,enabled,ledger,report,scheduler}){
+export async function recruitWithSkipAds(client,config,{player,clientInfo,language,enabled,ledger,report,scheduler,getSettings}){
  for(const [key,id,kind,request,response]of [['heroAdRecruit',2,'hero','RecruitStartRequest','RecruitStartResponse'],['antiqueAdRecruit',7,'antique','AntiqueRecruitRequest','AntiqueRecruitResponse']]){
   if(!enabled(key))continue;const title=kind==='hero'?'英雄免广告招募':'藏品免广告招募';
-  const unavailable=channelUnavailable(config.tables,player,clientInfo,language);
-  if(unavailable||!await hasSkipPrivilege(client,config.tables,player)){report({label:title,skipped:true,reason:unavailable??'当前账号没有免广告权益'});continue;}
+  const access=await adAccess(client,config.tables,{player,clientInfo,language,settings:getSettings?.()});
+  if(access.reason){report({label:title,skipped:true,reason:access.reason});continue;}
   const day=dayOf(nowOf(client)),limit=rows(config,'AdvEffectCfg').find(r=>r.id===id)?.dailyLimit;
   if(!valid(limit)||limit<1||limit>10)throw Error('广告招募每日次数未确认');
   const allowed=()=>enabled(key)&&dayOf(nowOf(client))===day;
@@ -140,23 +140,30 @@ export async function recruitWithSkipAds(client,config,{player,clientInfo,langua
    const effects=water.adv?.filter(e=>e.id===id);if(!effects||effects.length!==1||!valid(effects[0].gotTimes)){report({label:title,skipped:true,reason:'今日广告招募次数未完整返回'});break;}
    const used=effects[0].gotTimes;if(used>=limit)break;
    const before=(await client.request('RecruitInfoRequest',{},'RecruitInfoResponse'))?.[kind];if(!valid(before?.recruitTimes))throw Error('招募次数未确认');
-   const unresolved=Object.entries(ledger.keyRecords()).filter(([,r])=>!r.confirmed&&r.details?.kind==='adRecruit'&&r.details.id===id);
-   for(const [savedKey,r]of unresolved)if(savedKey.startsWith('ad-recruit:'+day+':') && used===r.details.used+1 && (before.recruitTimes===r.details.recruitTimes+1 || valid(r.details.taskTimes)&&before.task?.times===r.details.taskTimes+1))ledger.resolveKey(savedKey,true);
+   const unresolved=Object.entries(ledger.keyRecords()).filter(([savedKey,r])=>!r.confirmed&&r.details?.kind==='adRecruit'&&r.details.id===id&&savedKey.startsWith('ad-recruit:'+day+':'));
+   for(const [savedKey,r]of unresolved)if(used===r.details.used+1 && (before.recruitTimes===r.details.recruitTimes+1 || valid(r.details.taskTimes)&&before.task?.times===r.details.taskTimes+1))ledger.resolveKey(savedKey,true);
    if(unresolved.some(([savedKey])=>!ledger.keyRecords()[savedKey].confirmed)){report({label:title,skipped:true,reason:'前次广告准备或招募结果未确认，暂停后续次数'});break;}
    const uniqueKey='ad-recruit:'+day+':'+id+':'+used;
    if(ledger.hasKey(uniqueKey)){report({label:title,skipped:true,reason:'前次免广告招募结果待核对，未重复提交'});break;}
+   if(!takeAdSlot(client,access,{target:'effect:'+id})){report({label:title,skipped:true,reason:AD_PACED_REASON});break;}
    const ticket=ledger.reserve({},{},{},{uniqueKey,details:{kind:'adRecruit',id,used,recruitTimes:before.recruitTimes,taskTimes:valid(before.task?.times)?before.task.times:null}});
    if(!allowed()){ledger.cancel(ticket);break;}
    let drawSent=false;
    try{
-    await client.request('WatchAdvRequest',{type:1,id},'OkResponse');
-    if(!allowed())throw Error('广告准备已完成，招募已暂停，等待核对');
+    if(!await prepareAd(client,access,{type:1,id},allowed)){
+     if(!access.waitMs)throw Error('广告准备已完成，招募已暂停，等待核对');
+     ledger.cancel(ticket);report({label:title,skipped:true,reason:AD_PAUSED_REASON});break;
+    }
     drawSent=true;const reply=await client.request(request,kind==='hero'?{way:5}:{type:1,way:5},response);
     const after=(await client.request('RecruitInfoRequest',{},'RecruitInfoResponse'))?.[kind];
     const counter=(await client.request('OnWaterRequest',{},'OnWaterResponse')).adv?.find(e=>e.id===id);
     if(!reply?.recruitData||!(after?.recruitTimes===before.recruitTimes+1 || valid(before.task?.times)&&after?.task?.times===before.task.times+1)||counter?.gotTimes!==used+1)throw Error('招募或广告次数未确认，已阻止重复提交');
     ledger.confirm(ticket);scheduler?.clear(kind==='hero'?'heroRecruitRewards':'antiqueRecruitRewards');report({label:title+' · 今日 '+(used+1)+'/'+limit,ok:true});
-   }catch(error){if(error.prompt&&!drawSent&&error.request==='WatchAdvRequest')ledger.cancel(ticket);report({label:title,ok:false,error:error.message});break;}
+   }catch(error){
+    if(isAdNotFinished(error)){ledger.cancel(ticket);coolAd(client,'effect:'+id);report({label:title,skipped:true,reason:AD_NOT_FINISHED_REASON});break;}
+    if(error.prompt&&!drawSent&&error.request==='WatchAdvRequest')ledger.cancel(ticket);
+    report({label:title,ok:false,error:error.message});break;
+   }
   }
  }
 }

@@ -209,7 +209,7 @@ export const ACTIONS = {
     request: 'SpeedUpUpgradeBuildingRequest',
     response: null,
     mutate: true,
-    desc: '花加速器缩短建造时间；type=2 是加速器，钻石(1)与广告(3)本工具不用',
+    desc: '花加速器缩短建造时间；type=2 是加速器。钻石(1)不用，广告(3)见 ad-rewards.mjs',
     params: ['buildingId', 'useNum'],
     body: ({ buildingId, useNum }) => ({ buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: Number(useNum) } }),
   },

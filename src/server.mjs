@@ -347,7 +347,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // so crossing an unlock level takes effect without restarting the console.
       if (name === 'SCPlayerExpUpdate' && session.client === instance && session.player && body.level > 0) {
         if (session.player.level !== body.level) {
-          for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests',
+          for (const key of ['adShop', 'afkAd', 'adSpeedUpProduce', 'adSpeedUpBuilding', 'adSpeedUpMuseum', 'weekPass', 'trialSweep', 'dailyRewards', 'chests',
             'museumCollect', 'museumExplore', 'petCollect', 'petBreed', 'worldOnline', 'tradeTasks', 'seasonTasks',
             'museumRevenue', 'museumAchievements', 'heroGrowth', 'stageAuto', 'treasureLoot']) rewardSchedule(instance).clearTask(key);
         }

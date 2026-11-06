@@ -95,6 +95,10 @@ export async function checkedAction(
     ctx.ledger.confirm(ticket);
     ctx.report({ label, ok: true, status: 'confirmed' });
   } catch (error) {
+    if (error.released) {
+      ctx.ledger.cancel(ticket);
+      return waiting(ctx, error.message);
+    }
     if (error.prompt && error.request === expected.request) ctx.ledger.cancel(ticket);
     ctx.report({
       label,

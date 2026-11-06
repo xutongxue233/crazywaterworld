@@ -314,8 +314,8 @@ MonthCardDailyRewardRequest          领取月卡每日奖励，无响应类型
 - 已对真实账号执行过的变更：一轮 `loot --yes`（见第 10 节）、日常任务一轮（见 11.4）、
   英雄养成两轮（见 11.4）、进度任务领取与海面排产各若干轮（见 12.6）。
 - 付费动作单独门控：点金/折扣商店这类要花钻石的，还要 `--paid` 才执行，默认跳过。
-- 加速与拒单各有独立开关（`--speed-up` / `--reroll`），默认关闭；加速**只花「加速器」道具**，
-  `SpeedUpCostParam.type` 永远发 2，钻石(1)与广告(3)不碰。
+- 加速与拒单各有独立开关（`--speed-up` / `--reroll`），默认关闭；加速计划只花「加速器」道具，
+  `SpeedUpCostParam.type` 发 2，不用钻石(1)。广告(3)只由独立开关的广告加速使用，见 13.7。
 - 不使用 `LoginRequest` 里的 `testAccount` / `superToken` 等开发者字段（鉴权后门，不在范围内）。
 - 账号选择（`--account` / `CW_ACCOUNT` / 网页 `?account=`）只是挑「用哪份已有凭证」，
   不会放宽任何一项授权要求，也不会顺带连接：连接仍然要显式动作。
@@ -483,7 +483,7 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 | `SpeedUpUpgradeBuildingRequest{buildingId, speedUp}` | 无 | 加速建造 |
 | `SpeedUpFactoryProduceRequest{buildingId, speedUp, index}` | 无 | 加速生产，`index` 是队列下标 |
 
-`SpeedUpCostParam{type, useNum}`，`type`: 1=钻石 2=加速器 3=广告；本工具**只用 2**。
+`SpeedUpCostParam{type, useNum}`，`type`: 1=钻石 2=加速器 3=广告；加速计划只用 2，广告分支见 13.7。
 `useNum` 按客户端 `new SpeedUpResult(!0, SPEED_UP_ITEM, min(ceil(剩余秒/60), 持有量))` 算，最少 1。
 
 实测（收成品）：对 4 栋有囤积成品的工厂各发一条 `GainFactoryProduceRequest`，
@@ -678,3 +678,29 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 | 免费试炼扫荡 | 先查最高已通关关卡，再用 `buySweepTimes` 查下一次价格。仅在零钻档位执行，读取次数增长后才记录成功。 |
 
 战报的手动活动、单次领奖、挂机和新战报推送入口共用账号队列及持久领取记录。超时、断线或回执不全时保留未确认记录；只有回读证实该批全部 UID 已领取后才核销，在此之前新增战报也不会触发再次一键领取。服务器明确拒绝同一请求时才撤销未确认记录。新战报推送可在挂机未启动时处理，但仍需开启战报奖励开关、账号未暂停且连接有效。
+
+### 13.7 广告奖励协议
+
+依据 v75 客户端的 `AdvUtils.playAdv`：先发 `WatchAdvRequest{type,id}`，回 `OkResponse` 后才判断 `canSkipAdv`（VIP 特权“免广告”或首充记录）。有权益立即回调，否则才播放激励视频。视频完成回调之后，客户端才发业务请求。
+
+| 场景 | `WatchAdv(type,id)` | 业务请求 | 回包 | 日上限 | 真实账号记录 |
+| --- | --- | --- | --- | --- | --- |
+| 挂机收益 | 1,1 | `DrawAfkRewardRequest{useAdvCard:true}` | `DrawAfkRewardResponse` | 1 | 有 |
+| 英雄招募 | 1,2 | `RecruitStartRequest{way:5}` | `RecruitStartResponse` | 3 | 有 |
+| 英雄经验/强化石/海兽经验试炼 | 1,4 / 1,3 / 1,5 | `TrialRaidBuySweepRequest{raidId,useAdvCard:true}` | 无同名回包 | 各 1 | 无 |
+| 工厂生产加速 | 1,6 | `SpeedUpFactoryProduceRequest{buildingId,index,speedUp:{type:3,useNum:0}}` | `OkResponse` | 3 | 有 |
+| 藏品招募 | 1,7 | `AntiqueRecruitRequest{type:1,way:5}` | `AntiqueRecruitResponse` | 3 | 有 |
+| 建筑升级加速 | 1,8 | `SpeedUpUpgradeBuildingRequest{buildingId,speedUp}` | 无同名回包 | 与展柜共 3 | 无 |
+| 博物馆展柜加速 | 1,8 | `MuseumSpeedUpCaseRequest{exhibitionId,caseIndex,speedUp}` | 无同名回包 | 与建筑共 3 | 无 |
+| 广告商店 | 2,product.id | `GotAdvRewardRequest{id}` | `GotRewardResponse` | 商品 max | 有 |
+| 龙王罗盘礼包 | 3,packId | `GotAdvRewardRequest{type:3,id}` | `GotRewardResponse` | limitCount | 有 |
+| 走江助力礼包 | 4,packId | `GotAdvRewardRequest{type:4,id}` | `GotRewardResponse` | limitCount | 有 |
+
+真实账号记录来自 issue #11 附带的第三方接口文档（v76 缓存），本工具未用真实账号复测。服务器对业务请求的拦截是 `PromptResponse{prompt:5,args:["adv not finished"]}`，文档记录的等待时长：藏品招募 1 秒被拒、5 秒成功；广告商店 3 秒被拒；上表标“有”的入口 15 秒成功。全入口最短阈值未知。
+
+- 广告次数读 `OnWaterResponse.adv[]`，日上限读 `AdvEffectCfg`。商店 effectId 9 没有配置行，按 `AdvShopInfoResponse.product[].max`；礼包按配置 `limitCount` 与活动状态。
+- 广告礼包配置为 `price<0`：`LinkageLSRLimitPackCfg#1001` 与 `SnowBallGiftCfg#1001`。两者 packId 相同，靠 type 区分。罗盘状态在子活动 10 的 `dailySelectGift.boughtTimes`，只随登录快照同步，所以被服务器拒绝（非“未完成”）时当天不再申请；走江状态由 `SnowballDetailRequest.giftBuy` 回读。
+- 挂机广告按钮只在 `服务器时间 - afkStartTime - 1 <= 60` 时显示。第三方记录中超出窗口也领取成功，且金币数与“已挂机时长 + 2 小时”吻合，但工具仍按客户端窗口执行，避免额外偏离客户端行为。
+- `DispFactoryJob.idx` 是 optional，0 号队列可能不在线路上出现，读取时按 0 处理。`finishTime` 为 0 表示未开工，客户端不提供加速。
+- 展柜到期由客户端补发 `MuseumFinishCaseUpgradeRequest{exhibitionId,caseIndex}`；工具没有其他展柜升级入口，由广告加速开关一并处理。
+- 实现位于 `ad-shop.mjs` 的 `adAccess`、`takeAdSlot`、`prepareAd` 与 `ad-rewards.mjs`。

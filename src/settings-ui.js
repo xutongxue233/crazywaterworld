@@ -18,12 +18,24 @@ const configZeroHints={
  'trials.maxSingleCost':'0 表示禁止付费扫荡。','trials.dailyDiamondBudget':'0 表示禁止付费扫荡。'
 };
 const configGroups = [
+  {id:'ad-rewards',title:'广告奖励',category:'daily',fields:[
+    configField('ads.noPrivilege','无免广告权益时也领取','switch',{help:'默认关闭。开启后，没有免广告权益的账号也会提交广告申请，不播放视频，等待下方秒数后直接领奖。这不是游戏客户端的正常流程，服务器可能识别，存在账号处罚风险，请自行评估。试炼与走江助力的广告档也受此开关控制；有权益的账号不受影响。'}),
+    configField('ads.waitSeconds','广告申请后等待','number',{unit:'秒',when:d=>d.ads.noPrivilege,help:'默认15秒，是挂机收益、英雄招募、工厂加速、藏品招募、广告商店、节庆礼包和雪球礼包都实测成功过的时长。5秒只在藏品招募上测通，广告商店3秒被拒。等待会占用账号操作队列，挂机每轮最多处理1次；服务器返回未完成时跳过该入口并冷却5分钟。'}),
+    configField('schedule.afkAd','闯关挂机广告收益','switch',{help:'每天1次。游戏只在普通领取后的60秒内提供此入口，因此需同时开启“闯关挂机收益”，普通领取后立即执行。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.adShop','广告商店资源','switch',{help:'按商品每日次数领取。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.heroAdRecruit','英雄广告招募','switch',{help:'每天3次，不消耗招募券或钻石。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.antiqueAdRecruit','藏品广告招募','switch',{help:'每天3次，不消耗招募券或钻石。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.compassAdGift','龙王罗盘每日广告礼包','switch',{help:'每天1次，活动开放时可领。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.adSpeedUpProduce','工厂生产广告加速','switch',{help:'每天3次，每次30分钟，优先剩余时间最长的生产队列，只加速已开工的目标，不使用加速器。遵守工厂禁用名单。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.adSpeedUpBuilding','建筑升级广告加速','switch',{help:'每天3次，与博物馆展柜共用次数，每次30分钟，只加速施工中的建筑。遵守建筑禁用名单。尚未经真实账号验证，回读确认不到次数变化时不重复提交。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+    configField('schedule.adSpeedUpMuseum','博物馆展柜广告加速','switch',{help:'与建筑升级共用每天3次，优先剩余时间更长的目标，到期后自动提交展柜完工。尚未经真实账号验证，回读确认不到次数变化时不重复提交。账号需有免广告权益，或开启上方“无权益时也领取”。'}),
+  ]},
   {id:'military-week',title:'周期 · 军备竞赛',category:'daily',fields:[
     configField('schedule.armsRaceRewards','军备竞赛达标奖励与免费补给','switch',{help:'周期活动。按本人积分、房间等级、当日主题判断5档奖励；独立补给页只领标价为零的礼包。'}),
   ]},
   {id:'river-series',title:'限时 · 联动系列',category:'daily',fields:[
     configField('schedule.riverScore','走江踏浪 · 积分奖励'),configField('schedule.riverPass','走江踏浪 · 走江战令'),
-    configField('schedule.riverHelp','走江助力 · 免费和广告礼包','switch',{help:'广告档要求当前渠道支持且账号已有免广告权益。'}),
+    configField('schedule.riverHelp','走江助力 · 免费和广告礼包','switch',{help:'广告档要求当前渠道支持，且账号有免广告权益或已在“广告奖励”中开启无权益领取。'}),
     configField('schedule.festivalSign','酆都诡事 · 每日签到'),configField('schedule.festivalFreeGift','酆都诡事 · 免费特惠'),
     configField('schedule.festivalActiveRewards','酆都诡事 · 活跃奖励'),configField('schedule.edict','酆都法旨 · 解符'),configField('schedule.evilExpel','驱邪除祟 · 累计奖励'),
     configField('schedule.compassDaily','龙王罗盘 · 每日免费礼包'),configField('schedule.compassReward','龙王罗盘 · 积分奖励'),
@@ -372,7 +384,7 @@ function configRender() {
   groups.find(g => g.id === 'rewards').title = '任务与领奖';
   const trialGroup = groups.find(g => g.id === 'daily-challenges');
   if (trialGroup) trialGroup.fields.push(
-    configField('trials.ads', '试炼免广告扫荡', 'switch', { help:'仅在确认当前账号具备免广告权益、渠道开放且该副本广告次数有剩余时执行。当前配置每副本每天1次；不播放或模拟广告，不花钻石。先完成普通首轮免费扫荡。' }),
+    configField('trials.ads', '试炼免广告扫荡', 'switch', { help:'渠道开放且该副本广告次数有剩余时执行，账号需有免广告权益或已在“广告奖励”中开启无权益领取。当前配置每副本每天1次，不花钻石。先完成普通首轮免费扫荡。' }),
     configField('trials.paid', '试炼钻石扫荡', 'switch', { help:'普通首轮免费之后才执行付费扫荡；还需开启“基础→加速与钻石”中的钻石总开关，并遵守保留量与全局每日预算。新开关默认关闭。' }),
     configField('trials.raidIds', '自动额外扫荡副本', 'multi', { catalog:'trialRaids', empty:'未选择，不安排自动额外扫荡', help:'选择自动免广告与钻石扫荡的副本。原有首轮免费扫荡和挑战页的单次扫荡入口保持独立；单次操作仍遵守各项费用与预算限制。' }),
     configField('trials.paidPerRaidLimit', '每副本每日钻石扫荡上限', 'number', { unit:'次', help:'仅统计本工具的付费扫荡；同时遵守游戏基础、VIP和有效月卡次数限制。0禁止钻石扫荡。' }),

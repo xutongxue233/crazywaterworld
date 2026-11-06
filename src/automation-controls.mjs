@@ -32,7 +32,7 @@ const nativeKeys = new Set(['trialPaidSweep','trialAdSweep','diveEnhance','autoD
 for (const task of automationTasks) {
  if (nativeKeys.has(task.key)) continue;
  const group = ['freeRecruit','ticketRecruit','freeAntiqueRecruit','antiqueRecruitRewards','heroRecruitRewards','heroAdRecruit','antiqueAdRecruit'].includes(task.key) ? '日常招募' : ['周期活动','限时活动'].includes(task.group) ? '活动' : ['联盟','挑战'].includes(task.group) ? '世界与挑战' : task.group === '日常' ? '日常行动' : task.group === '海面' ? '基地' : '任务与领奖';
- const gates = task.group==='日常' ? ['loop.dailies','dailies.enabled'] : task.key==='weekFactory'?['loop.world','building.enabled']:[];
+ const gates = task.group==='日常' ? ['loop.dailies','dailies.enabled'] : task.key==='weekFactory'||task.key==='adSpeedUpBuilding'?['loop.world','building.enabled']:task.key==='adSpeedUpProduce'?['loop.world','factory.enabled']:task.key==='adSpeedUpMuseum'?['loop.world']:[];
  add('schedule.'+task.key,task.label,group,{gates,taskKey:task.key,...(task.key==='pirate'?{help:'在游戏配置 → 世界 → 海盗日常扫荡选择种类。只使用每日免费次数，无需派舰队，不消耗汽油；与首杀配置独立。'}:{}),...(task.key==='guildTitleReward'?{help:'默认开启，每天只领取服务器确认可领的职级礼包；结果未知时保留记录，不重复提交。'}:{})});
 }
 // 挂机页仅展示现有模块入口；其余细项仍使用原字段，在游戏配置编辑。
