@@ -18,7 +18,7 @@ npm run sync-config
 npm start
 ```
 
-`npm start` 会先构建界面，再在 `http://127.0.0.1:17321/` 启动控制台。也可以运行 `.\start-console.cmd start` 使用 `17323` 端口启动；不带 `start` 时脚本只检查抓包证书状态，不会启动控制台。
+`npm start` 会先构建界面，再在 `http://127.0.0.1:17321/` 启动控制台。`.\start-console.cmd` 在 `http://127.0.0.1:17323/` 启动控制台，不自动打开浏览器，只输出地址；`.\start-console.cmd url` 只输出地址并保持窗口；`.\start-console.cmd status` 只检查抓包证书状态。
 
 1. 打开本地控制台，进入 **账号**，选择 **从电脑微信添加** 或 **从电脑抖音添加**。提示正在采集后，从对应客户端重新进入游戏，核对日志中的角色验证结果。
 2. 在 **游戏配置** 设定要运行的项目、资源保留和预算；可先用 **只读预览** 查看当前计划。保存配置不会启动挂机。
@@ -32,8 +32,9 @@ npm start
 | 入口 | 行为 |
 | --- | --- |
 | `npm start` | 构建界面并启动控制台，默认端口 `17321` |
-| `.\start-console.cmd` | 只检查抓包 CA 状态并提示启动命令，不启动控制台 |
-| `.\start-console.cmd start` | 启动控制台，默认端口 `17323` |
+| `.\start-console.cmd` | 启动控制台，不自动打开浏览器，只输出地址，端口 `17323` |
+| `.\start-console.cmd url` | 只输出地址 `http://127.0.0.1:17323/` 并保持窗口，不启动控制台 |
+| `.\start-console.cmd status` | 只检查抓包 CA 状态，不启动控制台 |
 | `$env:CW_PORT='17324'; npm start` | 指定控制台端口 |
 | `$env:CW_NO_BROWSER='1'; npm start` | 启动控制台但不自动打开浏览器 |
 
@@ -47,6 +48,31 @@ npm start
 - 未连接的账号也可在礼包兑换时自动登录，但同样可能顶号。
 - 旧版本曾在项目上一级留下 `certificates/`，升级后可手动删除一次。
 - 抖音单独采集可运行 `npm run capture:douyin`。
+
+### 手机号登录
+
+先在游戏社区/小程序绑定手机号，并设置 APP/益世界账号的登录密码。控制台 **账号 → 手机号登录** 支持账号密码或短信验证码登录益世界 ewan 账号 SDK，再换取游戏网关凭证。
+
+首次使用请点 **登录并预览**，确认返回的 openId 是已有角色再保存；如果它是新的 openId，保存后会新建一个空账号，不要直接覆盖。密码只用于当次请求，不写入任何文件；待保存凭证只在内存保留 10 分钟。工具不代替绑定手机号。
+
+登录还绑定 APP 的 `di/oi/devicecode` 设备标识。工具默认读取本机 `data/ewan-device.json`；APP 重装或换设备后，如果返回“用户名或密码错误”，需要按文档重新导入这份设备档案。
+
+CLI 等价入口：
+
+```powershell
+$env:CW_PHONE='手机号或账号'
+$env:CW_PHONE_PASSWORD='登录密码'
+node src/app.mjs accounts login-phone --probe   # 只看登录响应字段
+node src/app.mjs accounts login-phone           # 预览游戏 openId，不保存
+node src/app.mjs accounts login-phone --save --yes
+
+# 已拿到短信验证码时（控制台可直接点“发送验证码”）
+$env:CW_PHONE='153xxxxxxxx'
+$env:CW_PHONE_CODE='123456'
+node src/app.mjs accounts login-phone --code "$env:CW_PHONE_CODE" --probe
+```
+
+协议细节和限制见 [手机号登录分析](docs/phone-login.md)。
 
 ## 功能一览
 
@@ -165,8 +191,9 @@ npm start
 | 命令 | 用途 |
 | --- | --- |
 | `npm start` | 先构建界面再启动控制台，默认端口 `17321` |
-| `.\start-console.cmd` | 只检查抓包 CA 状态并提示启动命令，不启动控制台 |
-| `.\start-console.cmd start` | 启动控制台，默认端口 `17323` |
+| `.\start-console.cmd` | 启动控制台，不自动打开浏览器，只输出地址，端口 `17323` |
+| `.\start-console.cmd url` | 只输出地址 `http://127.0.0.1:17323/` 并保持窗口，不启动控制台 |
+| `.\start-console.cmd status` | 只检查抓包 CA 状态，不启动控制台 |
 | `npm run build:ui` | 修改 TSX、页面脚本或主题样式后生成页面与样式 |
 | `npm test` | 先构建界面，再依次执行 core、progression、extra 三组自检 |
 | `npm run test:core` | 核心协议、日常、原有玩法、阵容和掉线处理回归 |

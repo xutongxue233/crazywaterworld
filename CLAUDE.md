@@ -10,8 +10,9 @@
 
 ```powershell
 npm start                     # prestart 先构建界面，再启动；端口 17321
-.\start-console.cmd           # 只检查 MITM 证书状态，不启动控制台
-.\start-console.cmd start     # 用户入口，端口 17323，启动控制台
+.\start-console.cmd           # 用户入口，端口 17323，启动控制台，不自动开浏览器，只输出地址
+.\start-console.cmd url       # 只输出地址并保持窗口，不启动控制台
+.\start-console.cmd status    # 只检查 MITM 证书状态，不启动控制台
 npm run build:ui              # 改 TSX 或 theme.css 后运行，提交 src/ui/dist 产物
 npm test                      # pretest 先构建，再依次执行下面三组，遇错即停
 npm run test:core             # 核心协议、日常、原有玩法、阵容与掉线处理

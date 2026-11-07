@@ -4,7 +4,10 @@
 
 ## 2026-11-07
 
-- `start-console.cmd` 默认只检查抓包 CA 状态，不再自动启动控制台；使用 `.\start-console.cmd start` 或 `npm start` 启动。
+- 修复手机号登录连接网关被 `1000 Bye` 关闭：ewan 登录后补走 `api.gzxianc.com/api/user/login` 业务登录，并用 `signToken` 作为网关 token；同时按 APP 抓包对齐 `clientVersion=1.12.9`、`language=zh_CN`、`systemLanguage=zh_cn_#hans`、`sc/extc=261390`、`biz=102`、生日和 `originVersion`。已实测连接成功并读取角色。
+- 修复手机号登录页面把 11 位手机号误判为格式错误：页面脚本是模板字符串，正则中的 `\d` 被转义丢失，改为 `[0-9]` 并加入回归检查。
+- 新增手机号/账号密码和短信验证码登录：按 APK 抓包接入益世界 ewan 账号 SDK（`loginsdk.ewan.cn/login`，AES-128-ECB；账号密码协议 100003，验证码校验 420012、完成登录 420007），换取网关 `openid/token/sign/timestamp`。已用真实账号验证账号密码成功响应；登录绑定 APP 的 `di/oi/devicecode`，工具读取本机 `data/ewan-device.json` 设备档案，APP 重装或换设备后需重新导入。控制台「账号 → 手机号登录」支持发送验证码、验证码登录和账号密码登录，先预览 openId，再确认保存；CLI 为 `accounts login-phone`，支持 `--password`、`--code`、`--probe`、`--save`、`--connect`。密码和验证码不落盘，待保存凭证只在内存保留 10 分钟，详见 `docs/phone-login.md`。
+- `start-console.cmd` 默认启动控制台（端口 17323，不自动打开浏览器），只在服务就绪后输出地址；`.\start-console.cmd url` 只输出地址并保持窗口，`.\start-console.cmd status` 查看抓包 CA 状态。
 - 抓包 CA 和代理备份改存到项目内的 `certificates/`，路径按项目位置计算并可被 `CW_CA_DIR` 覆盖；停止抓包并移除证书后自动删除本次生成的文件，保留 CA 或目标证书文件清理失败时除外。
 - `data/protocol.log` 增加大小轮转：默认每个文件 5 MB，主日志和 `data/protocol.log.1` 交替写入，避免长期运行无限增长；可用 `CW_PROTOCOL_LOG_MAX_BYTES` 调整上限。
 - 新增“藏品养成”自动化：按所选品质自动激活藏品、升星、提升藏品大师等级和套装等级。升星可使用万能碎片补足；套装升级遵守大师等级上限、金币保留量和每日金币预算。所有动作发送前复查库存与设置，结果未知时保留持久记录，不重复发送。

@@ -1639,6 +1639,134 @@ $('cap-stop').onclick = async () => {
   renderAccounts();
 };
 
+// ---- 手机号登录 -----------------------------------------------------------
+let phonePending = null;
+function phoneHint(text, bad = false) {
+  const hint = $('phone-hint');
+  hint.textContent = text;
+  hint.className = bad ? 'bad' : 'warn';
+}
+function phoneError(message) {
+  const text = message || '登录失败';
+  phoneHint(text, true);
+  const box = clear($('phone-result'));
+  box.appendChild(el('div', 'bad', text));
+}
+function renderPhonePending(data) {
+  phonePending = data;
+  const box = clear($('phone-result'));
+  const kv = el('div', 'kv');
+  const rows = [
+    ['openId', data.openId],
+    ['游戏 uid', data.uid],
+    ['登录方式', '益世界账号'],
+    ['手机号', data.phone || '-'],
+    ['已有账号', data.matched ? '是：' + (data.existingTitle || data.openId) + '（保存会刷新凭证）' : '否，保存会新建一个账号'],
+  ];
+  for (const [key, value] of rows) {
+    kv.appendChild(el('div', 'k', key));
+    kv.appendChild(el('div', 'v', value));
+  }
+  box.appendChild(kv);
+  if (!data.matched) box.appendChild(el('div', 'dim', '如果这个 openId 不是你要的区服角色，先不要保存；检查手机号绑定或换用另一个 uid 再试。'));
+  $('phone-save').disabled = false;
+}
+async function phoneLogin(payload) {
+  $('phone-login').disabled = true;
+  $('phone-save').disabled = true;
+  phoneHint('正在登录益世界账号并换取游戏凭证…');
+  try {
+    const data = await call('/api/accounts/phone-login', { method: 'POST', body: JSON.stringify({ confirm: true, ...payload }) });
+    phoneHint('');
+    renderPhonePending(data);
+    $('phone-password').value = '';
+    $('phone-code').value = '';
+  } catch (error) {
+    phoneError(error.message);
+    reportError(error);
+  } finally {
+    $('phone-login').disabled = false;
+  }
+}
+$('phone-login').onclick = () => {
+  const body = {
+    phone: $('phone-account').value.trim(),
+    password: $('phone-password').value,
+  };
+  if (!body.phone) { phoneHint('先填手机号或账号'); return; }
+  if (!body.password) { phoneHint('填登录密码'); return; }
+  phonePending = null;
+  $('phone-save').disabled = true;
+  clear($('phone-result'));
+  phoneLogin(body);
+};
+let smsTimer = null;
+function startSmsCountdown(seconds = 60) {
+  if (smsTimer) clearInterval(smsTimer);
+  const button = $('phone-send-code');
+  let left = Number(seconds) || 60;
+  button.disabled = true;
+  const tick = () => {
+    button.textContent = left > 0 ? '重新发送(' + left + 's)' : '发送验证码';
+    if (left <= 0) {
+      clearInterval(smsTimer);
+      smsTimer = null;
+      button.disabled = false;
+      return;
+    }
+    left -= 1;
+  };
+  tick();
+  smsTimer = setInterval(tick, 1000);
+}
+$('phone-send-code').onclick = () => {
+  const phone = $('phone-account').value.trim();
+  if (!/^1[3-9][0-9]{9}$/.test(phone)) { phoneHint('先填 11 位手机号', true); return; }
+  const body = [el('div', null, '将向 ' + phone + ' 发送登录验证码。')];
+  openConfirm('发送短信验证码', body, async () => {
+    try {
+      const data = await call('/api/accounts/phone-login/send-code', { method: 'POST', body: JSON.stringify({ confirm: true, phone }) });
+      phoneHint('验证码已发送，请查收短信');
+      startSmsCountdown(data.cooldown || 60);
+    } catch (error) {
+      phoneError(error.message);
+      reportError(error);
+    }
+  });
+};
+$('phone-sms-login').onclick = () => {
+  const phone = $('phone-account').value.trim();
+  const code = $('phone-code').value.trim();
+  if (!/^1[3-9][0-9]{9}$/.test(phone)) { phoneHint('先填 11 位手机号', true); return; }
+  if (!code) { phoneHint('填短信验证码', true); return; }
+  phonePending = null;
+  $('phone-save').disabled = true;
+  clear($('phone-result'));
+  phoneLogin({ phone, code });
+};
+$('phone-save').onclick = () => {
+  if (!phonePending) return;
+  const body = [
+    el('div', null, '将保存 openId ' + phonePending.openId + ' 的登录凭证。'),
+    el('div', null, phonePending.matched
+      ? '这个 openId 已有账号记录，保存会刷新该账号的凭证并切换为当前账号。'
+      : '这是一个新的 openId，保存会新增账号；请确认它对应你要玩的角色。'),
+  ];
+  openConfirm('保存手机号登录账号', body, async () => {
+    try {
+      await call('/api/accounts/phone-login/save', { method: 'POST', body: JSON.stringify({ confirm: true, id: phonePending.id }) });
+      phonePending = null;
+      $('phone-save').disabled = true;
+      clear($('phone-result'));
+      await loadAccounts(true);
+      renderAccounts();
+    } catch (error) {
+      phoneError(error.message);
+      reportError(error);
+    }
+  });
+};
+
 // ---- 启动 ------------------------------------------------------------------
 ${progressionScript}
 ${helpTipsScript}

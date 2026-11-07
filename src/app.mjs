@@ -1,9 +1,10 @@
 import fs from 'node:fs';
+import readline from 'node:readline';
 import { parseArgs } from 'node:util';
 import { GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { createConsole, openBrowser } from './server.mjs';
-import { loadStore, saveStore, pickAccount, removeAccount, setActive, describeAccount, revealAccount, ACCOUNTS_PATH, LEGACY_CREDENTIALS_PATH } from './accounts.mjs';
+import { loadStore, saveStore, pickAccount, removeAccount, setActive, describeAccount, revealAccount, upsertAccount, ACCOUNTS_PATH, LEGACY_CREDENTIALS_PATH } from './accounts.mjs';
 import { listWorlds, listGroup, enterWorld, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState } from './game.mjs';
 import { ACTIONS, listActions, runAction, assertAllowed, buildBody } from './actions.mjs';
@@ -15,6 +16,7 @@ import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, runWorldRound, formatWorldPlan, formatFieldReport, loadMapAsset, planFieldOccupy, planFieldGiveUp, SPEED_UP_ITEM, makeTypeResolver as resolveBuildingType, upgradeRow } from './world.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { runStages, stageFailureLimit } from './stages.mjs';
+import { createPhoneLogin } from './phone-login.mjs';
 
 const READ_ONLY_PROBES = [
   'AllResourceRequest',
@@ -629,12 +631,126 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
   }
 }
 
-// 账号管理：列、改名、切换、删除、看凭证。加账号本身要抓包，走
-// tools/capture-credentials.mjs 或网页控制台的扫码向导。
+// 交互式输入密码时不回显；管道或非 TTY 环境直接读一行。
+function readSecret(prompt) {
+  return new Promise((resolve, reject) => {
+    if (!process.stdin.isTTY) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(prompt, (answer) => { rl.close(); resolve(answer); });
+      return;
+    }
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    let muted = true;
+    rl._writeToOutput = function writeToOutput(text) {
+      if (!muted || text === '\r\n' || text === '\n') this.output.write(text);
+    };
+    rl.question(prompt, (answer) => {
+      muted = false;
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+function maskedPhone(value) {
+  const text = String(value ?? '');
+  if (/^1\d{10}$/.test(text)) return `${text.slice(0, 3)}****${text.slice(-4)}`;
+  return text;
+}
+
+// 账号管理：列、改名、切换、删除、看凭证。抓包走 tools/capture-credentials.mjs
+// 或网页控制台；手机号登录走下面的 accounts login-phone。
 async function accountsCli(args) {
   const sub = args.find((arg) => !arg.startsWith('--')) ?? 'list';
   const rest = args.filter((arg) => !arg.startsWith('--') && arg !== sub);
   const store = loadStore();
+
+  if (sub === 'login-phone') {
+    const { values } = parseArgs({
+      args: args.slice(1),
+      allowPositionals: false,
+      options: {
+        phone: { type: 'string' },
+        password: { type: 'string' },
+        code: { type: 'string' },
+        label: { type: 'string' },
+        probe: { type: 'boolean' },
+        save: { type: 'boolean' },
+        yes: { type: 'boolean' },
+        connect: { type: 'boolean' },
+        help: { type: 'boolean' },
+      },
+    });
+    if (values.help) {
+      console.log(`node src/app.mjs accounts login-phone --phone <手机号或账号> [--password 密码 | --code 短信验证码]
+  可选: --label 备注  --probe  --save  --yes  --connect
+默认只打印结果，不加 --save 不写入；新 openId 需要 --yes 才写入。也可用 CW_PHONE / CW_PHONE_PASSWORD / CW_PHONE_CODE。`);
+      return;
+    }
+    const phone = values.phone ?? process.env.CW_PHONE;
+    if (!phone) throw new Error('缺少 --phone（手机号或账号），也可设置 CW_PHONE');
+    let password = values.password ?? process.env.CW_PHONE_PASSWORD;
+    const code = values.code ?? process.env.CW_PHONE_CODE;
+    if (!password && !code) password = await readSecret('登录密码（留空则改用已获取的短信验证码）: ');
+    if (!password && !code) code = await readSecret('短信验证码: ');
+    if (!password && !code) throw new Error('密码和短信验证码至少填一个');
+
+    const client = createPhoneLogin();
+    const result = password
+      ? await client.loginWithPassword(phone, password)
+      : await client.loginWithSms(phone, code);
+
+    if (values.probe) {
+      const keys = Object.keys(result.session ?? {}).sort();
+      console.log('益世界账号登录成功');
+      console.log(`响应字段: ${keys.join(', ') || '（空）'}`);
+      console.log(`候选游戏 uid: ${client.candidateUids(result).join(', ') || '（无）'}`);
+      console.log(`openId=${result.ewan?.openId ?? '无'}  token=${result.ewan?.token ? client.mask(result.ewan.token) : '无'}  sign=${result.ewan?.sign ? client.mask(result.ewan.sign) : '无'}`);
+      return;
+    }
+
+    const game = await client.gameLogin(result);
+    const credential = client.credential(game, { account: phone });
+    const params = credential.login.eworldParams;
+    console.log('益世界账号登录成功');
+    if (result.ewan?.userName) console.log(`账号: ${result.ewan.userName}  手机: ${maskedPhone(phone)}`);
+    console.log(`游戏 uid=${game.uid}`);
+    console.log(`openId=${params.openId}  token=${client.mask(params.token)}  sign=${client.mask(params.sign)}`);
+
+    const existing = store.accounts.find((account) => account.id === params.openId);
+    if (!values.save) {
+      console.log('未加 --save，未写入账号');
+      return;
+    }
+    if (!existing && !values.yes) {
+      console.log('这个 openId 还不是已保存账号；确认要新建账号再加 --yes');
+      return;
+    }
+    const { account, created } = upsertAccount(store, credential, {
+      label: values.label ?? existing?.label ?? maskedPhone(phone),
+    });
+    setActive(store, account.id);
+    saveStore(store);
+    console.log(`${created ? '已新增' : '已更新'}账号 ${describeAccount(account).title}，当前账号已切换`);
+
+    if (values.connect) {
+      if (!values.yes) {
+        console.log('连接验证会用新凭证登录并可能让现有会话掉线；确认后加 --yes');
+        return;
+      }
+      const protocol = loadProtocol();
+      const gameClient = new GameClient({ url: account.url, protocol });
+      gameClient.on('warn', (message) => console.log(`warn: ${message}`));
+      try {
+        const response = await gameClient.connect(account.login);
+        const player = response.playerInfo ?? {};
+        console.log(`连接成功：${player.nickname ?? '未知昵称'} lv${player.level ?? '?'} 区服${player.worldId ?? '?'}`);
+      } finally {
+        gameClient.stop();
+      }
+    }
+    return;
+  }
 
   const mutate = () => {
     saveStore(store);
@@ -883,12 +999,16 @@ async function main() {
   const console_ = createConsole({ port });
   const url = await console_.listen();
   const browser = process.env.CW_NO_BROWSER ? null : openBrowser(url);
-  console.log(`console: ${url}${browser ? ` (via ${browser})` : ''}`);
-  const store = loadStore();
-  if (!store.accounts.length) {
-    console.log(`还没有账号：打开 ${url}，在「账号」页选择「从电脑微信添加」或「从电脑抖音添加」，再从对应客户端重新进入游戏。`);
+  if (process.env.CW_QUIET_START) {
+    console.log(url);
   } else {
-    console.log(`账号 ${store.accounts.length} 个，当前: ${describeAccount(pickAccount(store, null)).title}`);
+    console.log(`console: ${url}${browser ? ` (via ${browser})` : ''}`);
+    const store = loadStore();
+    if (!store.accounts.length) {
+      console.log(`还没有账号：打开 ${url}，在「账号」页选择「从电脑微信添加」或「从电脑抖音添加」，再从对应客户端重新进入游戏。`);
+    } else {
+      console.log(`账号 ${store.accounts.length} 个，当前: ${describeAccount(pickAccount(store, null)).title}`);
+    }
   }
 }
 

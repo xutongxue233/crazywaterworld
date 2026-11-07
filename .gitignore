@@ -13,6 +13,7 @@ certificates/
 *.crt
 *.cer
 *.wxapkg
+*.apk
 *.log
 .planning/
 .impeccable/

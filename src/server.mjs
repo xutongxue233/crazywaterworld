@@ -26,7 +26,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import zlib from 'node:zlib';
 import { GameClient, toNumber } from './client.mjs';
 import { challengeTrial, trialProgress, createTrialTask } from './trials.mjs';
@@ -74,6 +74,7 @@ import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
+import { createPhoneLogin } from './phone-login.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
@@ -113,6 +114,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
+  // 手机号登录分两步：先认证并换游戏凭证，用户核对 openId 后再保存。
+  // 密码只用于当次请求；待保存凭证和待选账号只放在内存，十分钟后清理。
+  const pendingPhoneLogins = new Map();
+  const smsSendAt = new Map();
+  let phoneLoginBusy = false;
+  const PHONE_PENDING_MS = 10 * 60 * 1000;
+  const maskPhone = (value) => {
+    const text = String(value ?? '');
+    return /^1\d{10}$/.test(text) ? `${text.slice(0, 3)}****${text.slice(-4)}` : text;
+  };
+  function prunePhonePending() {
+    const cutoff = Date.now() - PHONE_PENDING_MS;
+    for (const [id, entry] of pendingPhoneLogins) if (entry.createdAt < cutoff) pendingPhoneLogins.delete(id);
+  }
   let logId = 0;
 
   const logLimit = (list) => {
@@ -1117,6 +1132,85 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         removed?.client?.stop();
         sessions.delete(account.id);
         emit(null, 'info', `已删除账号 ${describeAccount(account).title}`);
+        json({ ok: true });
+        return;
+      }
+
+      // ---- 手机号登录 ----
+      if (route === 'POST /api/accounts/phone-login') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (phoneLoginBusy) throw new Error('已有手机号登录正在进行，请稍候');
+        phoneLoginBusy = true;
+        try {
+          prunePhonePending();
+          const phone = String(payload.phone ?? '').trim();
+          const password = String(payload.password ?? '');
+          const code = String(payload.code ?? '').trim();
+          if (!phone) throw new Error('请输入手机号或账号');
+          if (!password && !code) throw new Error('请输入密码或短信验证码');
+          const client = createPhoneLogin();
+          const result = password
+            ? await client.loginWithPassword(phone, password)
+            : await client.loginWithSms(phone, code);
+          const game = await client.gameLogin(result);
+          const credential = client.credential(game, { account: phone });
+          const openId = credential.login.eworldParams.openId;
+          const store = loadStore();
+          const existing = store.accounts.find((account) => account.id === openId);
+          const id = randomUUID();
+          pendingPhoneLogins.set(id, { credential, phone, createdAt: Date.now() });
+          json({
+            ok: true,
+            id,
+            openId,
+            uid: game.uid,
+            ucCode: 'ewan',
+            matched: Boolean(existing),
+            existingTitle: existing ? describeAccount(existing).title : null,
+            userName: result.ewan?.userName ?? null,
+            phone: maskPhone(phone),
+          });
+        } finally {
+          phoneLoginBusy = false;
+        }
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login/send-code') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        const phone = String(payload.phone ?? '').trim();
+        if (!/^1[3-9]\d{9}$/.test(phone)) throw new Error('手机号格式不正确');
+        const last = smsSendAt.get(phone) ?? 0;
+        if (Date.now() - last < 60000) throw new Error('验证码已发送，请 60 秒后再试');
+        const client = createPhoneLogin();
+        const result = await client.requestSmsCode(phone);
+        smsSendAt.set(phone, Date.now());
+        json({ ok: true, validatecode: result?.validatecode ?? '', cooldown: 60 });
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login/save') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        prunePhonePending();
+        const pending = pendingPhoneLogins.get(String(payload.id ?? ''));
+        if (!pending) throw new Error('登录结果已过期，请重新登录');
+        const store = loadStore();
+        const openId = pending.credential.login.eworldParams.openId;
+        const existing = store.accounts.find((account) => account.id === openId);
+        const { account, created } = upsertAccount(store, pending.credential, {
+          label: existing?.label ?? (/^1\d{10}$/.test(pending.phone) ? `手机 ${maskPhone(pending.phone)}` : pending.phone),
+        });
+        setActive(store, account.id);
+        saveStore(store);
+        pendingPhoneLogins.delete(String(payload.id));
+        emit(null, 'info', `${created ? '手机号登录已新增' : '手机号登录已更新'}账号 ${describeAccount(account).title}`);
+        json({ ok: true, account: describeAccount(account, { active: true }) });
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login/cancel') {
+        const payload = jsonBody();
+        if (payload.id) pendingPhoneLogins.delete(String(payload.id));
         json({ ok: true });
         return;
       }

@@ -174,6 +174,21 @@ export function accountPage() {
     <div id="worlds"></div>
 
     </div></div></Panel>
+    <Panel title="手机号登录" help="使用益世界/APP 的账号密码或短信验证码登录。密码只用于本次请求，不保存。登录后先核对 openId 是否对应已有角色，再保存。">
+    <div className="bar">
+      <Input id="phone-account" placeholder="手机号或账号" autoComplete="username" />
+      <Input id="phone-password" type="password" placeholder="登录密码" autoComplete="current-password" />
+      <Button id="phone-login" variant="default">账号登录并预览</Button>
+      <Button id="phone-save" variant="outline" disabled>保存为账号</Button>
+      <span id="phone-hint" className="warn" role="status"></span>
+    </div>
+    <div className="bar">
+      <Input id="phone-code" placeholder="短信验证码" inputMode="numeric" autoComplete="one-time-code" />
+      <Button id="phone-send-code" variant="outline">发送验证码</Button>
+      <Button id="phone-sms-login" variant="default">验证码登录并预览</Button>
+    </div>
+    <div id="phone-result"></div>
+</Panel>
     <Panel title="添加账号">
     <div className="bar">
       <Button id="cap-start" variant="default">从电脑微信添加</Button>
