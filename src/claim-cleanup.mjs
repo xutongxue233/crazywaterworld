@@ -41,14 +41,16 @@ async function eligibleItems(client,config,equipment,qualities) {
     }
     const main=(await read('GetFormation',{module:1})).formation;
     if (main) markUsed(used,main.petUid);
-    const teams=(await read('LeagueFormation')).formations;
+    // 当前协议没有 LeagueFormationRequest；LeagueInfoResponse.ownFormations 才是本人编队。
+    const teams=(await read('LeagueInfo')).ownFormations;
     if (!Array.isArray(teams)) throw Error('积分赛编队未同步');
     for(const team of teams)markUsed(used,team.petUid);
     all=inventoryMap((await read('AllPet')).pets);
     definitions=new Map(config.tables.PetBreedCfg.data.map(row=>[row.petId,row.quality]));
   }
   return [...all].filter(([id,item])=>{
-    if (used.has(id)||!baseLevel(item.level)||!baseLevel(item.star)||item.rerollAttrs?.length) return false;
+    // 装备星级由锻造随机决定，不代表养成；海兽星级和等级才表示已投入养成。
+    if (used.has(id)||!baseLevel(item.level)||(!equipment&&!baseLevel(item.star))||item.rerollAttrs?.length) return false;
     const untouched=equipment ? item.refineLv===0 && !(item.attr??[]).some(a=>a.rating>0)
       : item.grade===0 && !item.extAttrs?.length && !item.extAttrs2?.length && !item.profFeed?.some(p=>p.attrFeed?.some(a=>a.times>0));
     return untouched && qualities.includes(definitions.get(equipment?item.equipId:item.petId));

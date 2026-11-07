@@ -889,7 +889,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
               else plan.notes.push('联盟福利：' + (guild.reason || (guild.welfareCount === 0 ? '当前无待领礼包' : '待领数量未确认')));
             }
             return { ...output(plan, { fleets: state.fleets.length, targets: state.targets.length }, '联盟/城战'), onlineReward: online, cityWar: {
-              fleets: plan.fleets, targets: plan.targets, nativeLimit: state.nativeLimit, startTime: state.startTime,
+              fleets: plan.fleets, targets: plan.targets, nativeLimit: state.nativeLimit, nativeCommissionLimit: plan.nativeCommissionLimit,
+              nativeOffFleetIds: plan.nativeOffFleetIds, startTime: state.startTime,
               endTime: state.endTime, inWindow: state.inWindow, fuel: state.fuel, reservedFleetIds: plan.reservedFleetIds } };
           }
           if (category === 'activity') {

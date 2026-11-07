@@ -59,6 +59,42 @@ await check('真实登录协议VIP额度动态读取，未用完不接续，不�
   delete f.player.vip;
   assert.equal((await warPlan(f, s)).actions.length, 0);
 });
+await check('原生委任设为0时关闭所选舰队开关再立即接续', async () => {
+  const f=warForgeFixture(),s=warForgeSettings(),u=ledger();s.cityWar.fleetIds=['1远征船'];s.cityWar.nativeCommissionLimit=0;
+  f.state.fleets[0].autoFight={isOn:true,todayTimes:0};
+  const plan=await warPlan(f,s);assert.deepEqual(plan.nativeOffFleetIds,['1远征船']);assert.equal(plan.actions.length,0);
+  const result=await warRun(f,s,u);
+  assert.deepEqual(f.client.writes.map(row=>row.name),['SetFleetAutoFightRequest','MoveFleetsToCityRequest']);
+  assert.equal(f.state.fleets[0].autoFight.isOn,false);assert.equal(result.results[0].status,'confirmed');
+  assert.match(result.notes.join(' '),/已关闭原生委任/);
+});
+await check('原生委任设为N时先用满N次再关闭开关接续，超过VIP额度按VIP', async () => {
+  const f=warForgeFixture(),s=warForgeSettings(),u=ledger();s.cityWar.fleetIds=['1远征船'];s.cityWar.nativeCommissionLimit=2;
+  f.state.fleets[0].autoFight={isOn:true,todayTimes:1};
+  let plan=await warPlan(f,s);assert.equal(plan.actions.length,0);assert.deepEqual(plan.nativeOffFleetIds,[]);
+  assert.match(plan.fleets[0].reason,/尚余 1 次/);await warRun(f,s,u);assert.equal(f.client.writes.length,0);
+  f.state.fleets[0].autoFight.todayTimes=2;plan=await warPlan(f,s);assert.deepEqual(plan.nativeOffFleetIds,['1远征船']);
+  await warRun(f,s,u);assert.deepEqual(f.client.writes.map(row=>row.name),['SetFleetAutoFightRequest','MoveFleetsToCityRequest']);
+  const g=warForgeFixture();s.cityWar.fleetIds=['1远征船'];s.cityWar.nativeCommissionLimit=99;
+  g.state.fleets[0].autoFight={isOn:true,todayTimes:0};
+  assert.match((await warPlan(g,s)).fleets[0].reason,/尚余 4 次/);assert.equal((await warPlan(g,s)).nativeOffFleetIds.length,0);
+});
+await check('原生委任关闭结果未确认时不派舰队', async () => {
+  const f=warForgeFixture(),s=warForgeSettings(),u=ledger();s.cityWar.fleetIds=['1远征船'];s.cityWar.nativeCommissionLimit=0;
+  f.state.fleets[0].autoFight={isOn:true,todayTimes:0};f.ignoreNativeOff=true;
+  const result=await warRun(f,s,u);
+  assert.deepEqual(f.client.writes.map(row=>row.name),['SetFleetAutoFightRequest']);
+  assert.match(result.notes.join(' '),/原生委任关闭结果待确认/);assert.equal(f.state.fleets[0].autoFight.isOn,true);
+});
+await check('原生委任设为0时不依赖VIP额度', async () => {
+  const f=warForgeFixture(),s=warForgeSettings();s.cityWar.fleetIds=['1远征船'];s.cityWar.nativeCommissionLimit=0;
+  delete f.player.vip;f.state.fleets[0].autoFight={isOn:true,todayTimes:0};
+  assert.equal((await warRead(f,s)).nativeLimit,null);
+  const plan=await warPlan(f,s);assert.deepEqual(plan.nativeOffFleetIds,['1远征船']);assert.equal(plan.actions.length,0);
+  const result=await warRun(f,s,ledger());
+  assert.equal(result.results[0]?.status,'confirmed');
+  assert.deepEqual(f.client.writes.map(row=>row.name),['SetFleetAutoFightRequest','MoveFleetsToCityRequest']);
+});
 await check('城战时间、开服、合服、联盟和有效宣战目标均需满足', async () => {
   const changes = [
     f => { f.state.war.startTime += 10000; f.state.war.endTime += 10000; },

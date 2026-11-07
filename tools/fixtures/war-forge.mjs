@@ -87,7 +87,12 @@ export function warForgeFixture() {
     await f.beforeSend?.(name, body);
     if (f.reject) throw Object.assign(new Error('模拟服务端明确拒绝'), { prompt: { prompt: 1 }, request: name });
     if (f.unknown) return;
-    if (name === 'MoveFleetsToCityRequest') {
+    if (name === 'SetFleetAutoFightRequest') {
+      if (!f.ignoreNativeOff) for (const id of body.buildingIds) {
+        const fleet = f.state.fleets.find(row => row.buildingId === id);
+        if (fleet) fleet.autoFight = { ...(fleet.autoFight ?? { todayTimes: 0 }), isOn: body.isOn };
+      }
+    } else if (name === 'MoveFleetsToCityRequest') {
       for (const id of body.buildingId) Object.assign(f.state.fleets.find(row => row.buildingId === id), { state: 2, targetCityId: body.cityId, moveStartTs: nowOf(), moveEndTs: nowOf() + 30 });
       f.state.fuel -= 40 * body.buildingId.length;
     } else if (name === 'RepairFleetRequest') {

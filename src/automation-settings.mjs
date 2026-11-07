@@ -47,7 +47,7 @@ export const DEFAULT_SETTINGS = {
     maxProgress: 90, personalProgressLimit: 20, dailyDispatchLimit: 0, checkEverySeconds: 15, participationMode: 'untilFull', repeatAttack: true,
     autoRepair: true, maxRepairCost: 15000, dailyRepairPetrolLimit: 20000 },
   cityWar: { enabled: false, fleetIds: [], targetMode: 'alliance', targetPriority: 'fewestAllied', cityRefs: [], autoRepair: true,
-    repairBelowPercent: 80, petrolReserve: 0, maxRepairCost: 15000, dailyPetrolLimit: 20000,
+    nativeCommissionLimit: -1, repairBelowPercent: 80, petrolReserve: 0, maxRepairCost: 15000, dailyPetrolLimit: 20000,
     dailyDispatchLimit: 10, reserveDuringWar: true, checkEverySeconds: 15 },
   forge: { decompose: false, decomposeQualities: [], enabled: false, buildingIds: [], recipeIds: [], universal: false, materialReserve: 0,
     universalReserve: 0, goldReserve: 0, dailyLimit: 5, dailyGoldLimit: 100000, checkEverySeconds: 30 },
@@ -90,7 +90,8 @@ const constraints = {
   'treasure.maxRepairCost': int(10000000), 'treasure.dailyRepairPetrolLimit': int(100000000),
   'cityWar.fleetIds': strings(10), 'cityWar.targetMode': { kind: 'choice', values: ['alliance', 'selected'] },
   'cityWar.targetPriority': { kind: 'choice', values: ['fewestAllied', 'original'] },
-  'cityWar.cityRefs': strings(100), 'cityWar.repairBelowPercent': int(100, 1), 'cityWar.petrolReserve': int(),
+  'cityWar.cityRefs': strings(100), 'cityWar.nativeCommissionLimit': { kind: 'number', min: -1, max: 1000 },
+  'cityWar.repairBelowPercent': int(100, 1), 'cityWar.petrolReserve': int(),
   'cityWar.maxRepairCost': int(10000000), 'cityWar.dailyPetrolLimit': int(100000000),
   'cityWar.dailyDispatchLimit': int(1000, 1), 'cityWar.checkEverySeconds': int(300, 5),
   'forge.buildingIds': strings(10), 'forge.recipeIds': strings(100), 'forge.materialReserve': int(),
@@ -323,6 +324,7 @@ export function importAutomationSettings(document, options) {
     }
   }
   if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'targetPriority')) input.cityWar = { ...input.cityWar, targetPriority: DEFAULT_SETTINGS.cityWar.targetPriority };
+  if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'nativeCommissionLimit')) input.cityWar = { ...input.cityWar, nativeCommissionLimit: DEFAULT_SETTINGS.cityWar.nativeCommissionLimit };
   if (plain(input?.schedule) && !Object.hasOwn(input.schedule, 'worldOnlineRewards')) input.schedule = { ...input.schedule, worldOnlineRewards: false };
   if (plain(input?.schedule)) input.schedule = { ...taskSettings(), ...input.schedule };
   if (plain(input?.events)) input.events = {otherOption:1,...input.events};

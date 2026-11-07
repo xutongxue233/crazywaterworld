@@ -32,17 +32,20 @@ const warFixture = () => {
 
 try {
   await check('新增设置、0/100边界、旧值及导入兼容，读取不改旧文件', () => {
-    const old = validateSettings(defaultSettings()); delete old.treasure.personalProgressLimit; delete old.cityWar.targetPriority;
+    const old = validateSettings(defaultSettings()); delete old.treasure.personalProgressLimit; delete old.cityWar.targetPriority; delete old.cityWar.nativeCommissionLimit;
     old.treasure.maxProgress = 87; old.cityWar.targetMode = 'selected'; old.cityWar.cityRefs = ['1:3'];
     const file = path.join(directory, 'old.json'); fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { old: { settings: old, revision: 21 } } }));
     const bytes = fs.readFileSync(file); const loaded = loadAutomationSettings('old', { file });
     assert.equal(loaded.settings.treasure.personalProgressLimit, 20); assert.equal(loaded.settings.cityWar.targetPriority, 'fewestAllied');
+    assert.equal(loaded.settings.cityWar.nativeCommissionLimit, -1);
     assert.equal(loaded.revision, 21); assert.deepEqual(fs.readFileSync(file), bytes);
     const imported = importAutomationSettings({ format: 'crazywaterword-automation', version: 1, settings: old });
     assert.deepEqual(imported, loaded.settings);
-    const preserved = structuredClone(imported); delete preserved.treasure.personalProgressLimit; delete preserved.cityWar.targetPriority; assert.deepEqual(preserved, old);
+    const preserved = structuredClone(imported); delete preserved.treasure.personalProgressLimit; delete preserved.cityWar.targetPriority; delete preserved.cityWar.nativeCommissionLimit; assert.deepEqual(preserved, old);
     for (const n of [0, 20, 100]) { const s = defaultSettings(); s.treasure.personalProgressLimit = n; assert.equal(validateSettings(s).treasure.personalProgressLimit, n); }
     for (const n of [-1, 101, 20.5, '20']) { const s = defaultSettings(); s.treasure.personalProgressLimit = n; assert.throws(() => validateSettings(s)); }
+    for (const n of [-1, 0, 2, 1000]) { const s = defaultSettings(); s.cityWar.nativeCommissionLimit = n; assert.equal(validateSettings(s).cityWar.nativeCommissionLimit, n); }
+    for (const n of [-2, 1001, 1.5, '2']) { const s = defaultSettings(); s.cityWar.nativeCommissionLimit = n; assert.throws(() => validateSettings(s)); }
     const bad = defaultSettings(); bad.cityWar.targetPriority = 'random'; assert.throws(() => validateSettings(bad));
   });
   await check('只认精确本人ID与实际进度，预计值和联盟进度不代替', async () => {
@@ -109,11 +112,28 @@ try {
     const p = await warPlan(f, s); assert.equal(p.targets.find(t => t.id === 3).alliedCount, null); assert.equal(p.actions[0].cityId, 2); assert.match(p.notes.join(' '), /多联盟/);
     f.state.cities[1].attackFleetNum = -1; const q = await warPlan(f, s); assert.equal(q.actions.length, 0); assert.match(q.notes.join(' '), /未确认/);
   });
-  await check('同人数时分配不同点，并考虑本人已在途舰队', async () => {
+  await check('队数相近时就近，差10队以上选人少城，在途舰队计入总数', async () => {
     const f = warFixture(), s = warForgeSettings();
-    Object.assign(f.state.cities[1], { attackFleetNum: 0, priorityAtkFleetNum: 0 }); Object.assign(f.state.cities[2], { attackFleetNum: 0, priorityAtkFleetNum: 0 });
-    let p = await warPlan(f, s); assert.deepEqual(p.actions.map(a => a.cityId), [2, 3]);
-    Object.assign(f.state.fleets[2], { state: 2, targetCityId: 2 }); p = await warPlan(f, s); assert.equal(p.actions[0].cityId, 3);
+    Object.assign(f.state.cities[1], { attackFleetNum: 30, priorityAtkFleetNum: 0 });
+    Object.assign(f.state.cities[2], { attackFleetNum: 31, priorityAtkFleetNum: 0 });
+    let p = await warPlan(f, s); assert.equal(p.actions[0].cityId, 3, '30 对 31，选更近的城市');
+    Object.assign(f.state.cities[1], { attackFleetNum: 0, priorityAtkFleetNum: 0 });
+    Object.assign(f.state.cities[2], { attackFleetNum: 0, priorityAtkFleetNum: 0 });
+    p = await warPlan(f, s); assert.deepEqual(p.actions.map(a => a.cityId), [3, 3], '同人数时选更近的城市');
+    for (let i = 0; i < 11; i++) f.state.fleets.push({ buildingId: (10 + i) + '远征船', state: 2, targetCityId: 3,
+      treasureLootUid: 0, curGridIdx: 0, owner: { playerId: '9007199254741999', guildId: f.player.guildId } });
+    p = await warPlan(f, s); assert.equal(p.targets.find(t => t.id === 3).transitCount, 11);
+    assert.deepEqual(p.actions.map(a => a.cityId), [2, 2], '相差 10 队以上时改选人少的城市');
+  });
+  await check('在途舰队归属未同步时不把未知当作0', async () => {
+    const f = warFixture(), s = warForgeSettings();
+    Object.assign(f.state.cities[1], { attackFleetNum: 0, priorityAtkFleetNum: 0 });
+    Object.assign(f.state.cities[2], { attackFleetNum: 0, priorityAtkFleetNum: 0 });
+    f.state.fleets.push({ buildingId: '20远征船', state: 2, targetCityId: 2, treasureLootUid: 0, curGridIdx: 0, owner: null });
+    const p = await warPlan(f, s);
+    assert.equal(p.targets.find(t => t.id === 2).transitCount, null);
+    assert.ok(p.actions.every(a => a.cityId === 3));
+    assert.match(p.notes.join(' '), /在途舰队归属未同步/);
   });
   await check('发送前人数反转不向旧目标误派遣', async () => {
     const f = warFixture(), s = warForgeSettings(); s.cityWar.fleetIds = ['1远征船']; let reads = 0;

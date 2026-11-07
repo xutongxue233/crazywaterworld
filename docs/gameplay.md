@@ -719,3 +719,10 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - 漫剧条目不存在时显示播放，`state=false` 时可领奖，`state=true` 时已领奖。解锁条件是 `ComicDramaCfg` 的 `unlockLevel` 与 `unlockTime + unlockHours`；模块条件是 `ModuleOpenCfg` 的“漫剧”。每日奖励要求 `isRead` 为真。
 - 擂台赛入口只在 `currentStageId` 大于 1（预选）且小于 8（结束）时进入赛场页；每日礼包条件是 `lastClaimDailyGiftTime` 不在当天。
 - 赛季宝箱开放条件是 `GameplayOpenCfg` 的“赛季交换宝箱”（`openDays: [0,1,1,1]`，第一赛季关闭）。宝箱按 `SeasonExchangeChestCfg.stage` 循环；每次消耗 `costItemId` 列出的钥匙，种类随机且可重复。自动开启只接受 `SeasonChestKeyLibCfg` 中的钥匙。结果未知时，阶段变化视为已生效，超过 10 分钟阶段未变视为未生效。
+
+## 15. 装备分解、海兽放生与城战选城（v76）
+
+- `DispEquip.star` 是锻造随机得到的装备星级，只影响 `EquipAttrCfg` 的等级上限，不代表已养成；自动分解只看 `level <= 1`、`refineLv == 0` 且没有属性洗练记录。`DispPet` 的 `level` 和 `star` 才表示海兽已投入养成。
+- 当前协议没有 `LeagueFormationRequest`；本人的积分赛编队从 `LeagueInfoResponse.ownFormations`（字段 5，重复 `LeagueFormation`）读取，`LeagueFormationResponse` 只用于保存编队。
+- `WorldCity` 的本盟现场数量由 `attackFleetNum + priorityAtkFleetNum` 加上 `battlePoints` 中左侧非 NPC 且属于本盟的交战点组成；已同步在途舰队从 `WorldInfoResponse.fleets` 读取：`state == 2`、`targetCityId` 为目标城、`owner.guildId` 为本盟，并按 `owner.playerId` 排除 MyFleets 已统计的本人舰队。归属或数量无法确认时不当作 0。
+- `SetFleetAutoFightRequest { buildingIds[], isOn }` 没有配套响应；关闭后回读 `MyFleetsResponse.fleets[].autoFight.isOn` 确认。城战原生委任设置 -1 按 VIP 额度等待，0 关闭后接管，N 表示原生先用 N 次再关闭。

@@ -212,17 +212,18 @@ const configGroups = [
     configField('schedule.guildWelfare', '领取联盟福利礼包'),
     configField('schedule.guildTitleReward', '联盟每日职级礼包', 'switch', { help:'默认开启。按服务器提供的可领取职级核对每日礼包，不以当前职位替代；确认奖励回执及当日领取时间后才记为成功。' }),
     configField('schedule.worldOnlineRewards', '领取城战在线奖励', 'switch', { help: '在服务器城战时段内，按实际计时逐档领取免费在线奖励。独立于下方城战接续开关；默认关闭，保存后随挂机检查，不自动启动挂机。请求结果未知时等待计数确认，不重复领取。' }),
-    configField('cityWar.enabled', '城战接续总开关', 'switch', { help: '仅在原生委任额度用尽后接续正常出战。下方预览范围选择“城战接续”；不会宣战、改变集结目标或修改游戏委任开关。' }),
+    configField('cityWar.enabled', '城战接续总开关', 'switch', { help: '按下方原生委任次数决定何时接续正常出战。下方预览范围选择“城战接续”；不会宣战或改变集结目标。' }),
     configField('cityWar.fleetIds', '城战参与舰队', 'multi', { catalog: 'expeditionFleets', empty: '请选择参与接续的舰队' }),
+    configField('cityWar.nativeCommissionLimit', '原生委任次数', 'number', { unit: '次', help: '-1 表示按服务器 VIP 规则等待额度用尽（旧行为）；0 表示关闭所选舰队的原生委任，由工具立即接续；N 表示先让原生委任使用 N 次（不超过 VIP 额度），再关闭开关并由工具接续。' }),
     configField('cityWar.targetMode', '城战目标来源', 'choice', { options: [['alliance', '跟随联盟已宣战目标'], ['selected', '只进攻指定城市']], help: '决定允许进攻哪些城市，具体顺序由“城战目标优先”决定；不会进攻未宣战或己方城市。' }),
-    configField('cityWar.targetPriority', '城战目标优先', 'choice', { options: [['fewestAllied', '本联盟进攻、排队舰队少优先'], ['original', '沿用集结／指定城市顺序']], help: '在目标来源允许的已宣战城市中，优先本联盟进攻和排队舰队较少的点，再按原顺序选择；本人在途和本次已安排舰队也会计入分配。多联盟同攻、无法拆分本盟数量时跳过该点，不把未知当作0人。发送前重新核对，不改变游戏原生委任选点。' }),
-    configField('cityWar.cityRefs', '指定目标城市', 'multi', { catalog: 'cityTargets', empty: '请选择当前场景城市', when: d => d.cityWar.targetMode === 'selected', help: '只在勾选的城市中选择。启用人数少优先时先比较舰队数，同数量再按勾选顺序；场景不匹配或未被本联盟宣战时跳过。' }),
+    configField('cityWar.targetPriority', '城战目标优先', 'choice', { options: [['fewestAllied', '按队数与距离选择'], ['original', '沿用集结／指定城市顺序']], help: '在目标来源允许的已宣战城市中，按本盟现场排队、正在交战和已同步在途舰队总数选城：以队数最少的城为基准，相差 0–9 队时选较近目标，差 10 队及以上时优先人少的城；本轮已安排的舰队也计入。多联盟同攻或数量无法确认时跳过该点，不把未知当作0人。发送前重新核对，不改变游戏原生委任选点。' }),
+    configField('cityWar.cityRefs', '指定目标城市', 'multi', { catalog: 'cityTargets', empty: '请选择当前场景城市', when: d => d.cityWar.targetMode === 'selected', help: '只在勾选的城市中选择。启用队数与距离优先时按上述规则排序，勾选顺序仅作同条件时的次序；场景不匹配或未被本联盟宣战时跳过。' }),
     configField('cityWar.autoRepair', '耐久不足时维修', 'switch', { help: '仅正常维修；按服务器返回的完整维修报价核对汽油预算，维修完成后再出战。' }),
     configField('cityWar.repairBelowPercent', '低于此耐久比例先维修', 'number', { unit: '%', help: '还必须满足一次攻城的实际耐久消耗；已在行军、战斗、维修、驻外或其他任务中的舰队不被抢占。' }),
     configField('cityWar.maxRepairCost', '单次维修汽油上限', 'number', { unit: '汽油', when: d => d.cityWar.autoRepair, help: '0表示不限单次费用；超过非零预算就跳过整次，不假设可指定部分维修量。' }),
     configField('cityWar.petrolReserve', '出战或维修后保留汽油', 'number', { unit: '汽油' }),
     configField('cityWar.dailyPetrolLimit', '每日城战汽油预算', 'number', { unit: '汽油', help: '接续出战与工具维修共用，0表示不限额；未知请求继续占用，库存与保留量仍检查。' }),
-    configField('cityWar.dailyDispatchLimit', '每日工具接续出战上限', 'number', { unit: '次', help: '至少1次，不包含游戏原生委任次数。原生额度按账号真实VIP规则读取，不固定为4。' }),
+    configField('cityWar.dailyDispatchLimit', '每日工具接续出战上限', 'number', { unit: '次', help: '至少1次，不包含游戏原生委任次数。原生额度按账号真实 VIP 规则读取，不固定为4；上方原生委任次数设为 0 时，工具会先关闭所选舰队的原生委任。' }),
     configField('cityWar.reserveDuringWar', '城战期间为所选舰队保留任务', 'switch', { help: '存在有效宣战目标的城战时段，巨轮不再派遣这些舰队；已在执行巨轮或其他任务的舰队等待空闲，不主动召回。' }),
     configField('cityWar.checkEverySeconds', '城战检查间隔', 'number', { unit: '秒' }),
   ] },
@@ -933,11 +934,17 @@ async function configPreview() {
     }
     if (data.cityWar) {
       const state = data.cityWar;
-      root.append(el('p', 'config-help', '原生每队每日委任额度：' + (state.nativeLimit ?? '未确认') + '；汽油 ' + (state.fuel ?? '未确认') + '。' +
+      root.append(el('p', 'config-help', '原生每队每日委任额度：' + (state.nativeLimit ?? '未确认') + '；本工具原生委任设置：' +
+        (state.nativeCommissionLimit === -1 ? '按 VIP 规则' : state.nativeCommissionLimit === 0 ? '关闭原生委任' : (state.nativeCommissionLimit ?? '?') + ' 次') +
+        '；汽油 ' + (state.fuel ?? '未确认') + '。' +
         (state.startTime && state.endTime ? '服务器城战时段：' + new Date(state.startTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) + ' 至 ' + new Date(state.endTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '尚未取得有效城战时段。')));
       if (state.fleets?.length) root.append(table(['舰队', '实际状态', '今日原生委任', '接续条件'], state.fleets.map(f => [f.name, f.state, (f.used ?? '?') + ' / ' + (f.limit ?? '?'), f.reason || '满足舰队条件'])));
-      if (state.targets?.length) root.append(table(['已宣战目标', '本盟进攻 / 排队', '单队汽油', '目标标记'], state.targets.map(t => [t.name,
-        t.alliedCount == null ? (t.countReason || '未确认') : t.alliedCount + ' 队', String(t.petrol), t.assemble ? '联盟集结' : '已宣战'])));
+      if (state.targets?.length) root.append(table(['已宣战目标', '本盟排队/交战 + 在途', '单队汽油', '目标标记'], state.targets.map(t => {
+        const total = t.alliedCount == null || t.transitCount == null ? null : t.alliedCount + t.transitCount;
+        return [t.name, t.alliedCount == null ? (t.countReason || '未确认')
+          : t.alliedCount + ' 队' + (t.transitCount == null ? ' + 在途未确认' : ' + ' + t.transitCount + ' 在途 = ' + total + ' 队'),
+          String(t.petrol), t.assemble ? '联盟集结' : '已宣战'];
+      })));
     }
     if (data.onlineReward) {
       const state = data.onlineReward;

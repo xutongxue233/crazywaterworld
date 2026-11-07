@@ -20,7 +20,7 @@ for(const kind of ['forge','pet']){
     const reply=n==='AllHeroRequest'?{heroes:[{equips:[{uid:uid(2),equipId:value(2)}]}]}:
       n==='EquipsRequest'?{equip:rows}:n==='AllPetRequest'?{pets:rows}:
       n==='OnWaterRequest'?{building:[{buildingId:'1海兽值守',level:1,petServe:{petUid:uid(2)}}]}:
-      n==='GetFormationRequest'?{formation:{}}:n==='LeagueFormationRequest'?{formations:[]}:null;
+      n==='GetFormationRequest'?{formation:{}}:n==='LeagueInfoRequest'?{dan:1,settleTime:0,bonusItemNum:0,nextPointTime:0,predictDan:0,maxPage:0,roomDan:1,ownFormations:[]}:null;
     if(reply)return protocol[resp].decode(protocol[resp].encode(reply).finish());
     assert.equal(n,'DecomposeEquipRequest');apply(n,b);return {};
   },async sendWatch(n,b){assert.equal(n,'FreePetRequest');apply(n,b)}};
@@ -29,7 +29,8 @@ for(const kind of ['forge','pet']){
   assert.equal(await go(),null);group[toggle]=true;assert.throws(()=>validateSettings(settings));
   group[choice]=['BLUE'];disabled=true;assert.equal(await go(),null);disabled=false;
   if(!equip)allowRemove=false;
-  const result=await go();assert.ok(result?.status,JSON.stringify({kind,result}));assert.deepEqual(sent,[[exactAutomationId(uid(1)),exactAutomationId(uid(6))]]);
+  const result=await go();assert.ok(result?.status,JSON.stringify({kind,result}));
+  assert.deepEqual(sent,[equip?[1,5,6].map(n=>exactAutomationId(uid(n))):[1,6].map(n=>exactAutomationId(uid(n)))]);
   assert.equal(result.status,equip?'confirmed':'unknown');await go();assert.equal(sent.length,1);
 }
 const now=Date.UTC(2026,10,5,8);
