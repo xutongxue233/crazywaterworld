@@ -183,22 +183,6 @@ npm start
 
 `npm test` 需要本机可读取游戏协议包；没有协议缓存时，先在电脑版微信打开一次游戏，或设置 `CW_PROTO_BUNDLE` 指向自己的 `_src_chunks_.wxapkg` 或解包后的 `game.js`。
 
-## 从旧版本更新
-
-`feat#ExtraVersion` 的详细配置、活动、舰队调度、城战、锻造、地图和礼包兑换已整合到 `main`。原主分支的推荐阵容与手动操作继续保留。
-
-先关闭正在运行的控制台，在原仓库目录更新并重新构建：
-
-```powershell
-git switch main
-git pull --ff-only origin main
-npm ci
-npm run build:ui
-npm start
-```
-
-原有 `data/` 中的账号、开关和用量记录继续沿用。旧账号明确设置的开关不会被新默认值覆盖；配置导入仍兼容旧的 `crazywaterword-automation` 格式。升级后可在 **游戏配置** 核对细项，在 **总览 → 运行概览** 查看实际条件。
-
 ## 项目文档
 
 - [更新日志](CHANGELOG.md)：按日期倒序记录功能和修复。
