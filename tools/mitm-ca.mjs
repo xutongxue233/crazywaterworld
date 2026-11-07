@@ -8,7 +8,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createPrivateKey, X509Certificate } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-export const CA_DIR = path.resolve(import.meta.dirname, '../../certificates');
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '..');
+const DEFAULT_CA_DIR = path.join(PROJECT_ROOT, 'certificates');
+export const CA_DIR = process.env.CW_CA_DIR ? path.resolve(process.env.CW_CA_DIR) : DEFAULT_CA_DIR;
 export const CA_KEY = path.join(CA_DIR, 'ca.key');
 export const CA_CRT = path.join(CA_DIR, 'ca.crt');
 const LEAF_KEY = path.join(CA_DIR, 'leaf.key');
@@ -67,7 +69,7 @@ export function leafFor(host) {
   const ext = path.join(CA_DIR, `leaf-${safe}.ext`);
   fs.copyFileSync(LEAF_KEY, key);
   fs.writeFileSync(ext, [
-    `subjectAltName=DNS:${host}`,
+    `subjectAltName=${isIP(host) ? 'IP' : 'DNS'}:${host}`,
     'basicConstraints=CA:FALSE',
     'keyUsage=digitalSignature,keyEncipherment',
     'extendedKeyUsage=serverAuth',
@@ -216,6 +218,13 @@ export function uninstallCa() {
   return isInstalled();
 }
 
+export function removeCaFiles() {
+  if (path.basename(CA_DIR) !== 'certificates' || (CA_DIR !== DEFAULT_CA_DIR && !process.env.CW_CA_DIR)) {
+    throw new Error('拒绝清理项目目录之外的证书文件');
+  }
+  fs.rmSync(CA_DIR, { recursive: true, force: true });
+}
+
 async function main() {
   const [cmd, arg] = process.argv.slice(2);
   if (cmd === 'init') {
@@ -229,13 +238,18 @@ async function main() {
     console.log(`installed=${isInstalled()}\n${caFingerprint()}`);
   } else if (cmd === 'uninstall') {
     uninstallCa();
+    removeCaFiles();
     console.log(`installed=${isInstalled()}`);
+  } else if (cmd === 'clean') {
+    removeCaFiles();
+    console.log(`ca files removed: ${CA_DIR}`);
   } else if (cmd === 'status') {
-    console.log(`ca: ${CA_CRT} exists=${fs.existsSync(CA_CRT)}`);
+    const shown = path.relative(process.cwd(), CA_CRT) || CA_CRT;
+    console.log(`ca: ${shown} exists=${fs.existsSync(CA_CRT)}`);
     console.log(`trusted(current user): ${isInstalled()}`);
     await verifyRootView();
   } else {
-    console.log('usage: mitm-ca.mjs init [--force] | leaf <host> | install | uninstall | status');
+    console.log('usage: mitm-ca.mjs init [--force] | leaf <host> | install | uninstall | clean | status');
   }
 }
 

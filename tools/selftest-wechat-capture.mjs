@@ -61,6 +61,7 @@ function harness({ mode = '', trusted = false, certExists = trusted, original = 
         if (h.mode === 'ca-cleanup-failure') throw new Error('fixture removal failure');
         h.trusted = false;
       },
+      removeCaFiles() { events.push('ca:files-removed'); },
     },
     proxySettings: {
       readCurrent() { return { ...h.active }; },
@@ -148,7 +149,8 @@ for (const trusted of [false, true]) {
   assert.equal(captured.error, null);
   assert(!captured.log.join('\n').includes('do-not-log'));
   assert(h.events.indexOf('proxy:restore') < h.events.indexOf('proxy:stop'));
-  if (trusted) assert(!h.events.includes('ca:install') && !h.events.includes('ca:remove'));
+  if (trusted) assert(!h.events.includes('ca:install') && !h.events.includes('ca:remove') && !h.events.includes('ca:files-removed'));
+  else assert(h.events.includes('ca:files-removed'), 'remove generated CA files after successful stop');
   h.assertClean();
   const cleanEvents = [...h.events];
   await h.controller.stopCapture('重复停止');
@@ -186,7 +188,7 @@ for (const mode of ['busy', 'missing-leaf', 'create-failure', 'init-failure', 'i
   }
   if (mode === 'create-failure') assert(!h.events.includes('ca:init'), 'load protocol before any trust changes');
   if (!mode.startsWith('set-')) assert(!h.events.includes('proxy:set'), mode);
-  if (mode === 'install-failure') assert(h.events.includes('ca:remove'), 'clean partially installed CA');
+  if (mode === 'install-failure') assert(h.events.includes('ca:remove') && h.events.includes('ca:files-removed'), 'clean partially installed CA and generated files');
   if (mode === 'install-before-write-failure') assert(!h.events.includes('ca:remove'), 'do not delete absent trust after an early install failure');
   if (mode.startsWith('set-')) assert(h.events.includes('proxy:restore'), 'restore even partially changed proxy');
   h.assertClean();

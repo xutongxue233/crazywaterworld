@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 export const KEY = process.env.CW_REG_KEY
   ?? 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 export const BACKUP = process.env.CW_PROXY_BACKUP
-  ?? path.resolve(import.meta.dirname, '../../certificates/proxy-backup.json');
+  ?? path.resolve(import.meta.dirname, '../certificates/proxy-backup.json');
 const VALUES = ['ProxyEnable', 'ProxyServer', 'ProxyOverride'];
 
 export function pointsToCapture(values, port) {
@@ -27,12 +27,13 @@ export function prepareCaptureProxy(settings, port) {
   const original = settings.readCurrent();
   if (pointsToCapture(original, port)) throw new Error('系统代理已指向本机采集端口，请先恢复上次的代理设置，避免覆盖原始备份');
   const target = { ProxyEnable: '0x1', ProxyServer: `127.0.0.1:${port}`, ProxyOverride: '<local>' };
-  let ready = false;
+  let ready = false, owned = false;
   let pending = [];
   return {
     original,
     enable() {
       settings.backup(original);
+      owned = true;
       pending = VALUES.filter((name) => !equals(name, original[name], target[name]));
       settings.setProxy('127.0.0.1', port, { backedUp: true });
       const active = settings.readCurrent();
@@ -40,7 +41,10 @@ export function prepareCaptureProxy(settings, port) {
       ready = true;
     },
     restore() {
-      if (!pending.length) return;
+      if (!pending.length) {
+        if (owned) { settings.removeBackup?.(); owned = false; }
+        return;
+      }
       // Restore the enable flag first. If that write fails, leave the server
       // untouched so a retry can still establish which session owns the route.
       for (const name of [...pending]) {
@@ -52,6 +56,7 @@ export function prepareCaptureProxy(settings, port) {
         }
         pending = pending.filter((field) => field !== name);
       }
+      if (owned) { settings.removeBackup?.(); owned = false; }
     },
   };
 }
@@ -78,6 +83,10 @@ export function backup(values = readCurrent()) {
   fs.mkdirSync(path.dirname(BACKUP), { recursive: true });
   fs.writeFileSync(BACKUP, JSON.stringify({ key: KEY, values, savedAt: new Date().toISOString() }, null, 2));
   return values;
+}
+
+export function removeBackup() {
+  fs.rmSync(BACKUP, { force: true });
 }
 
 export function setProxy(host, port, { backedUp = false } = {}) {
@@ -119,6 +128,7 @@ function main() {
     console.log('now:', setProxy(host, Number(port)));
   } else if (cmd === 'restore') {
     console.log('restored:', restore());
+    removeBackup();
   } else {
     console.log('usage: proxy-settings.mjs show | backup | set [host] [port] | restore');
   }

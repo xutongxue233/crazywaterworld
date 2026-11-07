@@ -244,8 +244,8 @@ try {
     import assert from 'node:assert/strict';
     import fs from 'node:fs';
     import path from 'node:path';
-    import { CA_DIR, initCa, prepareLeaf, installCa, caThumbprint, verifyRootView } from ${JSON.stringify(caModule)};
-    assert.equal(CA_DIR, path.join(process.argv[1], 'certificates'));
+    import { CA_DIR, initCa, prepareLeaf, installCa, caThumbprint, verifyRootView, removeCaFiles } from ${JSON.stringify(caModule)};
+    assert.equal(CA_DIR, path.join(process.argv[1], 'repo', 'certificates'));
     if (process.platform === 'win32') {
       // No certificate exists: the native helper must fail before opening the store.
       await assert.rejects(installCa(), { code: 'CW_CA_TRUST' });
@@ -267,6 +267,8 @@ try {
     prepareLeaf('fixture.example');
     fs.unlinkSync(path.join(CA_DIR, 'leaf.key'));
     assert.throws(() => prepareLeaf('other.example'), /leaf[.]key/);
+    removeCaFiles();
+    assert.equal(fs.existsSync(CA_DIR), false);
   `, tempDir], { env: { ...process.env, HOME: tempDir, USERPROFILE: tempDir }, timeout: 30000 });
 
   const keyPath = path.join(tempDir, 'test.key');

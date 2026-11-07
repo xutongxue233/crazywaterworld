@@ -4,10 +4,16 @@ import net from 'node:net';
 import tls from 'node:tls';
 import https from 'node:https';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { leafFor } from './mitm-ca.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { createCodec } from '../src/codec.mjs';
+
+const caTestRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-mitm-ca-'));
+const caTestDir = path.join(caTestRoot, 'certificates');
+process.env.CW_CA_DIR = caTestDir;
+const { initCa, leafFor, removeCaFiles } = await import('./mitm-ca.mjs');
+initCa();
 
 const PROXY_PORT = 17999;
 const UPSTREAM_PORT = 18080;
@@ -66,7 +72,7 @@ function frameReader(onMessage) {
   };
 }
 
-const { cert, keyPem } = leafFor('localhost');
+const { cert, keyPem } = leafFor('127.0.0.1');
 const upstream = https.createServer({ cert, key: keyPem }, (req, res) => {
   res.writeHead(200);
   res.end('plain');
@@ -86,22 +92,26 @@ upstream.on('upgrade', (req, socket) => {
 
 await new Promise((resolve) => upstream.listen(UPSTREAM_PORT, '127.0.0.1', resolve));
 
-process.env.CW_PROXY_PORT = String(PROXY_PORT);
-process.env.CW_INTERCEPT_PORTS = `443,${UPSTREAM_PORT}`;
-const { start, stop } = await import('./mitm-proxy.mjs');
-const proxy = start();
-await new Promise((resolve) => proxy.once('listening', resolve));
+const outPath = path.resolve(import.meta.dirname, '../data/credentials.json');
+const { createProxy } = await import('./mitm-proxy.mjs');
+const proxy = createProxy({
+  port: PROXY_PORT, interceptPorts: [443, UPSTREAM_PORT], upstreamCa: fs.readFileSync(path.join(caTestDir, 'ca.crt')),
+  onLogin: ({ url, body, rawFrameHex }) => {
+    fs.writeFileSync(outPath, JSON.stringify({ url, login: body, loginFrameHex: rawFrameHex, source: 'mitm' }, null, 2));
+  },
+});
+await proxy.listen();
 
 const socket = await new Promise((resolve, reject) => {
   const raw = net.connect(PROXY_PORT, '127.0.0.1', () => {
-    raw.write(`CONNECT localhost:${UPSTREAM_PORT} HTTP/1.1\r\nHost: localhost:${UPSTREAM_PORT}\r\n\r\n`);
+    raw.write(`CONNECT 127.0.0.1:${UPSTREAM_PORT} HTTP/1.1\r\nHost: 127.0.0.1:${UPSTREAM_PORT}\r\n\r\n`);
   });
   raw.once('data', (chunk) => {
     assert.match(chunk.toString(), /^HTTP\/1\.1 200/, 'CONNECT should return 200');
     const secure = tls.connect({
       socket: raw,
-      servername: 'localhost',
-      ca: fs.readFileSync(path.resolve(import.meta.dirname, '../../certificates/ca.crt')),
+      servername: '127.0.0.1',
+      ca: fs.readFileSync(path.join(caTestDir, 'ca.crt')),
       rejectUnauthorized: true,
     }, () => resolve(secure));
     secure.on('error', reject);
@@ -112,7 +122,7 @@ const socket = await new Promise((resolve, reject) => {
 const wsKey = crypto.randomBytes(16).toString('base64');
 socket.write([
   `GET /ws HTTP/1.1`,
-  `Host: localhost:${UPSTREAM_PORT}`,
+  `Host: 127.0.0.1:${UPSTREAM_PORT}`,
   'Upgrade: websocket',
   'Connection: Upgrade',
   `Sec-WebSocket-Key: ${wsKey}`,
@@ -152,10 +162,9 @@ socket.write(encodeFrame(loginFrame, { mask: true }));
 
 await new Promise((resolve) => setTimeout(resolve, 800));
 
-const outPath = path.resolve(import.meta.dirname, '../data/credentials.json');
 assert.ok(fs.existsSync(outPath), 'proxy should have written credentials.json');
 const captured = JSON.parse(fs.readFileSync(outPath, 'utf8'));
-assert.equal(captured.url, `wss://localhost:${UPSTREAM_PORT}/ws`, 'captured url');
+assert.equal(captured.url, `wss://127.0.0.1:${UPSTREAM_PORT}/ws`, 'captured url');
 assert.equal(captured.login.eworldParams.openId, 'oSELFTEST', 'captured openId');
 assert.deepEqual(
   Buffer.from(captured.loginFrameHex, 'hex'),
@@ -193,8 +202,10 @@ const tunneled = await new Promise((resolve, reject) => {
 assert.equal(tunneled, 'raw-bytes-not-tls', 'non-intercepted port passes through untouched');
 
 echo.close();
-await stop();
+await proxy.stop();
 upstream.close();
 fs.rmSync(outPath, { force: true });
+try { removeCaFiles(); } catch { fs.rmSync(caTestRoot, { recursive: true, force: true }); }
+fs.rmSync(caTestRoot, { recursive: true, force: true });
 
 console.log('mitm selftest ok: CONNECT + TLS + upgrade + LoginRequest capture + echo + pass-through');

@@ -10,6 +10,13 @@ const baseFamilies = [
 const configLegacyGroups = new Map();
 const familyGroups = new Map();
 const configField = (key, label, kind = 'switch', options = {}) => ({ key, label, kind, ...options });
+function configPlacePanel(root, panel) {
+  root.classList.remove('open-up');
+  if (!root.open || !panel) return;
+  const rect = root.getBoundingClientRect();
+  const height = Math.min(panel.scrollHeight, window.innerHeight * 0.7);
+  if (rect.bottom + height + 12 > window.innerHeight && rect.top - height - 12 > 0) root.classList.add('open-up');
+}
 const configZeroHints={
  'gather.fishingGoldReserve':'0 表示不保留强化金币。','forge.materialReserve':'0 表示不保留普通材料。','forge.universalReserve':'0 表示不保留万能材料。','forge.goldReserve':'0 表示不保留金币。',
  'museum.stockThreshold':'0 表示关闭库存条件。','resources.keepAccelerators':'0 表示不保留加速器。','resources.diamondThreshold':'0 表示不保留钻石。','gold.times':'0 表示不自动付费点金。',
@@ -707,7 +714,10 @@ function configPlayerPicker(spec, id) {
     if (details.open) paintList();
   }
   search.oninput = paintList;
-  details.ontoggle = () => { if (details.open) { paintList(); if (!configEditor.playerData) void configRefreshPlayers(); search.focus(); } };
+  details.ontoggle = () => {
+    if (details.open) { paintList(); configPlacePanel(details, panel); if (!configEditor.playerData) void configRefreshPlayers(); search.focus(); }
+    else details.classList.remove('open-up');
+  };
   details.onkeydown = event => { if (event.key === 'Escape') { details.open = false; summary.focus(); event.stopPropagation(); } };
   panel.append(search, status, list, refresh, manual, manualError); details.append(panel); root.append(selected, details);
   configEditor.playerWidgets.push(paint); paint(); return root;
@@ -750,7 +760,10 @@ function configMultiselect(spec, id) {
     more.hidden = matches.length <= limit; list.scrollTop = oldScroll;
   }
   search.oninput = () => { limit = 120; paintList(); };
-  root.ontoggle = () => { if (root.open) { paintList(); search.focus(); } };
+  root.ontoggle = () => {
+    if (root.open) { paintList(); configPlacePanel(root, panel); search.focus(); }
+    else root.classList.remove('open-up');
+  };
   root.onkeydown = event => { if (event.key === 'Escape') { root.open = false; summary.focus(); event.stopPropagation(); } };
   foot.append(count, configButton('清空选择', () => { configSet(spec.key, []); paintSummary(); paintList(); }));
   panel.append(search, list, more, foot); root.append(panel); paintSummary(); return root;
@@ -1010,5 +1023,14 @@ window.addEventListener('hashchange', () => {
   if (!location.hash.startsWith('#config-group-')) return;
   if (current && !configVisible()) document.querySelector('#tabs [data-tab="settings"]').click();
   if (configVisible() && configEditor.owner === current && configEditor.data) configApplyHash();
+});
+document.addEventListener('pointerdown', event => {
+  for (const root of document.querySelectorAll('details.config-multi[open]')) if (!root.contains(event.target)) root.open = false;
+});
+window.addEventListener('resize', () => {
+  for (const root of document.querySelectorAll('details.config-multi[open]')) {
+    const panel = root.querySelector('.config-multi-panel');
+    if (panel) configPlacePanel(root, panel);
+  }
 });
 window.addEventListener('beforeunload', event => { if (configIsDirty()) { event.preventDefault(); event.returnValue = ''; } });

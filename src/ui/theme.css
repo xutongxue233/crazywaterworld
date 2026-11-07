@@ -195,7 +195,7 @@
   .config-multi { @apply rounded-md border border-input bg-transparent shadow-xs; }
   .config-multi > summary { @apply min-h-9 rounded-md px-3 py-2 font-normal hover:no-underline; }
   .config-multi[open] > summary { @apply rounded-b-none border-b; }
-  .config-multi-panel { @apply p-1; }
+  .config-multi-panel { @apply rounded-md border bg-popover p-1 text-popover-foreground shadow-md; }
   .config-option { @apply flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm font-normal hover:bg-accent hover:text-accent-foreground; }
 
   /* Switch：运行时配置项和 Switch 组件尺寸一致 */

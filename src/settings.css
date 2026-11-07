@@ -33,6 +33,12 @@
 .config-field-error { color:var(--destructive); margin-top:4px }
 .config-message { margin:8px 0; overflow-wrap:anywhere }
 
+/* 多选下拉使用浮层，展开时不改变配置行高度。 */
+.config-multi { position:relative }
+.config-multi[open] { z-index:30 }
+.config-multi-panel { position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:30; max-height:min(420px,70vh); overflow:auto; overscroll-behavior:contain }
+.config-multi.open-up>.config-multi-panel { top:auto; bottom:calc(100% + 4px) }
+
 .config-option-list { max-height:224px; overflow:auto; scrollbar-width:thin; margin-top:4px }
 .config-option span { overflow-wrap:anywhere }
 .config-radio { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px 12px }

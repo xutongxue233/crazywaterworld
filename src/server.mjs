@@ -1,3 +1,4 @@
+import { createTraceLog } from './trace-log.mjs';
 import {checkFleetSettlement,invalidateFleetReports} from './fleet-settlement.mjs';
 import { recoverPirateHunts } from './pirate-recovery.mjs';
 import {readGuildTech,upgradeGuildTech} from './guild-tech.mjs';
@@ -84,6 +85,11 @@ const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
 ].includes(name));
 // 协议帧不再进界面，但仍然要能事后查。默认只写文件，CW_DEBUG=1 时才同时打到终端。
 const TRACE_PATH = path.resolve(import.meta.dirname, '../data/protocol.log');
+const TRACE_MAX_BYTES = (() => {
+  const value = Number(process.env.CW_PROTOCOL_LOG_MAX_BYTES);
+  return Number.isSafeInteger(value) && value > 0 ? value : 5 * 1024 * 1024;
+})();
+const traceLog = createTraceLog(TRACE_PATH, { maxBytes: TRACE_MAX_BYTES });
 
 const STATE_TEXT = {
   IDLE: '未连接',
@@ -129,19 +135,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   // 协议层细节（帧、序号、字节数、原始 JSON）只落盘，不进运行记录。
-  let traceStream = null;
   function trace(session, line) {
     const text = `${new Date().toISOString()} [${session.id.slice(0, 8)}] ${line}\n`;
     if (process.env.CW_DEBUG === '1') process.stdout.write(text);
-    try {
-      if (!traceStream) {
-        fs.mkdirSync(path.dirname(TRACE_PATH), { recursive: true });
-        traceStream = fs.createWriteStream(TRACE_PATH, { flags: 'a' });
-      }
-      traceStream.write(text);
-    } catch {
-      /* 写不进去就算了，协议日志不是功能 */
-    }
+    traceLog.write(text);
   }
 
   function enqueue(session, work, label) {

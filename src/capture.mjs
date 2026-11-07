@@ -74,6 +74,7 @@ export function createCaptureController(dependencies = {}) {
 
   function restoreCa(run) {
     if (!run.caAdded) return;
+    const addedHere = run.caAdded;
     if (run.keepCa && run.ready) {
       run.caAdded = false;
       if (latest === run) state.caAddedByCapture = false;
@@ -88,6 +89,10 @@ export function createCaptureController(dependencies = {}) {
       run.caAdded = false;
       if (latest === run) state.caAddedByCapture = false;
       note(present ? '本次安装的测试 CA 已移除。' : '本进程未查到测试 CA，未执行删除。', run);
+      if (addedHere) {
+        try { ca.removeCaFiles?.(); note('本次生成的本地测试证书文件已清理。', run); }
+        catch { cleanupError(run, '本次测试证书文件清理失败，请手动删除项目的 certificates 目录。'); }
+      }
     } catch {
       cleanupError(run, '本次测试 CA 移除失败，请重试停止或运行 node tools/mitm-ca.mjs uninstall。');
     }

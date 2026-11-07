@@ -98,9 +98,9 @@ section h2:first-child { margin-top:0 }
 /* ---- 总览 ---- */
 .overview-task-filter input { flex:1 1 130px; width:auto; max-width:320px }
 #overview-task-summary { margin:12px 0 4px }
-#overview-task-groups { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); column-gap:24px }
+#overview-task-groups { display:grid; grid-template-columns:minmax(0,1fr) }
 #overview-task-groups .overview-task-group:last-child { border-bottom:1px solid var(--border) }
-#overview-task-groups details[open] { grid-column:1/-1 }
+/* 分组按单列折叠；展开只插入内容，不改变其他分组的位置。 */
 .overview-task-group table { table-layout:fixed }
 .overview-task-group th:first-child { width:25% }
 .overview-task-group th:last-child { width:26% }

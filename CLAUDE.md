@@ -10,13 +10,14 @@
 
 ```powershell
 npm start                     # prestart 先构建界面，再启动；端口 17321
-.\start-console.cmd           # 用户入口，端口 17323，检查 MITM 根证书状态
+.\start-console.cmd           # 只检查 MITM 证书状态，不启动控制台
+.\start-console.cmd start     # 用户入口，端口 17323，启动控制台
 npm run build:ui              # 改 TSX 或 theme.css 后运行，提交 src/ui/dist 产物
 npm test                      # pretest 先构建，再依次执行下面三组，遇错即停
 npm run test:core             # 核心协议、日常、原有玩法、阵容与掉线处理
 npm run test:progression      # 装备、情报、订单、博物馆、海兽、预留与迁移接线
 npm run test:extra            # 详细配置、活动、调度、维修、城战/锻造、礼包与地图
-npm run test:level16          # core 子集
+npm run test:core-subset      # core 子集
 npm run test:capture          # 采集三组不在 npm test 内
 npm run test:wechat
 npm run test:wxapkg
@@ -47,7 +48,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - `proto.mjs` 执行游戏自带 `game.js`，取得 protobufjs 编解码类。`protocol-source.mjs` 按 `CW_PROTO_BUNDLE`、微信缓存最高版本 `_src_chunks_.wxapkg`、`work/extracted/` 查找。
 - 无反射信息，使用 `tools/describe.mjs` 还原字段、`tools/ctx.mjs` 查压缩代码上下文。`work/extracted/` 可能落后于微信缓存，客户端逻辑以缓存最高版本的主包为准。请求名和响应名必须核对真实 `protocol[name]`，不能凭名称推测接口。
 - `config.mjs` 按 `CW_CONFIG_PACK`、`work/cdn/config_cn_pack.json`、微信缓存查找。同步命令是 `npm run sync-config`；旧注释中的 `tools/fetch-config.mjs` 已不存在。
-- `actions.mjs` 是协议操作目录，`mutate` 区分读写；`CW_DEBUG=1` 可同时在终端输出协议日志，原始日志默认写项目 `data/protocol.log`。
+- `actions.mjs` 是协议操作目录，`mutate` 区分读写；`CW_DEBUG=1` 可同时在终端输出协议日志，原始日志默认写项目 `data/protocol.log`，主日志与 `.1` 按 `CW_PROTOCOL_LOG_MAX_BYTES`（默认 5 MB）轮转。
 
 ### 执行与调度
 
@@ -110,4 +111,4 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 
 ## 文档
 
-用户行为变化更新 `README.md` 和倒序 `CHANGELOG.md`；协议与配置依据见 `docs/gameplay.md`，16 级条件见 `docs/level-16.md`，登录来源见 `docs/wechat-login.md`。
+用户行为变化更新 `README.md` 和倒序 `CHANGELOG.md`；协议与配置依据见 `docs/gameplay.md`，登录来源见 `docs/wechat-login.md`。

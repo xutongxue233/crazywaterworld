@@ -242,13 +242,22 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
       io.error('本地采集代理未能正常关闭，请结束此进程。');
     }
     if (removeCa) {
+      let removed = false;
       try {
         if (ca.isInstalled()) ca.uninstallCa();
         if (ca.isInstalled()) throw new Error('CA removal verification');
+        removed = true;
         io.log('本次安装的测试 CA 已移除。');
       } catch {
         cleanupFailed = true;
         io.error('本次测试 CA 移除失败，请运行 node tools/mitm-ca.mjs uninstall 并检查证书存储。');
+      }
+      if (removed) {
+        try { ca.removeCaFiles?.(); io.log('本次生成的本地测试证书文件已清理。'); }
+        catch {
+          cleanupFailed = true;
+          io.error('本地测试证书文件清理失败，请手动删除项目的 certificates 目录。');
+        }
       }
     }
     if (releaseLock) await releaseLock();
