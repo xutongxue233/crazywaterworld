@@ -17,6 +17,7 @@ import { surveyWorld, planWorld, runWorld, runWorldRound, formatWorldPlan, forma
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { runStages, stageFailureLimit } from './stages.mjs';
 import { createPhoneLogin } from './phone-login.mjs';
+import { worldName } from './world-name.mjs';
 
 const READ_ONLY_PROBES = [
   'AllResourceRequest',
@@ -116,14 +117,14 @@ async function worlds({ worldId = null, group = false, seconds = 0 }) {
   console.log(`\nworlds on this account (latestGroupId=${worlds.latestGroupId}, count=${worlds.recentWorlds.length}):`);
   for (const world of worlds.recentWorlds) {
     const role = world.role || {};
-    const moved = role.worldId && role.worldId !== world.worldId ? ` -> ${role.worldId}` : '';
-    console.log(`  worldId=${world.worldId}${moved} tag=${world.tag} ${role.nickname ?? ''} lv=${role.level ?? ''} power=${role.power ?? ''} lastLogin=${role.lastLoginTime ?? ''}`);
+    const moved = role.worldId && role.worldId !== world.worldId ? ` -> ${role.worldName ?? role.worldId}（${role.worldId}）` : '';
+    console.log(`  ${world.worldName ?? '未知区服'}（worldId=${world.worldId}）${moved} tag=${world.tag} ${role.nickname ?? ''} lv=${role.level ?? ''} power=${role.power ?? ''} lastLogin=${role.lastLoginTime ?? ''}`);
   }
 
   if (group && worlds.latestGroupId) {
     const all = await listGroup(client, worlds.latestGroupId);
     console.log(`\nworlds in group ${worlds.latestGroupId} (count=${all.length}):`);
-    for (const world of all) console.log(`  worldId=${world.worldId} tag=${world.tag}`);
+    for (const world of all) console.log(`  ${world.worldName ?? '未知区服'}（worldId=${world.worldId}） tag=${world.tag}`);
   }
 
   const worldIds = new Set(worlds.recentWorlds.map((world) => world.worldId));
@@ -132,7 +133,7 @@ async function worlds({ worldId = null, group = false, seconds = 0 }) {
   if (worldId !== null) {
     const entered = await enterWorld({ url, login, protocol }, worldId);
     const player = entered.player || {};
-    console.log(`\nentered worldId=${player.worldId} (requested ${worldId}), user info:`);
+    console.log(`\nentered ${worldName(player.worldId) ?? '未知区服'}（worldId=${player.worldId}，requested ${worldId}）, user info:`);
     console.log(JSON.stringify(describeRole(player), null, 2));
     if (!worldIds.has(worldId)) console.log(`note: worldId=${worldId} was not in the account's world list`);
     if (player.newRole) console.log('warning: newRole=true — this login created a role in that world');
@@ -150,7 +151,8 @@ async function state({ raw = false, out = null }) {
   client.on('fatal', (info) => console.log(`fatal: ${JSON.stringify(info)}`));
 
   const response = await client.connect(login);
-  console.log(`login ok: ${describeRole(response.playerInfo)?.nickname} world=${describeRole(response.playerInfo)?.worldId}`);
+  const loginRole = describeRole(response.playerInfo);
+  console.log(`login ok: ${loginRole?.nickname} world=${loginRole?.worldName ?? loginRole?.worldId}`);
 
   const started = Date.now();
   const { ok, failed } = await collectState(client, protocol, {
@@ -163,7 +165,7 @@ async function state({ raw = false, out = null }) {
   for (const [name, message] of Object.entries(failed)) console.log(`  failed ${name}: ${message}`);
 
   if (out) {
-    fs.writeFileSync(out, `${JSON.stringify({ login: describeRole(response.playerInfo), ok, failed }, null, 1)}\n`);
+    fs.writeFileSync(out, `${JSON.stringify({ login: loginRole, ok, failed }, null, 1)}\n`);
     console.log(`state written to ${out}`);
   }
   if (raw) {
@@ -269,12 +271,13 @@ async function loot({ allowMutate, dryRun = false }) {
   client.on('fatal', (info) => console.log(`fatal: ${JSON.stringify(info)}`));
 
   const response = await client.connect(login);
-  console.log(`login ok: ${describeRole(response.playerInfo)?.nickname} world=${describeRole(response.playerInfo)?.worldId}`);
+  const loginRole = describeRole(response.playerInfo);
+  console.log(`login ok: ${loginRole?.nickname} world=${loginRole?.worldName ?? loginRole?.worldId}`);
   const config = loadConfigSafe();
   try {
     const before = (await collectState(client, protocol)).ok;
     const now = Date.now() / 1000;
-    const plan = planLoot(before, now, config, describeRole(response.playerInfo)?.level ?? 1);
+    const plan = planLoot(before, now, config, loginRole?.level ?? 1);
 
     console.log(`\n可领取 ${plan.length} 项:`);
     for (const step of plan) console.log(`  ${step.id} ${JSON.stringify(step.params)} — ${step.why}`);
@@ -394,7 +397,8 @@ async function dailies({ allowMutate, dryRun, allowPaid }) {
   const response = await client.connect(login);
   const config = loadConfigSafe();
   try {
-    console.log(`login ok: ${describeRole(response.playerInfo)?.nickname} world=${describeRole(response.playerInfo)?.worldId}`);
+    const loginRole = describeRole(response.playerInfo);
+    console.log(`login ok: ${loginRole?.nickname} world=${loginRole?.worldName ?? loginRole?.worldId}`);
     const survey = await surveyDailies(client, protocol, { config, player: response.playerInfo });
     console.log(`\n${formatSurvey(survey)}\n`);
     for (const entry of survey.tasks) {
@@ -744,7 +748,7 @@ async function accountsCli(args) {
       try {
         const response = await gameClient.connect(account.login);
         const player = response.playerInfo ?? {};
-        console.log(`连接成功：${player.nickname ?? '未知昵称'} lv${player.level ?? '?'} 区服${player.worldId ?? '?'}`);
+        console.log(`连接成功：${player.nickname ?? '未知昵称'} lv${player.level ?? '?'} 区服${worldName(player.worldId) ?? '?'}`);
       } finally {
         gameClient.stop();
       }
@@ -767,7 +771,7 @@ async function accountsCli(args) {
       const info = describeAccount(account, { active: account.id === store.activeId });
       const seen = info.lastSeen;
       const tail = seen
-        ? `lv${seen.level ?? '?'} 战力${seen.power ?? '?'} 区服${seen.worldId ?? '?'}`
+        ? `lv${seen.level ?? '?'} 战力${seen.power ?? '?'} 区服${seen.worldName ?? seen.worldId ?? '?'}`
         : '（还没连上过）';
       console.log(`${info.active ? '*' : ' '} ${index + 1}. ${info.title}  ${tail}`);
       console.log(`     openId ${info.id}  凭证抓于 ${info.capturedAt ?? '未知'}`);

@@ -4,6 +4,7 @@
 
 ## 2026-11-07
 
+- 账号、总览和区服列表改为显示区服名称（如“海岛1986服”），并保留 worldId 便于核对；CLI `accounts list` 与 `worlds` 同步显示。协议本身不返回区服名，名称按客户端 `WorldIdRule` 从 `worldId` 计算，大区 3、4 分别为海港、海灯。
 - 修复手机号登录连接网关被 `1000 Bye` 关闭：ewan 登录后补走 `api.gzxianc.com/api/user/login` 业务登录，并用 `signToken` 作为网关 token；同时按 APP 抓包对齐 `clientVersion=1.12.9`、`language=zh_CN`、`systemLanguage=zh_cn_#hans`、`sc/extc=261390`、`biz=102`、生日和 `originVersion`。已实测连接成功并读取角色。
 - 修复手机号登录页面把 11 位手机号误判为格式错误：页面脚本是模板字符串，正则中的 `\d` 被转义丢失，改为 `[0-9]` 并加入回归检查。
 - 新增手机号/账号密码和短信验证码登录：按 APK 抓包接入益世界 ewan 账号 SDK（`loginsdk.ewan.cn/login`，AES-128-ECB；账号密码协议 100003，验证码校验 420012、完成登录 420007），换取网关 `openid/token/sign/timestamp`。已用真实账号验证账号密码成功响应；登录绑定 APP 的 `di/oi/devicecode`，工具读取本机 `data/ewan-device.json` 设备档案，APP 重装或换设备后需重新导入。控制台「账号 → 手机号登录」支持发送验证码、验证码登录和账号密码登录，先预览 openId，再确认保存；CLI 为 `accounts login-phone`，支持 `--password`、`--code`、`--probe`、`--save`、`--connect`。密码和验证码不落盘，待保存凭证只在内存保留 10 分钟，详见 `docs/phone-login.md`。

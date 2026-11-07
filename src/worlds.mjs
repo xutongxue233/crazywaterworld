@@ -1,5 +1,6 @@
 import { GameClient } from './client.mjs';
 import { toNumber } from './client.mjs';
+import { worldName } from './world-name.mjs';
 
 // The gateway is not world-scoped: one socket serves the whole account, and the world
 // is chosen by LoginRequest.worldId (0 means "wherever this account last was"). So both
@@ -31,7 +32,9 @@ export function describeRole(info) {
     appId: role.appId,
     channelId: role.channelId,
     worldId: role.worldId,
+    worldName: worldName(role.worldId),
     bornWorldId: role.bornWorldId,
+    bornWorldName: worldName(role.bornWorldId),
     roleCreateTime: role.roleCreateTime,
     lastLoginTime: role.lastLoginTime,
     ...(role.newRole === undefined ? {} : { newRole: role.newRole }),
@@ -43,7 +46,7 @@ export function describeRole(info) {
 // world merge the two differ, and the server resolves the requested key to the successor.
 export function describeWorld(world) {
   const value = normalize(world);
-  return { worldId: value.worldId, tag: value.tag, role: describeRole(value.roleInfo) };
+  return { worldId: value.worldId, worldName: worldName(value.worldId), tag: value.tag, role: describeRole(value.roleInfo) };
 }
 
 // Pure query. Returns the worlds this account has roles on, which is exactly what the

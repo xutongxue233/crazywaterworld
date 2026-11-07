@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { worldName } from './world-name.mjs';
 
 // 账号身份就是微信 openId：同一个号反复抓包，抓到的还是同一条记录，只是凭证被刷新。
 // 一条记录 = 一份能登录的凭证 + 一点人类可读的标记（昵称、等级、区服）。
@@ -163,6 +164,9 @@ function mask(value) {
 export function describeAccount(account, { active = false } = {}) {
   const params = account.login?.eworldParams ?? {};
   const title = account.label || account.lastSeen?.nickname || `账号 ${account.id.slice(0, 6)}`;
+  const lastSeen = account.lastSeen
+    ? { ...account.lastSeen, worldName: worldName(account.lastSeen.worldId) }
+    : null;
   return {
     id: account.id,
     title,
@@ -170,7 +174,7 @@ export function describeAccount(account, { active = false } = {}) {
     source: account.source,
     capturedAt: account.capturedAt,
     addedAt: account.addedAt,
-    lastSeen: account.lastSeen ?? null,
+    lastSeen,
     active,
     masked: {
       openId: mask(params.openId),

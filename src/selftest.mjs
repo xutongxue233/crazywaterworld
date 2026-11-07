@@ -387,9 +387,18 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 // survive normalisation as plain numbers rather than int64 objects.
 {
   const { normalize, describeRole, describeWorld } = await import('./worlds.mjs');
+  const { worldName } = await import('./world-name.mjs');
   const long = (value) => ({ low: value >>> 0, high: Math.floor(value / 4294967296), unsigned: false });
 
   assert.deepEqual(normalize({ a: long(2001001001), b: [long(7)], c: null }), { a: 2001001001, b: [7], c: null }, 'normalize: nested long forms');
+
+  // 客户端 WorldIdRule 把 worldId 拆成 大区/赛季/区服序号，显示名只取大区前缀和序号。
+  assert.equal(worldName(2001001448), '海岛1448服', 'area 2 uses 海岛 and drops the season');
+  assert.equal(worldName(long(2004001986)), '海岛1986服', 'int64 input gets the same name');
+  assert.equal(worldName(3001000007), '海港7服', 'area 3 uses 海港');
+  assert.equal(worldName(4001000008), '海灯8服', 'area 4 uses 海灯');
+  assert.equal(worldName(0), null, 'missing worldId has no name');
+  assert.equal(worldName(null), null, 'null worldId has no name');
 
   const role = describeRole({
     id: long(55059310000001),
@@ -402,7 +411,9 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(role.id, 55059310000001);
   assert.equal(role.power, 40889);
   assert.equal(role.worldId, 2004001001, 'role worldId is where the role lives now');
+  assert.equal(role.worldName, '海岛1001服');
   assert.equal(role.bornWorldId, 2001001001, 'bornWorldId is the world it was created in');
+  assert.equal(role.bornWorldName, '海岛1001服');
   assert.equal(role.newRole, undefined, 'absent flags stay absent');
 
   // PlayerInfo names the same identity fields differently; describeRole accepts both.
@@ -411,7 +422,9 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 
   const world = describeWorld({ worldId: long(2001001001), tag: 2, roleInfo: { worldId: long(2004001001) } });
   assert.equal(world.worldId, 2001001001, 'the select-screen key is GameWorldInfo.worldId');
+  assert.equal(world.worldName, '海岛1001服');
   assert.equal(world.role.worldId, 2004001001, 'the live world is roleInfo.worldId');
+  assert.equal(world.role.worldName, '海岛1001服');
   checked += 1;
 }
 

@@ -565,7 +565,7 @@ function renderWho(view) {
     ['角色', role.nickname || '-'],
     ['等级', role.level == null ? '-' : String(role.level)],
     ['战力', fmt(role.power)],
-    ['区服', role.worldId == null ? '-' : String(role.worldId)],
+    ['区服', role.worldId == null ? '-' : (role.worldName ? role.worldName + '（' + role.worldId + '）' : String(role.worldId))],
     ['状态', status.connected ? '已连接' : '未连接'],
   ];
   for (const [k, v] of items) {
@@ -1396,8 +1396,10 @@ async function renderAccounts() {
     top.appendChild(el('span', 'title', account.title));
     top.appendChild(el('span', 'id', account.id.slice(0, 10) + '…'));
     if (account.id === current) top.appendChild(chip('done', '当前'));
-    const seenInfo = account.lastSeen
-      ? '上次 ' + (account.lastSeen.nickname || '?') + ' lv' + (account.lastSeen.level ?? '?') + ' 战力' + fmt(account.lastSeen.power) + ' @' + when(account.lastSeen.at)
+    const seen = account.lastSeen;
+    const seenWorld = seen && (seen.worldName || seen.worldId);
+    const seenInfo = seen
+      ? '上次 ' + (seen.nickname || '?') + ' lv' + (seen.level ?? '?') + ' 战力' + fmt(seen.power) + (seenWorld ? ' 区服' + seenWorld : '') + ' @' + when(seen.at)
       : '还没连过';
     top.appendChild(el('span', 'id', seenInfo));
     const use = smallButton(account.id === current ? '已选中' : '切换到它');
@@ -1477,8 +1479,8 @@ async function renderWorlds() {
     const role = world.role || {};
     const row = el('div', 'acct');
     const top = el('div', 'top');
-    top.appendChild(el('span', 'title', String(world.worldId)));
-    if (role.worldId && role.worldId !== world.worldId) top.appendChild(el('span', 'id', '合服后 -> ' + role.worldId));
+    top.appendChild(el('span', 'title', world.worldName ? world.worldName + '（' + world.worldId + '）' : String(world.worldId)));
+    if (role.worldId && role.worldId !== world.worldId) top.appendChild(el('span', 'id', '合服后 -> ' + (role.worldName ? role.worldName + '（' + role.worldId + '）' : role.worldId)));
     top.appendChild(el('span', 'id', (role.nickname || '') + ' lv' + (role.level ?? '') + ' 战力' + fmt(role.power) + ' 上次登录 ' + when(role.lastLoginTime)));
     const enter = smallButton('进入');
     enter.onclick = () => enterWorld(world.worldId);
@@ -1497,7 +1499,7 @@ async function enterWorld(worldId) {
     const data = await call('/api/worlds/enter', { method: 'POST', body: JSON.stringify({ confirm: true, worldId, fromWorldId: 0 }) });
     if(owner!==current)return;
     const role = data.player || {};
-    $('worlds-hint').textContent = '已在 ' + worldId + '：' + (role.nickname || '') + ' lv' + (role.level ?? '') + ' 战力' + fmt(role.power);
+    $('worlds-hint').textContent = '已在 ' + (role.worldName ? role.worldName + '（' + worldId + '）' : worldId) + '：' + (role.nickname || '') + ' lv' + (role.level ?? '') + ' 战力' + fmt(role.power);
     await loadAccounts(false);
     renderAccounts();
     refreshOverview();
