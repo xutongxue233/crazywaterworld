@@ -67,6 +67,7 @@ import { readTreasureLoot, planTreasureLoot, treasureAutomationEnabled } from '.
 import { readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets } from './city-war.mjs';
 import { readWorldOnlineReward, worldOnlineRewardKey } from './world-online-rewards.mjs';
 import { readEquipmentForge, planEquipmentForge, forgeEnabled } from './equipment-forge.mjs';
+import { readAntiqueUpgrade, planAntiqueUpgrade, antiqueEnabled } from './antique-upgrade.mjs';
 import { watchBasePushes, surveyBaseAutomation, planBaseAutomation, baseDemands, previewNativeAutomation } from './base-automation.mjs';
 import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
@@ -819,7 +820,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         if (!config) throw new Error('缺少游戏配置表，暂时不能预览');
         const settings = validateSettings(payload.settings ?? settingsView(session).settings, { catalog: settingsCatalog(config) });
         const category = payload.category ?? 'base';
-        if (!['base', 'world', 'heroes', 'daily', 'runtime', 'cityWar', 'forge', 'activity', 'radar', 'pirateHunt', 'fleetDispatch','worldBoss','pirateSweep'].includes(category)) throw new Error('不支持的预览分类');
+        if (!['base', 'world', 'heroes', 'daily', 'runtime', 'cityWar', 'forge', 'antique', 'activity', 'radar', 'pirateHunt', 'fleetDispatch','worldBoss','pirateSweep'].includes(category)) throw new Error('不支持的预览分类');
 
         if (category === 'runtime') {
           json({ checkedAt: new Date().toISOString(), usage: usageFor(session).snapshot(), actions: [], counts: {}, viewOnly: true, scopeLabel: '运行安排（仅查看，不执行）',
@@ -871,6 +872,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             const selection=selectPirateAdvance(snapshot,settings.pirateHunt,{spent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0,pendingFuel:pendingPetrol(ledger)});
             const plan={actions:selection.reason?[]:[{kind:'pirateFirst',label:selection.fleet.name+' → '+selection.target.name+' '+selection.target.level+'级',costs:[{id:'汽油',num:selection.cost}]}],notes:[selection.reason||'首杀需在挂机页单独启动；此处只预览下一次派遣']};
             return {...output(plan,{fleets:snapshot.view.fleets?.length??0,targets:snapshot.view.targets?.length??0},'海盗首杀'),dispatch:{fleets:snapshot.view.fleets,fuel:snapshot.view.fuel,pending:pendingPetrol(ledger)}};
+          }
+          if (category === 'antique') {
+            const state = await readAntiqueUpgrade(client, protocol, config, session.player);
+            const plan = planAntiqueUpgrade(state, config, settings, { usage, keys: usageFor(session).keyRecords() });
+            return { ...output(plan, { antiques: state.antiques.length, suits: state.suits.length }, '藏品养成'),
+              antique: { count: state.antiques.length, suits: state.suits.length, masterLv: state.masterLv, gold: state.gold } };
           }
           if (category === 'cityWar') {
             const state = await readCityWar(client, protocol, config, session.player, settings.cityWar);
@@ -1899,7 +1906,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           session.loop.tasks = tasks;
         }
         if (session.client && payload.enabled) rewardSchedule(session.client).clearTask(task.key);
-        if (!Object.values(session.loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences)) stopLoop(session, '全部自动项目已暂停');
+        if (!Object.values(session.loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !antiqueEnabled(session.preferences)) stopLoop(session, '全部自动项目已暂停');
         emit(session, 'info', task.label + (payload.enabled ? nativePreferenceEnabled(session.preferences, task.key) ? '已启用' : '已保存为开启，当前分组总开关仍暂停此动作' : '已暂停'));
         json(loopView(session));
         return;
@@ -1938,7 +1945,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     if (loop.running) throw new Error('这个账号的挂机已在运行');
     if (!Number.isSafeInteger(rounds) || rounds < 0) throw new Error('轮数必须是非负整数');
     if (!Number.isSafeInteger(everySeconds) || everySeconds < 1 || everySeconds > 86400) throw new Error('间隔秒数需要为 1–86400 的整数');
-    if (!Object.values(loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !cityWarEnabled(session.preferences) && !forgeEnabled(session.preferences)) throw new Error('请至少启用一个自动项目');
+    if (!Object.values(loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !cityWarEnabled(session.preferences) && !forgeEnabled(session.preferences) && !antiqueEnabled(session.preferences)) throw new Error('请至少启用一个自动项目');
     // Persist only continuous runs for restart. Reserve this account before login awaits.
     saveAutomation(account.id, { enabled: rounds === 0, everySeconds });
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
@@ -1982,7 +1989,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             emit(session, 'info', formatLoopRound(summary), summary.world.population ? { worldUpdated: true } : undefined);
           },
           onStep(entry) {
-            const statusKey = (entry.step?.request==='SetFactoryAutoProduceRequest'?'nativeProduce':null) || entry.taskKey || (['万吨巨轮','城战接续','装备锻造','联盟情报'].includes(entry.category)?entry.category:null) || (entry.step?.kind ? worldTaskKey(entry.step.kind) : null) || entry.category || entry.title || entry.label;
+            const statusKey = (entry.step?.request==='SetFactoryAutoProduceRequest'?'nativeProduce':null) || entry.taskKey || (['万吨巨轮','城战接续','装备锻造','藏品养成','联盟情报'].includes(entry.category)?entry.category:null) || (entry.step?.kind ? worldTaskKey(entry.step.kind) : null) || entry.category || entry.title || entry.label;
             loop.controlStatus ??= new Map();
             const previous=loop.controlStatus.get(statusKey);
             const text=entry.reason||entry.error||entry.note||(entry.ok?'最近执行成功':'等待检查');
@@ -2061,7 +2068,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       singleTasks: {pirate:session.pirateAdvance.view(), stages:session.stages?.view?.(), mutual:session.mutualAid?.view?.()},
       pirateAdvance: session.pirateAdvance.view(),
       controls: automationControlView(settingsView(session).settings).map(control=>{
-        const aliases={'factory.produce':'startProduce','factory.cooperateNative':'nativeProduce','factory.gain':'collect','factory.speedUp':'speedUp','building.build':'build','building.upgrade':'upgrade','building.finish':'finishUpgrade','resident.enabled':'finishOrder','resident.reroll':'denyOrder','farm.enabled':'farm','radar.enabled':'联盟情报','treasure.enabled':'万吨巨轮','cityWar.enabled':'城战接续','forge.enabled':'装备锻造','dailies.claimTasks':'dailyRewards','dailies.claimDailyChest':'chests','dailies.claimWeeklyChest':'chests','dailies.claimGift':'gift','resident.rewards':'orderDaily','trials.paid':'trialPaidSweep','trials.ads':'trialAdSweep'};
+        const aliases={'factory.produce':'startProduce','factory.cooperateNative':'nativeProduce','factory.gain':'collect','factory.speedUp':'speedUp','building.build':'build','building.upgrade':'upgrade','building.finish':'finishUpgrade','resident.enabled':'finishOrder','resident.reroll':'denyOrder','farm.enabled':'farm','radar.enabled':'联盟情报','treasure.enabled':'万吨巨轮','cityWar.enabled':'城战接续','forge.enabled':'装备锻造','antique.enabled':'藏品养成','dailies.claimTasks':'dailyRewards','dailies.claimDailyChest':'chests','dailies.claimWeeklyChest':'chests','dailies.claimGift':'gift','resident.rewards':'orderDaily','trials.paid':'trialPaidSweep','trials.ads':'trialAdSweep'};
         const key=control.taskKey||aliases[control.key]||({'worldBoss.enabled':'worldBoss','gather.fishing':'autoFish','gather.upgradeFishing':'fishEnhance','gather.diving':'autoDive','gather.salvage':'autoSalvage','gather.upgradeDiving':'diveEnhance','gather.upgradeSalvage':'salvageEnhance','gather.floaters':'floaters','gather.antiqueFloaters':'antiqueFloaters','cargo.enabled':'cargo','building.collect':'collect','building.supply':'buildSupply','building.speedUp':'speedUp','gold.enabled':'paidGold'})[control.key]||control.key;
         const recorded=loop.controlStatus?.get(key),observed=rewards?.status(key);
         let state=(observed?.checkedAt??0)>(recorded?.checkedAt??0)?observed:recorded||observed;

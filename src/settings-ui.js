@@ -242,6 +242,23 @@ const configGroups = [
     configField('heroes.keepExp', '保留英雄经验', 'number'), configField('heroes.targetLevel', '目标等级', 'number', { unit: '级', help: '0 表示采用游戏当前允许的上限。' }),
     configField('heroes.targetStar', '目标星级', 'number', { unit: '星', help: '0 表示采用游戏上限。' }),
   ] },
+  { id: 'antique', title: '藏品养成', category: 'heroes', fields: [
+    configField('antique.enabled', '藏品养成总开关', 'switch', { help: '只在已有碎片、经验或金币足够时操作，不购买、不消耗钻石。结果未知时保留记录，不重复发送。' }),
+    configField('antique.activate', '自动激活藏品', 'switch', { when: d => d.antique.enabled, help: '使用对应藏品碎片激活，稀有/史诗/传说/超凡分别需要 10/10/10/50 个碎片。万能碎片不会自动兑换。' }),
+    configField('antique.activateQualities', '激活品质', 'multi', { catalog: 'antiqueQualities', empty: '未选择，不激活', when: d => d.antique.enabled && d.antique.activate }),
+    configField('antique.star', '自动升星', 'switch', { when: d => d.antique.enabled, help: '按当前星级消耗对应颜色碎片；已激活藏品按品质和顺序处理。' }),
+    configField('antique.starQualities', '升星品质', 'multi', { catalog: 'antiqueQualities', empty: '未选择，不升星', when: d => d.antique.enabled && d.antique.star }),
+    configField('antique.targetStar', '升星目标星级', 'number', { unit: '星', when: d => d.antique.enabled && d.antique.star, help: '0 表示升到当前配置最高星级。' }),
+    configField('antique.universal', '允许万能碎片补足升星', 'switch', { when: d => d.antique.enabled && d.antique.star, help: '只在普通碎片不足时使用；不会用于激活。' }),
+    configField('antique.master', '自动提升藏品大师等级', 'switch', { when: d => d.antique.enabled, help: '消耗藏品大师徽章，并满足下一等级要求的总星级。' }),
+    configField('antique.targetMasterLevel', '大师目标等级', 'number', { unit: '级', when: d => d.antique.enabled && d.antique.master, help: '0 表示升到当前配置最高等级。' }),
+    configField('antique.suit', '自动激活/升级套装', 'switch', { when: d => d.antique.enabled, help: '普通套装需集齐本套装藏品；红色套装至少激活 2 件。升级消耗金币和对应颜色藏品经验。' }),
+    configField('antique.suitQualities', '套装品质', 'multi', { catalog: 'antiqueQualities', empty: '未选择，不升级套装', when: d => d.antique.enabled && d.antique.suit }),
+    configField('antique.goldReserve', '套装升级后保留金币', 'number', { unit: '金币', when: d => d.antique.enabled && d.antique.suit }),
+    configField('antique.dailyGoldLimit', '每日套装金币预算', 'number', { unit: '金币', when: d => d.antique.enabled && d.antique.suit, help: '0 表示不限额；跨日重置，未确认的消耗仍占预算。' }),
+    configField('antique.maxActions', '每轮最多执行动作', 'number', { unit: '项', help: '包含激活、升星、大师和套装升级。' }),
+    configField('antique.checkEverySeconds', '藏品检查间隔', 'number', { unit: '秒' }),
+  ] },
   { id: 'rewards', title: '任务与奖励', category: 'daily', fields: [
     configField('tasks.main', '领取主线奖励'), configField('tasks.branch', '领取支线奖励'), configField('tasks.achievements', '领取成就奖励'),
     configField('dailies.enabled', '日常总开关', 'switch', { help: '控制本组每日任务与奖励。基地页的付费点金独立设置。' }), configField('dailies.claimTasks', '领取每日任务奖励'),
@@ -874,7 +891,7 @@ async function configPreview() {
   configBusy(true); configUpdateState(); $('config-preview').textContent = '读取真实状态…';
   try {
     const selected=scope.startsWith('module:')?configEditor.groups.get(scope.slice(7)):null;
-    const dedicated={treasure:'world',radar:'radar','fleet-dispatch':'fleetDispatch','pirate-sweep':'pirateSweep','pirate-hunt':'pirateHunt',worldBoss:'worldBoss',cityWar:'cityWar',forge:'forge',heroes:'heroes',runtime:'runtime'};
+    const dedicated={treasure:'world',radar:'radar','fleet-dispatch':'fleetDispatch','pirate-sweep':'pirateSweep','pirate-hunt':'pirateHunt',worldBoss:'worldBoss',cityWar:'cityWar',forge:'forge',antique:'antique',heroes:'heroes',runtime:'runtime'};
     const runtime=await call('/api/loop');
     const source=selected?dedicated[selected.id]:scope;
     let data;
@@ -954,6 +971,10 @@ async function configPreview() {
       const state = data.forge;
       root.append(el('p', 'config-help', '当前赛季 ' + (state.season ?? '未确认') + ' · 锻造等级 ' + (state.forgeLevel ?? '未确认') + ' · 金币 ' + (state.gold ?? '未确认')));
       if (state.factories?.length) root.append(table(['工厂', '当前状态', '原生自动锻造', '工具检查'], state.factories.map(f => [f.buildingId, f.state, f.nativeAuto ? '开启' : '关闭', f.reason || '满足'])));
+    }
+    if (data.antique) {
+      const state = data.antique;
+      root.append(el('p', 'config-help', '已激活藏品 ' + (state.count ?? '未确认') + ' 件 · 套装 ' + (state.suits ?? '未确认') + ' 套 · 大师等级 ' + (state.masterLv ?? '未确认') + ' · 金币 ' + (state.gold ?? '未确认')));
     }
     const list = el('ol', 'config-preview-list');
     for (const action of data.actions) { const row = el('li', '', action.label); if (action.costs.length) row.append(el('span', 'config-preview-cost', '消耗：' + action.costs.map(cost => cost.name + ' ×' + cost.num).join('、'))); list.append(row); }

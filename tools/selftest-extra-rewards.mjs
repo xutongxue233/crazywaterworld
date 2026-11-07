@@ -90,7 +90,7 @@ const onlineDue = worldOnlineState(config, onlinePlayer, { num: 0, updateTime: 0
 if (onlineDue.status === 'ready') {
   let stage = 0;
   const client = fakeClient({
-    CounterInfoRequest: () => ({ counters: [{ type: 'DAILY_WORLD_ONLINE_RWD', num: { low: stage, high: 0 }, updateTime: now() }] }),
+    CounterInfoRequest: () => ({ counters: [{ type: 'DAILY_WORLD_ONLINE_RWD', num: { low: stage, high: 0 }, updateTime: 0 }] }),
     GotWorldOnlineRwdRequest: () => { stage = 1; return reward('汽油', 7000); },
   });
   const reports = await run(client, onlinePlayer, ['worldOnline']);

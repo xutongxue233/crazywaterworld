@@ -42,6 +42,7 @@ import {watchTreasureTravel,matchesFollowDeparture} from './treasure-follow.mjs'
 import {watchFleetMaintenance,fleetMaintenanceEnabled,fleetMaintenanceInterval,runFleetMaintenance} from './fleet-maintenance.mjs';
 import { cityWarEnabled, cityWarReservedFleets, runCityWar } from './city-war.mjs';
 import { forgeEnabled, runEquipmentForge } from './equipment-forge.mjs';
+import { antiqueEnabled, runAntiqueUpgrade } from './antique-upgrade.mjs';
 import { planHeroes, runHeroPlan } from './heroes.mjs';
 import { serviceGuildOrders } from './guild-orders.mjs';
 import { serviceRadar } from './radar.mjs';
@@ -119,8 +120,8 @@ export async function runLoop(client, protocol, {
   let treasureAt = 0;
   let lastTreasureNotes = '';
   let radarAt=0;
-  let cityWarAt = 0, forgeAt = 0, lastCityWarNotes = '', lastForgeNotes = '';
-  let cityWarState = null, cityWarPreference = null, forgePreference = null, cityFuelCeiling = null;
+  let cityWarAt = 0, forgeAt = 0, antiqueAt = 0, lastCityWarNotes = '', lastForgeNotes = '', lastAntiqueNotes = '';
+  let cityWarState = null, cityWarPreference = null, forgePreference = null, antiquePreference = null, cityFuelCeiling = null;
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
   const total = rounds > 0 ? rounds : Infinity;
   const travel=watchTreasureTravel(client);
@@ -313,6 +314,20 @@ export async function runLoop(client, protocol, {
         lastForgeNotes = text;
       } catch (error) { phaseFailure('world', '装备锻造检查', error); }
       finally { rewards?.expect('装备锻造',rewards.now()+(getSettings()?.forge?.checkEverySeconds??30));forgeAt = Date.now() + (getSettings()?.forge?.checkEverySeconds ?? 30) * 1000; }
+    }
+    async function checkAntique() {
+      if (stop.aborted || !antiqueEnabled(getSettings()) || (Date.now() < antiqueAt && antiquePreference === getSettings().antique)) return;
+      antiquePreference = getSettings().antique;
+      try {
+        const result = await runAntiqueUpgrade(client, protocol, config, player, { getSettings, ledger: usageLedger,
+          enabled: () => !stop.aborted && client.connected && antiqueEnabled(getSettings()),
+          onStep(entry) { summary.world.planned++; summary.world.results.push(entry); stepLog('world')({ ...entry, category: '藏品养成', title: entry.step?.label ?? '藏品养成' }); },
+        });
+        const text = (result.notes ?? []).join('；');rewards?.observe('藏品养成',text||'本次已核对，藏品养成动作结果见日志');
+        if (text && text !== lastAntiqueNotes) stepLog('world')({ title: '藏品养成检查', category: '藏品养成', skipped: true, reason: text });
+        lastAntiqueNotes = text;
+      } catch (error) { phaseFailure('world', '藏品养成检查', error); }
+      finally { rewards?.expect('藏品养成',rewards.now()+(getSettings()?.antique?.checkEverySeconds??60));antiqueAt = Date.now() + (getSettings()?.antique?.checkEverySeconds ?? 60) * 1000; }
     }
 
     const adContext = { ...adChannel, player, getSettings, enabled, ledger: usageLedger, scheduler: rewards };
@@ -782,6 +797,7 @@ export async function runLoop(client, protocol, {
         } catch (error) { phaseFailure('tasks', '自动英雄养成', error); }
       }
       await checkForge();
+      await checkAntique();
       await checkDispatch();
     });
     if (stop.aborted) break;
@@ -800,14 +816,16 @@ export async function runLoop(client, protocol, {
           const treasureNext = treasureAutomationEnabled(getSettings()) ? treasureAt : Infinity;
           const cityNext = cityWarEnabled(getSettings()) ? cityWarAt : Infinity;
           const forgeNext = forgeEnabled(getSettings()) ? forgeAt : Infinity;
+          const antiqueNext = antiqueEnabled(getSettings()) ? antiqueAt : Infinity;
           const radarNext=getSettings()?.radar.enabled?radarAt:Infinity;
           const maintenanceNext=fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity;
-          const wakeAt = Math.min(maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext);
+          const wakeAt = Math.min(maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext, antiqueNext);
           if (wakeAt >= nextRound) break;
           await waitWithFollow(Math.max(0, wakeAt - Date.now()), signal);
           if (Date.now() >= nextRound) break;
           if (Math.min(maintenanceNext,fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity,radarNext,cityNext,treasureNext,treasureAutomationEnabled(getSettings())?treasureAt:Infinity)<=Date.now()) await schedule(checkDispatch);
           if (forgeNext <= Date.now() && forgeEnabled(getSettings())) await schedule(checkForge);
+          if (antiqueNext <= Date.now() && antiqueEnabled(getSettings())) await schedule(checkAntique);
 
           if (afkAt <= Date.now() && enabled('afk')) {
             afkDeadline = undefined;

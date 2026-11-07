@@ -51,6 +51,9 @@ export const DEFAULT_SETTINGS = {
     dailyDispatchLimit: 10, reserveDuringWar: true, checkEverySeconds: 15 },
   forge: { decompose: false, decomposeQualities: [], enabled: false, buildingIds: [], recipeIds: [], universal: false, materialReserve: 0,
     universalReserve: 0, goldReserve: 0, dailyLimit: 5, dailyGoldLimit: 100000, checkEverySeconds: 30 },
+  antique: { enabled: false, activate: false, activateQualities: [], star: false, starQualities: [], targetStar: 0, universal: false,
+    master: false, targetMasterLevel: 0, suit: false, suitQualities: [], goldReserve: 0, dailyGoldLimit: 20000,
+    maxActions: 20, checkEverySeconds: 60 },
 };
 
 const int = (max = 1_000_000_000, min = 0) => ({ kind: 'number', min, max });
@@ -97,6 +100,11 @@ const constraints = {
   'forge.buildingIds': strings(10), 'forge.recipeIds': strings(100), 'forge.materialReserve': int(),
   'forge.universalReserve': int(), 'forge.goldReserve': int(), 'forge.dailyLimit': int(1000, 1),
   'forge.dailyGoldLimit': int(1000000000, 1), 'forge.checkEverySeconds': int(300, 10),
+  'antique.activateQualities': { ...strings(4), values: ['BLUE', 'PURPLE', 'ORANGE', 'RED'] },
+  'antique.starQualities': { ...strings(4), values: ['BLUE', 'PURPLE', 'ORANGE', 'RED'] },
+  'antique.suitQualities': { ...strings(4), values: ['BLUE', 'PURPLE', 'ORANGE', 'RED'] },
+  'antique.targetStar': int(25), 'antique.targetMasterLevel': int(100), 'antique.goldReserve': int(),
+  'antique.dailyGoldLimit': int(100000000), 'antique.maxActions': int(100, 1), 'antique.checkEverySeconds': int(3600, 10),
 };
 
 export class SettingsError extends Error {
@@ -198,6 +206,10 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
   }
   if(output.forge.decompose && !output.forge.decomposeQualities.length)errors['forge.decomposeQualities']='请选择可自动分解的装备品质';
   if(output.pet.release && !output.pet.releaseQualities.length)errors['pet.releaseQualities']='请选择可自动放生的海兽品质';
+  if (output.antique.enabled && ![output.antique.activate, output.antique.star, output.antique.master, output.antique.suit].some(Boolean)) errors['antique.enabled'] = '请至少开启一项藏品养成动作';
+  if (output.antique.activate && !output.antique.activateQualities.length) errors['antique.activateQualities'] = '请选择自动激活的藏品品质';
+  if (output.antique.star && !output.antique.starQualities.length) errors['antique.starQualities'] = '请选择自动升星的藏品品质';
+  if (output.antique.suit && !output.antique.suitQualities.length) errors['antique.suitQualities'] = '请选择自动升级的藏品套装品质';
   if (['cityWar','pirateHunt','treasure','radar'].some(k=>!output.fleetDispatch.priority.includes(k))) errors['fleetDispatch.priority']='请保留全部任务，只调整顺序';
   for(const key of ['worldBoss','follow'])if(!output.fleetDispatch.priority.includes(key))output.fleetDispatch.priority.push(key);
   if (output.pirateHunt.fleetIds.some(value=>! /^[1-9]\d*远征船$/.test(value))) errors['pirateHunt.fleetIds']='请选择有效的海盗首杀舰队';
@@ -269,6 +281,7 @@ export function settingsCatalog(config) {
     forgeBuildings: rows('BuildingUnlockCfg').filter(r => r.buildingType === '装备厂').map(r => option(r.buildingId, r.buildingId)),
     equipQualities: [['GREEN','绿色'],['BLUE','蓝色'],['PURPLE','紫色'],['ORANGE','橙色'],['RED','红色']].map(([v,n])=>option(v,n)),
     petQualities: [['BLUE','蓝色'],['PURPLE','紫色'],['ORANGE','橙色'],['RED','红色']].map(([v,n])=>option(v,n)),
+    antiqueQualities: [['BLUE','蓝色'],['PURPLE','紫色'],['ORANGE','橙色'],['RED','红色']].map(([v,n])=>option(v,n)),
     forgeRecipes: rows('BuildingEquipMakeCfg').map(r => option(r.makeId, r.type + ' · ' + (r.costItem ?? []).map(([id, num]) => (config?.materialName?.(id) || id) + '×' + num).join('、') + ' · 赛季' + r.season + '起')),
   };
 }
@@ -316,7 +329,8 @@ export function importAutomationSettings(document, options) {
   if (!plain(document) || ![SETTINGS_FORMAT, LEGACY_SETTINGS_FORMAT].includes(document.format) || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
   // 原版本1导出没有巨轮分组，只补新增默认值；既有分组仍严格校验。
   const input = plain(document.settings) ? { ...document.settings } : document.settings;
-  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input?.antique)) input.antique = { ...DEFAULT_SETTINGS.antique, ...input.antique };
   if (plain(input?.treasure)) {
     input.treasure = { ...input.treasure };
     for (const key of ['avoidPlayerIds', 'participationMode', 'repeatAttack', 'autoRepair', 'maxRepairCost', 'dailyRepairPetrolLimit', 'personalProgressLimit']) {

@@ -26,6 +26,7 @@ add('worldBoss.enabled','世界Boss每日首战派遣','世界与挑战',{help:'
 add('radar.enabled','联盟情报自动处理','世界与挑战',{help:'逐条领取已完成奖励，并用所选空闲舰队处理新情报。不会开启游戏原生月卡自动功能；消耗遵守情报预算。'});
 add('treasure.enabled','万吨巨轮自动参与','世界与挑战');
 add('cityWar.enabled','城战自动接续','世界与挑战');
+add('antique.enabled','藏品自动养成','英雄',{help:'按游戏配置 → 英雄 → 藏品养成执行激活、升星、大师等级和套装升级；只使用现有资源，不购买或消耗钻石。'});
 add('trials.paid','试炼钻石扫荡','世界与挑战');
 add('trials.ads','试炼免广告扫荡','世界与挑战');
 const nativeKeys = new Set(['trialPaidSweep','trialAdSweep','diveEnhance','autoDive','salvageEnhance','autoSalvage','autoFish','fishEnhance','floaters','antiqueFloaters','cargo','farm','collect','finishUpgrade','build','buildSupply','upgrade','finishOrder','startProduce','speedUp','denyOrder','paidGold','dailyRewards','chests','gift','tasks']);
@@ -47,6 +48,7 @@ const idleModules = {
  'treasure.enabled':['世界','treasure','万吨巨轮'], 'cityWar.enabled':['世界','cityWar','城战接续'],
  'schedule.pirate':['世界','pirate-sweep','海盗日常扫荡'],
  'heroes.enabled':['英雄','heroes','英雄养成'],
+ 'antique.enabled':['英雄','antique','藏品养成'],
  'dailies.enabled':['日常与活动','rewards','每日任务与奖励'],
  'loop.tasks':['日常与活动','rewards','主线、支线与成就'],
  'loop.dailies':['日常与活动','daily-actions','日常行动'],

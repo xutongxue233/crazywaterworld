@@ -726,3 +726,12 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - 当前协议没有 `LeagueFormationRequest`；本人的积分赛编队从 `LeagueInfoResponse.ownFormations`（字段 5，重复 `LeagueFormation`）读取，`LeagueFormationResponse` 只用于保存编队。
 - `WorldCity` 的本盟现场数量由 `attackFleetNum + priorityAtkFleetNum` 加上 `battlePoints` 中左侧非 NPC 且属于本盟的交战点组成；已同步在途舰队从 `WorldInfoResponse.fleets` 读取：`state == 2`、`targetCityId` 为目标城、`owner.guildId` 为本盟，并按 `owner.playerId` 排除 MyFleets 已统计的本人舰队。归属或数量无法确认时不当作 0。
 - `SetFleetAutoFightRequest { buildingIds[], isOn }` 没有配套响应；关闭后回读 `MyFleetsResponse.fleets[].autoFight.isOn` 确认。城战原生委任设置 -1 按 VIP 额度等待，0 关闭后接管，N 表示原生先用 N 次再关闭。
+
+## 16. 藏品养成协议（v76）
+
+- `AllAntiqueResponse`：字段 1 `antiques[]`（`DisplayAntique {id, star}`）、字段 2 `suits[]`（`DisplayAntiqueSuit {id, level, effectiveNum, advEffectValue}`）、字段 3 `masterLv`。
+- 激活：`ActivateAntiqueRequest {id}`，消耗 `AntiqueBaseCfg.activeFrag` 个 `id + "碎片"`；不提供万能碎片自动兑换。
+- 升星：`AntiqueStarUpRequest {id, universal}`；目标星级 `current + 1`，消耗数量取 `AntiqueStarCfg[target]` 中按藏品颜色对应的 `consumeBlue/consumePur/consumeOra/consumeRed`。`universal:true` 时普通碎片不足可用 `AntiqueBaseCfg.universalItemId` 补足。
+- 套装：`AntiqueSuitLevelUpRequest {id}`。普通套装激活需集齐本套装全部藏品，红色套装（`colorIndex >= 4`）至少激活 2 件；激活本身不消耗资源。升级消耗 `AntiqueSuitLvCfg` 中 `maxLevel >= 目标等级` 的首行，上限还要受 `AntiqueMasterLvCfg[masterLv].maxSuitLv` 限制。
+- 大师：`AntiqueMasterLevelUpRequest`（无参数）返回 `AntiqueMasterLevelUpResponse.masterLv`；目标等级要求 `AntiqueMasterLvCfg.totalStarNum` 不大于当前已激活藏品星级总和，消耗 `costArr`（通常为“藏品大师经验”）。
+- 当前协议没有激活、升星、套装升级的专属响应，成功时通过 `SCAntiqueUpdate` / `SCAntiqueSuitUpdate` 推送并回读 `AllAntiqueResponse` 确认。
