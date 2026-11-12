@@ -10,7 +10,7 @@
 
 ```powershell
 npm start                     # prestart 先构建界面，再启动；端口 17321
-.\start-console.cmd           # 用户入口，端口 17323，启动控制台，不自动开浏览器，只输出地址
+.\start-console.cmd           # 用户入口，端口 17323，不自动开浏览器，输出地址和实时业务日志
 .\start-console.cmd url       # 只输出地址并保持窗口，不启动控制台
 .\start-console.cmd status    # 只检查 MITM 证书状态，不启动控制台
 npm run build:ui              # 改 TSX 或 theme.css 后运行，提交 src/ui/dist 产物
@@ -58,6 +58,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - `loop.mjs` 编排自动任务，结合开关、状态、到期时间、推送和账本决定何时复查，并非第二轮计划必然为空。CLI 与控制台共用它，是否传 `isEnabled` 会影响路径，修改需检查两侧。
 - `server.mjs` 管理 HTTP API 与账号会话；同账号手动和挂机写操作经 `enqueue` 串行执行，新增写路由也必须接入。暂停、切号或等待期间关闭开关后，发送前再次检查。
 - 挂机一轮是一个 `enqueue` 任务，可持续一分钟以上。新增只读路由用 `readJob` 或 `progressionJob(..., { read: true })`，队列忙时经 `GameClient.interleaveRead` 插在两次请求之间。`PromptResponse` 没有请求编号，不能让读取与其他请求同时在途；这条通道只能用于确实不改变游戏状态的读取。
+- 网页仅控制和订阅日志，关闭网页不停止后台 `loop.job`。业务日志经 `createConsole({ onLog })` 输出到 CLI；日志回调和 SSE 异常不能影响游戏任务，显式关闭控制台时再关闭 SSE。验证使用 `selftest-console-background.mjs` 的隔离账号与假客户端。
 - 连接断开或被顶号时，`connectionLost` 停止挂机并清除持久开关，不自动重连。自动重连和 Webhook 通知已暂时移除，需要时从 git 历史恢复 `reconnect.mjs`、`notify.mjs`。
 - `reward-schedule.mjs` 记录奖励下次检查时间，相关推送提前唤醒。推送只触发串行检查，不能另开并行派遣绕过预算。
 - `accounts.mjs`、`capture.mjs`、`tools/mitm-*.mjs` 管理账号与采集；采集会临时改系统代理和用户证书。

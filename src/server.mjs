@@ -78,6 +78,7 @@ import { createPhoneLogin } from './phone-login.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
+const STREAM_BUFFER_LIMIT = 1024 * 1024;
 const RUN_VERSION = new Date().toISOString();
 const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
@@ -109,7 +110,7 @@ const pageAsset = {
   etag: '"' + createHash('sha1').update(pageRaw).digest('hex').slice(0, 16) + '"',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321 }) {
+export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) {
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
@@ -134,6 +135,25 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     while (list.length > LOG_LIMIT) list.shift();
   };
 
+  // Browsers only subscribe to progress. A closed or slow tab must never stop
+  // the account's background job or keep buffering logs without a limit.
+  function writeStream(res, payload) {
+    if (res.destroyed || res.writableEnded) { streams.delete(res); return false; }
+    try {
+      if (res.writableLength + Buffer.byteLength(payload) > STREAM_BUFFER_LIMIT) {
+        streams.delete(res);
+        res.destroy();
+        return false;
+      }
+      res.write(payload);
+      return true;
+    } catch {
+      streams.delete(res);
+      res.destroy();
+      return false;
+    }
+  }
+
   function emit(session, level, message, extra) {
     const display = describeLogError(message, extra);
     const detail = [extra?.diagnostic, display.detail].filter(Boolean).join('\n');
@@ -141,10 +161,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
+    // Logging is an observer too: a broken terminal sink cannot cancel a job.
+    try { if (onLog) Promise.resolve(onLog(entry)).catch(() => {}); } catch { /* Preserve the in-memory log. */ }
     const payload = `id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`;
     for (const res of streams) {
       if (entry.account !== null && res.account !== entry.account) continue;
-      res.write(payload);
+      writeStream(res, payload);
     }
     return entry;
   }
@@ -359,7 +381,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         session.player.power = body.power;
       }
       if (session.client === instance && ['SCGuildAidHelp', 'SCGuildAidRemove', 'SCGuildAidNew'].includes(name) && (body?.type ?? 0) === 0) {
-        for (const stream of streams) if (stream.account === session.id) stream.write('event: guild-aid-changed\ndata: {}\n\n');
+        for (const stream of streams) if (stream.account === session.id) writeStream(stream, 'event: guild-aid-changed\ndata: {}\n\n');
       }
       if (session.client === instance && session.player) {
         if (name === 'SCJoinGuild') session.player.guildId = body.guildId;
@@ -735,6 +757,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const route = `${req.method} ${parsed.pathname}`;
     const acceptsGzip = /\bgzip\b/.test(req.headers['accept-encoding'] ?? '');
     const json = (value, code = 200) => {
+      if (res.destroyed || res.writableEnded) return;
       const text = JSON.stringify(value);
       const headers = { 'content-type': 'application/json; charset=utf-8' };
       // 轮询和地图响应动辄几十上百 KB，通过隧道用手机访问时差别明显。
@@ -1036,7 +1059,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         session.logClearBefore = cleared.before;
         session.logClearAt = cleared.at;
         for (const stream of streams) {
-          if (stream.account === session.id) stream.write(`event: logs-cleared\ndata: ${JSON.stringify(cleared)}\n\n`);
+          if (stream.account === session.id) writeStream(stream, `event: logs-cleared\ndata: ${JSON.stringify(cleared)}\n\n`);
         }
         json(cleared);
         return;
@@ -1048,19 +1071,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           connection: 'keep-alive',
         });
         res.account = parsed.searchParams.get('account');
+        streams.add(res);
+        res.once('close', () => streams.delete(res));
         const logSession = sessions.get(res.account);
         const since = Math.max(Number(req.headers['last-event-id'] ?? 0) || 0, logSession?.logClearBefore ?? 0);
         if (logSession?.logClearAt) {
-          res.write(`event: logs-cleared\ndata: ${JSON.stringify({ before: logSession.logClearBefore, at: logSession.logClearAt })}\n\n`);
+          if (!writeStream(res, `event: logs-cleared\ndata: ${JSON.stringify({ before: logSession.logClearBefore, at: logSession.logClearAt })}\n\n`)) return;
         }
         const entries = [...globalLog, ...(logSession?.log ?? [])]
           .sort((a, b) => a.id - b.id).slice(-LOG_LIMIT);
         for (const entry of entries) {
-          if (entry.id > since) res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`);
+          if (entry.id > since && !writeStream(res, `id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`)) return;
         }
         res.flushHeaders();
-        streams.add(res);
-        res.on('close', () => streams.delete(res));
         return;
       }
 
@@ -2042,7 +2065,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
       history: [], error: null, controller: new AbortController() });
     const { signal } = loop.controller;
-    emit(session, 'info', `自动挂机开始，每 ${everySeconds} 秒检查一次`);
+    emit(session, 'info', `自动挂机开始，${rounds === 0 ? '持续运行' : '共 ' + rounds + ' 轮'}，每 ${everySeconds} 秒检查一次；关闭网页后继续运行，请保留启动窗口`);
     let credentialFailed = false;
     loop.job = (async () => {
       try {
@@ -2186,12 +2209,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   const server = http.createServer((req, res) => {
+    res.on('error', () => { streams.delete(res); res.destroy(); });
+    req.on('error', () => res.destroy());
     req.setEncoding('utf8');
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
     });
-    req.on('end', () => handle(req, res, body));
+    req.on('end', () => {
+      void handle(req, res, body).catch(error => {
+        emit(null, 'error', '控制台请求处理失败：' + error.message);
+        res.destroy();
+      });
+    });
   });
 
   return {
@@ -2199,17 +2229,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     listen: () =>
       new Promise((resolve) => {
         server.listen(port, host, () => {
-          emit(null, 'info', `控制台已启动 http://${host}:${port}`);
+          const address = `http://${host}:${server.address().port}`;
+          emit(null, 'info', `控制台已启动 ${address}`);
           for (const account of loadStore().accounts) {
             if (!account.automation?.enabled || account.automation.paused) continue;
             const session = sessionFor(account.id);
             try { startLoop(session, account); }
             catch (error) { emit(session, 'error', `无法恢复挂机：${error.message}`); }
           }
-          resolve(`http://${host}:${port}`);
+          resolve(address);
         });
       }),
     close: () => {
+      for (const stream of streams) stream.destroy();
+      streams.clear();
       for (const session of sessions.values()) {
         session.loop.controller?.abort();
         session.pirateAdvance.stop('控制台已关闭'); session.stages.stop('控制台已关闭'); session.mutualAid.stop('控制台已关闭'); for (const task of session.trials.values()) task.stop('控制台已关闭');

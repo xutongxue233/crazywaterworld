@@ -14,7 +14,7 @@ export function idlePanel(tasks: AutoTask[]) {
   return renderToStaticMarkup(<div className="grid gap-3">
     <Card className="idle-schedule">
       <CardHeader>
-        <CardTitle className="title-with-help">定时挂机<HelpTip title="定时挂机">轮数填 0 表示持续运行。每轮只执行当前账号已开启的任务。</HelpTip><span className="dim heading-status" id="loop-hint" role="status" /></CardTitle>
+        <CardTitle className="title-with-help">定时挂机<HelpTip title="定时挂机">轮数填 0 表示持续运行。每轮只执行当前账号已开启的任务。关闭网页后继续在后台运行，日志同步输出到启动窗口；请保持启动窗口打开。</HelpTip><span className="dim heading-status" id="loop-hint" role="status" /></CardTitle>
       </CardHeader>
       <CardContent>
         <div className="loop-form">
@@ -23,6 +23,7 @@ export function idlePanel(tasks: AutoTask[]) {
           <Button id="loop-start" disabled>开始挂机</Button>
           <Button id="loop-stop" variant="outline" disabled>暂停挂机</Button>
         </div>
+        <p className="dim">关闭网页后继续挂机，日志同步显示在启动窗口。持续运行请将轮数设为 0，并保持启动窗口打开。</p>
       </CardContent>
     </Card>
     <Card className="idle-notes">

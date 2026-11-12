@@ -18,6 +18,7 @@ import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { runStages, stageFailureLimit } from './stages.mjs';
 import { createPhoneLogin } from './phone-login.mjs';
 import { worldName } from './world-name.mjs';
+import { formatConsoleLog } from './console-log.mjs';
 
 const READ_ONLY_PROBES = [
   'AllResourceRequest',
@@ -1000,12 +1001,10 @@ async function main() {
   }
 
   const port = Number(process.env.CW_PORT ?? 17321);
-  const console_ = createConsole({ port });
+  const console_ = createConsole({ port, onLog: entry => console.log(formatConsoleLog(entry)) });
   const url = await console_.listen();
   const browser = process.env.CW_NO_BROWSER ? null : openBrowser(url);
-  if (process.env.CW_QUIET_START) {
-    console.log(url);
-  } else {
+  if (!process.env.CW_QUIET_START) {
     console.log(`console: ${url}${browser ? ` (via ${browser})` : ''}`);
     const store = loadStore();
     if (!store.accounts.length) {
@@ -1014,6 +1013,7 @@ async function main() {
       console.log(`账号 ${store.accounts.length} 个，当前: ${describeAccount(pickAccount(store, null)).title}`);
     }
   }
+  console.log('关闭网页后挂机会继续，运行日志显示在此窗口。请保持此窗口打开；Ctrl+C 或关闭此窗口会结束后台进程。');
 }
 
 main().catch((error) => {
