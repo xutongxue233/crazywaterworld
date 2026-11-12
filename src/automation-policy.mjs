@@ -1,6 +1,7 @@
 import { normalize } from './worlds.mjs';
 import { goldAccountKey, reserveGold, rejectGold, cancelUnsentGold } from './gold-reservations.mjs';
-import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, pendingFarmMaterialSpends } from './order-reservations.mjs';
+import { assertFarmPlantingReady, farmInventory, farmPlantArgs, readFarmMaterialState, settleFarmMaterialState } from './farm-planting.mjs';
 
 export class AutomationSkip extends Error {
   constructor(message) { super(message); this.code = 'AUTOMATION_SKIP'; }
@@ -159,8 +160,11 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
   return {
     async before(step) {
       let settings = getSettings?.();
+      const planting = step.request === 'FarmPlantRequest';
+      if (planting && !player) throw new AutomationSkip('无法确认播种账号');
       if (!settings && !player) return null;
       const costs = actionCosts(step);
+      if (planting && !costs.size) throw new AutomationSkip('无法确认播种种子消耗');
       // Legacy callers without detailed settings still share resource barriers.
       if (!settings && !costs.size) return null;
       if (!enabled()) throw new AutomationSkip('操作已暂停');
@@ -174,20 +178,26 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
       const nextBalances = new Map();
       if (costs.size) {
         const itemIds = [...costs.keys()].filter(id => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id));
+        if (planting && itemIds.length !== costs.size) throw new AutomationSkip('播种成本必须是种子道具');
         const resourceIds = [...costs.keys()].filter(id => !itemIds.includes(id));
         const balances = new Map();
         if (itemIds.length) {
-          const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
-          if (!Array.isArray(bag.items)) throw new AutomationSkip('无法确认当前道具余额');
-          materialStock = new Map();
-          for (const row of bag.items) {
-            const id = row?.itemId ?? row?.id;
-            if (typeof id !== 'string' || !id || materialStock.has(id) || !Number.isSafeInteger(row.num) || row.num < 0) throw new AutomationSkip('无法完整确认当前道具库存');
-            materialStock.set(id, row.num);
+          let farmState;
+          if (account) {
+            try { farmState = await readFarmMaterialState(client, player, { step: planting ? step : null, enabled }); }
+            catch (error) { throw new AutomationSkip(error.message); }
           }
+          const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+          try { materialStock = farmInventory(bag); }
+          catch (error) { throw new AutomationSkip(error.message); }
           if (account) {
             if (goldAccountKey(player) !== account) throw new AutomationSkip('账号已切换，不能使用原账号库存');
-            try { confirmOrderMaterialSpends(player, materialStock); }
+            if (!enabled()) throw new AutomationSkip('操作已暂停');
+            try {
+              settleFarmMaterialState(player, farmState, materialStock);
+              if (planting) assertFarmPlantingReady(player, step, farmState);
+              confirmOrderMaterialSpends(player, materialStock, itemIds);
+            }
             catch (error) { throw new AutomationSkip(error.message); }
           }
           for (const id of itemIds) balances.set(id, materialStock.get(id) ?? 0);
@@ -229,9 +239,10 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         let materials, gold;
         try {
           if (!enabled() || goldAccountKey(player) !== account) throw new AutomationSkip('操作已暂停或账号已切换');
-          if (materialStock) materials = beginOrderMaterialSpend(player, [...costs].filter(([id]) => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id)).map(([id, need]) => ({ id, need, have: materialStock.get(id) ?? 0 })), step.label || step.request);
+          if (materialStock) materials = beginOrderMaterialSpend(player, [...costs].filter(([id]) => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id)).map(([id, need]) => ({ id, need, have: materialStock.get(id) ?? 0 })), step.label || step.request,
+            planting ? { farm: { args: farmPlantArgs(step) } } : {});
           if (costs.has('GOLD')) gold = reserveGold(player, actualGold, costs.get('GOLD'), step.request);
-          if (materials || gold) reservations.push({ step, ticket, gold, materials, request: step.request });
+          if (materials || gold) reservations.push({ step, ticket, gold, materials, account, request: step.request });
         } catch (error) {
           cancelOrderMaterialSpend(materials); cancelUnsentGold(gold);
           if (ticket) ledger.cancel(ticket);
@@ -242,10 +253,31 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
       return ticket;
     },
     async after(step, ticket, outcome) {
+      const record = reservationFor(step, ticket);
+      if (record?.materials?.farm) {
+        try {
+          if (goldAccountKey(player) !== record.account) throw new Error('账号已切换，保留原账号播种记录');
+          const farmState = await readFarmMaterialState(client, player, { enabled });
+          if (!farmState?.water) throw new Error(farmState?.error || '未能确认播种后的农田状态');
+          const stock = farmInventory(normalize(await client.request('AllItemRequest', {}, 'AllItemResponse')));
+          if (!enabled()) throw new Error('操作已暂停');
+          settleFarmMaterialState(player, farmState, stock);
+          if (pendingFarmMaterialSpends(player).includes(record.materials)) throw new Error('尚未读到目标地块的新作物，保留种子和地块记录');
+          outcome.ok = true;
+          outcome.status = 'confirmed';
+          delete outcome.sent;
+          delete outcome.error;
+          delete outcome.reason;
+        } catch (error) {
+          outcome.ok = false;
+          outcome.status = 'unknown';
+          outcome.reason = '播种结果待确认：' + error.message;
+        }
+      }
       if (ticket && outcome?.ok && !('sent' in outcome)) ledger.confirm(ticket);
-      // A confirmed action does not prove resource snapshots caught up.
-      // Shared barriers wait for later observed debits.
-      forget(reservationFor(step, ticket));
+      // Other consumers still need an observed debit. Only planting above can
+      // settle from its plot followed by a fresh complete inventory.
+      forget(record);
     },
     async cancel(step, ticket, { notSent = false, error } = {}) {
       const record = reservationFor(step, ticket);

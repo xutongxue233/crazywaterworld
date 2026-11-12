@@ -21,6 +21,7 @@ import { normalize } from './worlds.mjs';
 import { residentFilter, resourceReserve, worldPreferenceEnabled, worldActionAllowed, exactAutomationId, AutomationSkip, createActionGuard } from './automation-policy.mjs';
 import { readWeekOrder } from './activities.mjs';
 import { RESOURCE, displayMaterial } from './config.mjs';
+import { captureFarmMaterialState, farmInventory, settleFarmMaterialState } from './farm-planting.mjs';
 
 // 与客户端FactoryUtil一致：活动工坊只使用服务器limitTimeItem开放窗口。
 export function factoryRecipeAvailability(recipe, festivals, now) {
@@ -179,6 +180,10 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
   };
 
   const orderSession = trackResidentOrders(client);
+  let farmState;
+  // A later round may only harvest, with no new spending to invoke the guard.
+  // Capture old attempts before the ordered world/inventory reads below.
+  try { if (player) farmState = captureFarmMaterialState(player); } catch { /* Incomplete preview identity cannot settle writes. */ }
   const water = await get('OnWaterRequest');
   if (!water) throw new Error('拿不到 OnWaterResponse，无法探测海面');
   const orderKeys = rememberResidentOrders(orderSession, water.workerOrder ?? []);
@@ -188,6 +193,10 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     ordersOnly ? null : get('MyResFieldsRequest'),
     ordersOnly ? null : get('MyFleetsRequest'),
   ]);
+  if (farmState) {
+    try { settleFarmMaterialState(player, { ...farmState, water }, farmInventory(itemList)); }
+    catch { /* A partial snapshot keeps the original seed and plot reservation. */ }
+  }
 
   // 道具和资源合到一张库存表里，消耗项的 id 有的是道具名（木材）、有的是资源名（GOLD）。
   const stock = new Map();
@@ -757,7 +766,7 @@ export function planWorld(survey, {
       reserve(crop.material[0], crop.material[1]);
       const need = shortage(crop.id);
       planted.set(crop.id, (planted.get(crop.id) ?? 0) + crop.produceNum);
-      actions.push({ kind: 'farm', request: 'FarmPlantRequest', response: null,
+      actions.push({ kind: 'farm', request: 'FarmPlantRequest', response: 'OkResponse',
         body: { args: [{ buildingId: b.buildingId, productId: crop.id }] },
         costs: [{ id: crop.material[0], num: crop.material[1] }],
         label: '农田播种 ' + name(crop.id) + (need ? '（订单缺 ' + need + '）' : ''),
@@ -1214,6 +1223,12 @@ export async function runWorld(client, protocol, plan, {
       let ticket = null, prepared = false, dispatched = false;
       let actual = step;
       try {
+        // The official client waits for a business Response for planting. Keep
+        // Prompt attribution until that reply/timeout, not a short silent window.
+        const response = step.request === 'FarmPlantRequest' ? 'OkResponse' : step.response;
+        if (step.request === 'FarmPlantRequest' && (!protocol.OkResponse || !protocol.OnWaterRequest || !protocol.OnWaterResponse)) {
+          throw new AutomationSkip('当前协议不能确认农田播种结果');
+        }
         if (step.kind === 'finishOrder') {
           if (!protocol[step.response]) throw new Error('当前协议不能确认居民订单交付结果');
           // WorkerOrderPop spaces consecutive commits by at least two seconds.
@@ -1265,9 +1280,9 @@ export async function runWorld(client, protocol, plan, {
           if (session.get(step.body.index)?.key !== actual.orderKey) throw new Error('这条居民订单已刷新或已处理，请查看当前订单');
           session.delete(step.body.index); // A lost reply can still have consumed this slot.
         }
-        if (step.response && protocol[step.response]) {
+        if (response && protocol[response]) {
           dispatched = true;
-          const body = await client.request(step.request, step.body, step.response, timeout);
+          const body = await client.request(step.request, step.body, response, timeout);
           if (step.kind === 'finishOrder' && !body?.reward?.asset?.length) throw new Error('服务端尚未返回居民订单的交付奖励');
           for (const item of actual.weeklyBorrowed ?? []) confirmedBorrow.set(item.id, (confirmedBorrow.get(item.id) ?? 0) + item.num);
           entry = { step: actual, ok: true, body };
@@ -1299,6 +1314,11 @@ export async function runWorld(client, protocol, plan, {
           blocked.add(step.kind);
         }
         entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
+        if (step.request === 'FarmPlantRequest' && prepared && dispatched && !(error.prompt && error.request === actual.request)) {
+          entry.status = 'unknown';
+          entry.reason = '播种响应未确认：' + error.message;
+          await finishAction?.(actual, ticket, entry);
+        }
       }
     }
     results.push(entry);

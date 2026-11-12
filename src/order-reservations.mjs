@@ -5,7 +5,8 @@ const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const now = client => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
 // Guild orders and museum expeditions share processed goods. An acknowledged
 // action can precede the inventory update, so readers must not reuse that old
-// balance, even on a later loop or a replacement connection.
+// balance, even on a later loop or a replacement connection. Legacy consumers
+// keep an account-wide barrier; farm planting holds only its seeds and plots.
 const materialSpends = new Map();
 
 function idText(value) {
@@ -38,38 +39,93 @@ function accountKey(player) {
   return JSON.stringify([role, world]);
 }
 
-export function beginOrderMaterialSpend(player, costs, label) {
+export function beginOrderMaterialSpend(player, costs, label, { farm = null } = {}) {
   const account = accountKey(player);
-  if (materialSpends.has(account)) throw new Error('上次加工品扣款尚未确认，请等待库存同步');
   const remaining = new Map();
+  const checkedCosts = [];
   for (const row of list(costs, '加工品消费清单')) {
     if (typeof row?.id !== 'string' || !row.id || remaining.has(row.id)) throw new Error('加工品消费材料编号异常');
     const have = amount(row.have, '消费前材料库存');
     const need = amount(row.need, '加工品消费数量', true);
     if (need > have) throw new Error('加工品消费超过已核对库存');
     remaining.set(row.id, have - need);
+    checkedCosts.push({ id: row.id, have, need });
   }
   if (!remaining.size) throw new Error('加工品消费清单为空');
-  const handle = { account, remaining, label };
-  materialSpends.set(account, handle);
+  let checkedFarm = null;
+  const plots = new Set();
+  if (farm !== null) {
+    const args = list(farm?.args, '播种地块清单');
+    if (!args.length) throw new Error('播种地块清单为空');
+    checkedFarm = { args: args.map(row => {
+      if (typeof row?.buildingId !== 'string' || !row.buildingId || plots.has(row.buildingId)
+        || typeof row.productId !== 'string' || !row.productId) throw new Error('播种地块或作物编号异常');
+      plots.add(row.buildingId);
+      return { buildingId: row.buildingId, productId: row.productId };
+    }) };
+  }
+  const scope = new Set(remaining.keys());
+  const saved = materialSpends.get(account) ?? new Set();
+  for (const prior of saved) {
+    if (!prior.farm || [...scope].some(id => prior.scope.has(id))
+      || (checkedFarm && prior.farm.args.some(row => plots.has(row.buildingId)))) {
+      throw new Error('上次加工品扣款尚未确认，请等待库存同步');
+    }
+  }
+  const handle = { account, remaining, label, costs: checkedCosts, scope, farm: checkedFarm };
+  saved.add(handle);
+  materialSpends.set(account, saved);
   return handle;
 }
 
-// Only a definite rejection may release an unobserved debit. Success, timeout
-// and disconnect all wait for a complete inventory snapshot instead.
-export function cancelOrderMaterialSpend(handle) {
-  if (handle && materialSpends.get(handle.account) === handle) materialSpends.delete(handle.account);
+function removeMaterialSpend(handle) {
+  if (!handle) return false;
+  const saved = materialSpends.get(handle.account);
+  if (!saved?.delete(handle)) return false;
+  if (!saved.size) materialSpends.delete(handle.account);
+  return true;
 }
 
-export function confirmOrderMaterialSpends(player, stock) {
+// Only a definite rejection may release an unobserved debit. Success, timeout
+// and disconnect retain it until inventory or farm-state reconciliation.
+export function cancelOrderMaterialSpend(handle) {
+  removeMaterialSpend(handle);
+}
+
+export function pendingFarmMaterialSpends(player) {
+  return [...(materialSpends.get(accountKey(player)) ?? [])].filter(handle => handle.farm);
+}
+
+// The caller must confirm the target plots, then read a complete inventory.
+// A matching balance alone cannot prove which unknown planting took effect.
+export function settleFarmMaterialSpend(player, handle) {
+  if (!handle?.farm || handle.account !== accountKey(player)) return false;
+  return removeMaterialSpend(handle);
+}
+
+export function confirmOrderMaterialSpends(player, stock, itemIds = null) {
   const account = accountKey(player);
   const saved = materialSpends.get(account);
   if (!saved) return;
-  for (const [id, after] of saved.remaining) {
-    if ((stock.get(id) ?? 0) <= after) saved.remaining.delete(id);
+  const requested = itemIds === null ? null : new Set(list(itemIds instanceof Set ? [...itemIds] : itemIds, '消费材料编号'));
+  if (requested && [...requested].some(id => typeof id !== 'string' || !id)) throw new Error('消费材料编号异常');
+  let pending;
+  for (const handle of saved) {
+    if (handle.farm) {
+      // Keep the plot evidence even if seeds fell: another operation may have
+      // consumed them. Unscoped legacy readers are checked again at begin().
+      if (requested && [...requested].some(id => handle.scope.has(id))) pending ??= handle;
+      continue;
+    }
+    for (const [id, after] of handle.remaining) {
+      if ((stock.get(id) ?? 0) <= after) handle.remaining.delete(id);
+    }
+    if (!handle.remaining.size) removeMaterialSpend(handle);
+    else pending ??= handle;
   }
-  if (!saved.remaining.size) { materialSpends.delete(account); return; }
-  throw Object.assign(new Error((saved.label || '上次操作') + '的材料扣款尚未确认，等待库存同步后再使用加工品'), { code: 'ORDER_MATERIAL_SPEND_PENDING' });
+  if (pending) throw Object.assign(new Error((pending.label || '上次操作') + (pending.farm
+    ? '的播种结果尚未确认，暂不重复使用相关种子'
+    : '的材料扣款尚未确认，等待库存同步后再使用加工品')), { code: 'ORDER_MATERIAL_SPEND_PENDING' });
 }
 
 function assets(value, name) {
