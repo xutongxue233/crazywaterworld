@@ -12,7 +12,7 @@ import { SPEED_UP_ITEM } from '../src/world.mjs';
 const now = () => Math.floor(Date.now() / 1000);
 const asset = (id, num) => ({ type: 0, id, num });
 const config = { tables: { CargoUnlockCfg: { data: [{ index: 1, playerLevel: 9 }] } }, materialName: id => id };
-const names = ['OnWater', 'AllItem', 'WeekInfo', 'WeekOrderInfo', 'CargoShips', 'MuseumStartExplore'];
+const names = ['OnWater', 'AllItem', 'WeekInfo', 'WeekOrderInfo', 'CargoShips', 'MuseumInfo', 'MuseumStartExplore'];
 const protocol = Object.fromEntries(names.flatMap(name => [[name + 'Request', true], [name + 'Response', true]]));
 const tempRoot = path.resolve(os.tmpdir());
 let serial = 960000;
@@ -37,10 +37,14 @@ function fixture(directory) {
         case 'OnWaterRequest': return { building: [], workerOrder: structuredClone(this.resident) };
         case 'WeekInfoRequest': return { activityTime: structuredClone(this.week) };
         case 'WeekOrderInfoRequest': return { order: structuredClone(this.weekOrder), isGotFinal: false };
+        case 'MuseumInfoRequest': return { exploreStages: [{ stageId: 1, progress: 0,
+          expedition: !this.stale && this.expedition ? structuredClone(this.expedition)
+            : { startTime: 0, endTime: 0, heroIds: [], factor: 1, cost: { asset: [asset('fish', this.museumCost)] } } }] };
         case 'MuseumStartExploreRequest':
           this.writes.push(name);
           this.actual.set('fish', this.actual.get('fish') - this.museumCost);
-          return { expedition: { endTime: now() + 3600 } };
+          this.expedition = { startTime: now(), endTime: now() + 3600, heroIds: [...body.heroIds], factor: body.factor };
+          return { expedition: structuredClone(this.expedition) };
         case 'FillCargoShipRequest': {
           this.writes.push(name); this.failBefore(name);
           const ship = this.ships.find(row => row.index === body.shipIndex);

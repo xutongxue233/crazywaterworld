@@ -1,7 +1,8 @@
 import { normalize } from './worlds.mjs';
 import { goldAccountKey, reserveGold, rejectGold, cancelUnsentGold } from './gold-reservations.mjs';
-import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, pendingFarmMaterialSpends } from './order-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, pendingFarmMaterialSpends, pendingMuseumMaterialSpends } from './order-reservations.mjs';
 import { assertFarmPlantingReady, farmInventory, farmPlantArgs, readFarmMaterialState, settleFarmMaterialState } from './farm-planting.mjs';
+import { museumMaterialDetails, readMuseumMaterialState, settleMuseumMaterialState } from './museum-materials.mjs';
 
 export class AutomationSkip extends Error {
   constructor(message) { super(message); this.code = 'AUTOMATION_SKIP'; }
@@ -161,10 +162,13 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
     async before(step) {
       let settings = getSettings?.();
       const planting = step.request === 'FarmPlantRequest';
+      const exploring = step.request === 'MuseumStartExploreRequest';
       if (planting && !player) throw new AutomationSkip('无法确认播种账号');
+      if (exploring && !player) throw new AutomationSkip('无法确认探宝账号');
       if (!settings && !player) return null;
       const costs = actionCosts(step);
       if (planting && !costs.size) throw new AutomationSkip('无法确认播种种子消耗');
+      if (exploring && !costs.size) throw new AutomationSkip('无法确认探宝材料消耗');
       // Legacy callers without detailed settings still share resource barriers.
       if (!settings && !costs.size) return null;
       if (!enabled()) throw new AutomationSkip('操作已暂停');
@@ -174,7 +178,7 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         if (!settings[group]?.[key] || (step.scope === 'base' && !settings.loop.world)) throw new AutomationSkip('对应设置已关闭');
       }
       const account = player && costs.size ? goldAccountKey(player) : null;
-      let actualGold, materialStock;
+      let actualGold, materialStock, museumDetails;
       const nextBalances = new Map();
       if (costs.size) {
         const itemIds = [...costs.keys()].filter(id => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id));
@@ -182,9 +186,12 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         const resourceIds = [...costs.keys()].filter(id => !itemIds.includes(id));
         const balances = new Map();
         if (itemIds.length) {
-          let farmState;
+          let farmState, museumState;
           if (account) {
-            try { farmState = await readFarmMaterialState(client, player, { step: planting ? step : null, enabled }); }
+            try {
+              farmState = await readFarmMaterialState(client, player, { step: planting ? step : null, enabled });
+              museumState = await readMuseumMaterialState(client, player, { step: exploring ? step : null, enabled });
+            }
             catch (error) { throw new AutomationSkip(error.message); }
           }
           const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
@@ -195,7 +202,9 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
             if (!enabled()) throw new AutomationSkip('操作已暂停');
             try {
               settleFarmMaterialState(player, farmState, materialStock);
+              settleMuseumMaterialState(player, museumState, materialStock);
               if (planting) assertFarmPlantingReady(player, step, farmState);
+              if (exploring) museumDetails = museumMaterialDetails(player, step, museumState);
               confirmOrderMaterialSpends(player, materialStock, itemIds);
             }
             catch (error) { throw new AutomationSkip(error.message); }
@@ -240,7 +249,7 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         try {
           if (!enabled() || goldAccountKey(player) !== account) throw new AutomationSkip('操作已暂停或账号已切换');
           if (materialStock) materials = beginOrderMaterialSpend(player, [...costs].filter(([id]) => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id)).map(([id, need]) => ({ id, need, have: materialStock.get(id) ?? 0 })), step.label || step.request,
-            planting ? { farm: { args: farmPlantArgs(step) } } : {});
+            planting ? { farm: { args: farmPlantArgs(step) } } : exploring ? { museum: museumDetails } : {});
           if (costs.has('GOLD')) gold = reserveGold(player, actualGold, costs.get('GOLD'), step.request);
           if (materials || gold) reservations.push({ step, ticket, gold, materials, account, request: step.request });
         } catch (error) {
@@ -274,9 +283,25 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
           outcome.reason = '播种结果待确认：' + error.message;
         }
       }
+      if (record?.materials?.museum) {
+        try {
+          if (goldAccountKey(player) !== record.account) throw new Error('账号已切换，保留原账号探宝记录');
+          const state = await readMuseumMaterialState(client, player, { enabled });
+          if (!state?.museum) throw new Error(state?.error || '未能确认派遣后的探宝状态');
+          const stock = farmInventory(normalize(await client.request('AllItemRequest', {}, 'AllItemResponse')));
+          if (!enabled()) throw new Error('操作已暂停');
+          settleMuseumMaterialState(player, state, stock);
+          if (pendingMuseumMaterialSpends(player).includes(record.materials)) throw new Error('尚未读到目标地图的新队伍，保留材料和队伍记录');
+        } catch (error) {
+          // The dispatch response can be confirmed while inventory settlement
+          // is still pending. Later readers continue this same reconciliation.
+          outcome.materialsPending = true;
+          outcome.reason = '探宝材料待确认：' + error.message;
+        }
+      }
       if (ticket && outcome?.ok && !('sent' in outcome)) ledger.confirm(ticket);
-      // Other consumers still need an observed debit. Only planting above can
-      // settle from its plot followed by a fresh complete inventory.
+      // Other consumers still need an observed debit. Farms and museum trips
+      // can settle from their business state followed by a complete inventory.
       forget(record);
     },
     async cancel(step, ticket, { notSent = false, error } = {}) {

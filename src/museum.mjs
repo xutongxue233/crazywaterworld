@@ -267,19 +267,12 @@ export async function serviceMuseum(client, protocol, config, {
         const cfg = rows(config, 'MuseumExpeditionStageCfg').filter(r => r.stageId === candidate.stageId);
         if (cfg.length !== 1 || !(num(cfg[0].exploreTime, '探险时长', 1) > 0)) throw new Error('缺少当前探险关卡配置');
         const reserved = await readOrderReservedStock(client, protocol, config, { player, enabled: () => allowed('museumExplore') });
-        const held = new Map();
-        for (const start of session.starts.values()) {
-          for (const [id, debt] of start.debits ?? []) {
-            if ((reserved.stock.get(id) ?? 0) <= debt.after) start.debits.delete(id);
-            else held.set(id, (held.get(id) ?? 0) + debt.count);
-          }
-        }
         stages = await info('museumExplore');
         const current = stages.find(s => s.stageId === candidate.stageId);
         if (!current || !idle(current) || current.progress !== candidate.progress || JSON.stringify(current.expedition) !== JSON.stringify(candidate.expedition)
           || stages.filter(s => !idle(s)).length >= max) { skip('museumExplore', '关卡、用料或队伍状态已变化，下一轮重新核对'); continue; }
         const costs = costsOf(current);
-        const available = id => Math.max(0, (reserved.available.get(id) ?? 0) - (held.get(id) ?? 0));
+        const available = id => reserved.available.get(id) ?? 0;
         const missing = [...costs].filter(([id, count]) => available(id) < count);
         if (missing.length) { skip('museumExplore', '保留订单用料和未同步的探险扣款后还缺' + missing.map(([id, count]) => displayMaterial(config, id) + ' ×' + (count - available(id))).join('、')); continue; }
         // Refresh the hero roster last; an upgrade/removal must not validate a
@@ -295,9 +288,11 @@ export async function serviceMuseum(client, protocol, config, {
           skip('museumExplore', '写入前探险队伍或英雄占用已变化，下一轮重新核对'); continue;
         }
         if (!allowed('museumExplore')) break;
-        const start = { heroIds: chosen, progress: current.progress, oldEnd: current.expedition?.endTime ?? 0, observed: false,
-          debits: new Map([...costs].map(([id, count]) => [id, { count, after: (reserved.stock.get(id) ?? 0) - (held.get(id) ?? 0) - count }])) };
-        const debit = beginOrderMaterialSpend(player, [...costs].map(([id, need]) => ({ id, need, have: reserved.stock.get(id) ?? 0 })), '博物馆探险');
+        const start = { heroIds: chosen, progress: current.progress, oldEnd: current.expedition?.endTime ?? 0, observed: false };
+        const debit = beginOrderMaterialSpend(player, [...costs].map(([id, need]) => ({ id, need, have: reserved.stock.get(id) ?? 0 })), '博物馆探险', {
+          museum: { stageId: current.stageId, heroIds: chosen, factor: 1, progress: current.progress,
+            startTime: current.expedition?.startTime ?? 0, endTime: current.expedition?.endTime ?? 0 },
+        });
         session.starts.set(current.stageId, start);
         let result;
         try { result = await get('MuseumStartExplore', { stageId: current.stageId, heroIds: chosen, factor: 1 }, 'museumExplore'); }
@@ -314,6 +309,9 @@ export async function serviceMuseum(client, protocol, config, {
         if (!observed || observed.expedition?.endTime !== expedition.endTime || observed.expedition?.startTime !== expedition.startTime
           || !sameHeroes(observed.expedition?.heroIds ?? [], chosen)) throw new Error('派队回包已收到，关卡状态尚未同步，已暂停重复派队');
         reconcile(session, stages);
+        // Reconcile the shared debit using the observed trip followed by a
+        // complete inventory, including production received since dispatch.
+        await readOrderReservedStock(client, protocol, config, { player, enabled: () => allowed('museumExplore') });
         emit({ key: 'museumExplore', label: `博物馆探险 · 已派遣 ${chosen.length} 名英雄前往「${cfg[0].name || current.stageId}」，一倍时长`, ok: true });
         break; // A single new team per call, even when more slots are open.
       }

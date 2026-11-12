@@ -41,7 +41,7 @@ function fixture() {
         case 'WeekInfoRequest': result = { activityTime: [] }; break;
         case 'CargoShipsRequest': result = { ship: [] }; break;
         case 'AllHeroRequest': result = { heroes: [{ heroId: 'h1', power: 100, star: 1 }] }; break;
-        case 'MuseumInfoRequest': result = { exploreStages: this.stages }; break;
+        case 'MuseumInfoRequest': result = { exploreStages: this.stale && this.staleMuseumState ? this.initialStages : this.stages }; break;
         case 'FinishGuildOrderRequest':
           this.writes.push(name);
           if (this.reject === name) throw Object.assign(new Error('server refused'), { prompt: {}, request: name });
@@ -69,6 +69,7 @@ function fixture() {
     museum() { return serviceMuseum(this, protocol, config, { player: this.player, enabled: key => key === 'museumExplore', report: e => this.reports.push(e) }); },
     stock() { return readOrderReservedStock(this, protocol, config, { player: this.player }); },
   };
+  f.initialStages = structuredClone(f.stages);
   return f;
 }
 
@@ -97,7 +98,8 @@ export async function testProgressionBudgets() {
   assert.equal(guildFirst.actualStock, 5);
 
   const museumFirst = fixture();
-  assert((await museumFirst.museum()).some(e => e.ok));
+  museumFirst.staleMuseumState = true;
+  assert(!(await museumFirst.museum()).some(e => e.ok), 'a dispatch response alone cannot confirm an unsynchronized expedition');
   assert.equal(museumFirst.actualStock, 5);
   assert.match((await museumFirst.guild()).reason, /扣款尚未确认/);
   assert.deepEqual(museumFirst.writes, ['MuseumStartExploreRequest']);
@@ -126,6 +128,7 @@ export async function testProgressionBudgets() {
     assert.equal(denied.writes.length, 2);
 
     const late = fixture(); late.lost = request;
+    late.staleMuseumState = true;
     if (request === 'FinishGuildOrderRequest') await late.guild(); else await late.museum();
     await assert.rejects(late.stock(), /扣款尚未确认/);
     late.stale = false;

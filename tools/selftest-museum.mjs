@@ -43,7 +43,7 @@ function mock(options = {}) {
     let result;
     const s = data.stages.find(s => s.stageId === body.stageId);
     switch (name) {
-      case 'MuseumInfoRequest': result = { popularity: 0, topPopularity: 0, uncollectedRevenue: 0, revenueLastSettleTime: 0, exploreStages: data.stages }; break;
+      case 'MuseumInfoRequest': result = { popularity: 0, topPopularity: 0, uncollectedRevenue: 0, revenueLastSettleTime: 0, exploreStages: data.staleStages ?? data.stages }; break;
       case 'AllHeroRequest': result = { heroes: data.heroes }; break;
       case 'OnWaterRequest': return { building: data.buildings, workerOrder: data.workerOrder };
       case 'AllItemRequest': result = { items: [{ itemId: '木板', num: data.stock }] }; break;
@@ -194,7 +194,8 @@ export async function testMuseum() {
     heroes: [{ heroId: 'h1', star: 2, level: 1, power: 1000 }, { heroId: 'h2', star: 2, level: 1, power: 900 }] });
   occupiedHeroes.player.level = 36; await occupiedHeroes.run(); assert.equal(occupiedHeroes.writes.length, 0);
   const stale = mock({ stock: 5, staleStock: true, stages: [stage(1), stage(2)] }); stale.player.level = 36;
-  await stale.run(); await stale.run(); assert.equal(count(stale, 'MuseumStartExplore'), 1, '已派队但库存未同步不能二次花同一份材料');
+  stale.data.staleStages = structuredClone(stale.data.stages);
+  await stale.run(); await stale.run(); assert.equal(count(stale, 'MuseumStartExplore'), 1, '仅收到派队回包，关卡状态未同步时不能重复花同一份材料');
 
   for (const remove of ['BuildingUnlockCfg', 'MuseumExpeditionTeamCfg', 'MuseumExploreTimeFactorCfg', 'MuseumExpeditionConditionCfg', 'MuseumExpeditionStageCfg']) {
     const c = mock();

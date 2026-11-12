@@ -1,12 +1,13 @@
 import { readWeekOrder } from './activities.mjs';
 import { toNumber } from './client.mjs';
+import { readMuseumMaterialState, settleMuseumMaterialState } from './museum-materials.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const now = client => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
 // Guild orders and museum expeditions share processed goods. An acknowledged
 // action can precede the inventory update, so readers must not reuse that old
 // balance, even on a later loop or a replacement connection. Legacy consumers
-// keep an account-wide barrier; farm planting holds only its seeds and plots.
+// keep an account-wide barrier; farms and museum trips retain scoped evidence.
 const materialSpends = new Map();
 
 function idText(value) {
@@ -39,7 +40,7 @@ function accountKey(player) {
   return JSON.stringify([role, world]);
 }
 
-export function beginOrderMaterialSpend(player, costs, label, { farm = null } = {}) {
+export function beginOrderMaterialSpend(player, costs, label, { farm = null, museum = null } = {}) {
   const account = accountKey(player);
   const remaining = new Map();
   const checkedCosts = [];
@@ -64,15 +65,28 @@ export function beginOrderMaterialSpend(player, costs, label, { farm = null } = 
       return { buildingId: row.buildingId, productId: row.productId };
     }) };
   }
+  let checkedMuseum = null;
+  if (museum !== null) {
+    if (farm !== null) throw new Error('材料消费不能同时属于播种和探宝');
+    const heroIds = list(museum?.heroIds, '探宝英雄清单');
+    if (!heroIds.length || heroIds.some(id => typeof id !== 'string' || !id)
+      || new Set(heroIds).size !== heroIds.length) throw new Error('探宝英雄编号异常');
+    checkedMuseum = { stageId: amount(museum.stageId, '探宝地图', true), factor: amount(museum.factor, '探宝倍率', true),
+      progress: amount(museum.progress, '派遣前探宝进度'), startTime: amount(museum.startTime, '派遣前探宝开始时间'),
+      endTime: amount(museum.endTime, '派遣前探宝结束时间'), heroIds: [...heroIds] };
+    if (checkedMuseum.endTime !== 0) throw new Error('探宝地图已有队伍，不能重复派遣');
+  }
   const scope = new Set(remaining.keys());
   const saved = materialSpends.get(account) ?? new Set();
   for (const prior of saved) {
-    if (!prior.farm || [...scope].some(id => prior.scope.has(id))
-      || (checkedFarm && prior.farm.args.some(row => plots.has(row.buildingId)))) {
+    if ((!prior.farm && !prior.museum) || [...scope].some(id => prior.scope.has(id))
+      || (checkedFarm && prior.farm?.args.some(row => plots.has(row.buildingId)))
+      || (checkedMuseum && prior.museum && (prior.museum.stageId === checkedMuseum.stageId
+        || prior.museum.heroIds.some(id => checkedMuseum.heroIds.includes(id))))) {
       throw new Error('上次加工品扣款尚未确认，请等待库存同步');
     }
   }
-  const handle = { account, remaining, label, costs: checkedCosts, scope, farm: checkedFarm };
+  const handle = { account, remaining, label, costs: checkedCosts, scope, farm: checkedFarm, museum: checkedMuseum };
   saved.add(handle);
   materialSpends.set(account, saved);
   return handle;
@@ -96,6 +110,17 @@ export function pendingFarmMaterialSpends(player) {
   return [...(materialSpends.get(accountKey(player)) ?? [])].filter(handle => handle.farm);
 }
 
+export function pendingMuseumMaterialSpends(player) {
+  return [...(materialSpends.get(accountKey(player)) ?? [])].filter(handle => handle.museum);
+}
+
+// Only after matching the expedition (or its completed progress), followed by
+// a complete inventory read. A stock decrease alone does not prove dispatch.
+export function settleMuseumMaterialSpend(player, handle) {
+  if (!handle?.museum || handle.account !== accountKey(player)) return false;
+  return removeMaterialSpend(handle);
+}
+
 // The caller must confirm the target plots, then read a complete inventory.
 // A matching balance alone cannot prove which unknown planting took effect.
 export function settleFarmMaterialSpend(player, handle) {
@@ -117,6 +142,10 @@ export function confirmOrderMaterialSpends(player, stock, itemIds = null) {
       if (requested && [...requested].some(id => handle.scope.has(id))) pending ??= handle;
       continue;
     }
+    if (handle.museum) {
+      if (!requested || [...requested].some(id => handle.scope.has(id))) pending ??= handle;
+      continue;
+    }
     for (const [id, after] of handle.remaining) {
       if ((stock.get(id) ?? 0) <= after) handle.remaining.delete(id);
     }
@@ -125,7 +154,8 @@ export function confirmOrderMaterialSpends(player, stock, itemIds = null) {
   }
   if (pending) throw Object.assign(new Error((pending.label || '上次操作') + (pending.farm
     ? '的播种结果尚未确认，暂不重复使用相关种子'
-    : '的材料扣款尚未确认，等待库存同步后再使用加工品')), { code: 'ORDER_MATERIAL_SPEND_PENDING' });
+    : pending.museum ? '的探宝状态及材料扣款尚未确认，等待状态和库存同步后再使用相关材料'
+      : '的材料扣款尚未确认，等待库存同步后再使用加工品')), { code: 'ORDER_MATERIAL_SPEND_PENDING' });
 }
 
 function assets(value, name) {
@@ -160,6 +190,9 @@ export async function readOrderReservedStock(client, protocol, config, { player,
   };
   const cargoLevel = rows(config, 'CargoUnlockCfg').find(row => row.index === 1)?.playerLevel;
   if (!Number.isSafeInteger(cargoLevel) || cargoLevel < 1) throw new Error('无法确认贸易港开放条件');
+  // Observe pending expeditions BEFORE the complete inventory snapshot. New
+  // production may mask the debit, so an absolute old balance is insufficient.
+  const museumState = await readMuseumMaterialState(client, player, { enabled: () => { check(); return true; } });
   const [water, inventory, schedule, ships] = await Promise.all([
     get('OnWaterRequest'), get('AllItemRequest'), get('WeekInfoRequest'),
     player.level >= cargoLevel ? get('CargoShipsRequest') : { ship: [] },
@@ -170,6 +203,7 @@ export async function readOrderReservedStock(client, protocol, config, { player,
     stock.set(item.itemId, amount(item.num, '道具库存'));
   }
   check();
+  settleMuseumMaterialState(player, museumState, stock);
   confirmOrderMaterialSpends(player, stock);
   const reservations = { weekly: new Map(), cargo: new Map(), resident: new Map() };
   const add = (target, id, n) => target.set(id, amount((target.get(id) ?? 0) + n, '预留数量'));
