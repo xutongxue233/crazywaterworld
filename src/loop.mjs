@@ -577,7 +577,7 @@ export async function runLoop(client, protocol, {
             playerLevel: player?.level, reserveGold: reserve,
             enabled: () => enabled('fishEnhance') && reserve === getFishingGoldReserve(),
             targetLevel: settings?.gather.targetLevel ?? Infinity,
-            beforeAction: guard.before, afterAction: guard.after,
+            beforeAction: guard.before, afterAction: guard.after, cancelAction: guard.cancel,
           });
           summary.tasks.results.push(entry);
           if (!entry.skipped) summary.tasks.planned++;
@@ -621,7 +621,7 @@ export async function runLoop(client, protocol, {
             if (!entry.skipped) summary.tasks.planned++;
             summary.tasks.results.push(entry);
             logReward(entry, '船只');
-          }, { settings, beforeAction: guard.before, afterAction: guard.after }));
+          }, { settings, beforeAction: guard.before, afterAction: guard.after, cancelAction: guard.cancel }));
         } catch (error) { phaseFailure('tasks', '船只检查', error); }
       }
       if (isEnabled && ['weekPass', 'weekGift', 'weekTimes'].some(enabled)) {
@@ -790,7 +790,7 @@ export async function runLoop(client, protocol, {
           const inventory = new Map((bag.items ?? []).map(item => [item.itemId, Number(item.num)]));
           rewards?.observe('loop.heroes','已读取英雄与库存，检查养成条件');rewards?.expect('loop.heroes',rewards.now()+Math.ceil(getEveryMs()/1000));
           const plan = planHeroes({ config, heroes: list.heroes ?? [], itemNum: id => inventory.get(id) ?? 0, playerLevel: player?.level ?? 1, settings: getSettings() });
-          const results = await runHeroPlan(client, protocol, plan, { allowMutate, getSettings, beforeAction: guard.before, afterAction: guard.after,
+          const results = await runHeroPlan(client, protocol, plan, { allowMutate, getSettings, beforeAction: guard.before, afterAction: guard.after, cancelAction: guard.cancel,
             enabled: () => !stop.aborted && client.connected && getSettings()?.loop.heroes,
             onStep: entry => stepLog('tasks')({ ...entry, category: '英雄', title: `${entry.step.heroId} ${entry.step.kind === 'level' ? '升级' : entry.step.kind === 'star' ? '升星' : '技能升级'}` }) });
           summary.tasks.planned += results.length;

@@ -399,7 +399,9 @@ async function testHarvestOrders() {
     await run(s);
     assert.equal(s.client.calls.filter(n => n === 'FinishWorkerOrderRequest').length, Object.keys(options).length ? 0 : 1);
     const followup = !options.pause && options.confirm !== false;
-    assert.equal(s.client.calls.filter(n => n === 'AllItemRequest').length, followup ? (options.reserved ? 2 : 3) : 1);
+    assert.equal(s.client.calls.filter(n => n === 'AllItemRequest').length, followup ? (options.reserved ? 2 : 4) : 1,
+      '居民交付确认后额外读取完整库存，核销本次材料预留');
+    if (!Object.keys(options).length) assert(s.client.calls.lastIndexOf('AllItemRequest') > s.client.calls.indexOf('FinishWorkerOrderRequest'));
     assert.equal(s.client.calls.filter(n => n === 'AllResourceRequest').length, 1, '补交只核对订单库存和预留');
   }
   // Manual world run and the CLI share the same round executor, including reroll protection.

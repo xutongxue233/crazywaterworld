@@ -136,7 +136,10 @@ export async function claimMyGuildAid(client, config, { player, enabled = () => 
     // 此协议仅有援助类型，没有单条reqId；一次领取当前全部个人求助物资。
     await client.sendWatch('GotMyGuildAidRequest', { type: 0 }, { window: 400 });
   } catch (error) {
-    if (error.prompt) ready.forEach(row => pending.delete(row.id));
+    if (error.notSent === true || error.prompt && error.request === 'GotMyGuildAidRequest') ready.forEach(row => pending.delete(row.id));
+    // Let callers cancel their own budget only for this write's unsent error,
+    // never for a later readMyGuildAid request that could not be sent.
+    if (error.notSent === true) error.guildAidClaimNotSent = true;
     throw error;
   }
   if (!enabled()) throw new Error('领取请求已发送，账号状态已变化，请重新连接后核对结果');

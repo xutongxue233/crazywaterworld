@@ -14,14 +14,20 @@ const safe = value => {
 const wireUid = id => ({ low: Number(BigInt.asIntN(32, BigInt(id))), high: Number(BigInt(id) >> 32n), unsigned: false });
 const clock = client => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
 const read = (client, name, body = {}) => client.request(name + 'Request', body, name + 'Response');
+const identity = player => JSON.stringify([uidText(player?.playerId), uidText(player?.guildId), safe(player?.worldId)]);
 
-function stateFor(client) {
+function stateFor(client, player) {
   if (!sessions.has(client)) {
-    const session = { busy: false, events: new Map(), fleets: new Map(), claims: new Set(), reserves: [] };
+    const session = { busy: false, player, account: identity(player), events: new Map(), fleets: new Map(), claims: new Set(), reserves: [] };
     sessions.set(client, session);
     registerFleetReservations(client, 'radar', id => session.fleets.has(id),
       () => session.fleets.size > 0 || session.reserves.length > 0,
-      snapshot => settle(session, { ...snapshot, fleets: snapshot.fleets.map(normalizeFleet) }));
+      // Shared fleet snapshots can prove travel to this operation's target or
+      // a known return, but their fuel has no guaranteed read ordering.
+      snapshot => {
+        if (identity(session.player) !== session.account || !Array.isArray(snapshot?.fleets)) return;
+        observeFleets(session, snapshot.fleets.map(normalizeFleet), [], new Map(session.fleets), false);
+      });
   }
   return sessions.get(client);
 }
@@ -54,43 +60,81 @@ export function normalizeFleet(fleet) {
     treasureLootUid: safe(fleet.treasureLootUid ?? 0) };
 }
 
-async function fleetStock(client) {
-  // Sequential reads avoid attributing an untagged PromptResponse to another query.
-  const rawFleets = (await read(client, 'MyFleets'))?.fleets;
-  const items = (await read(client, 'AllItem'))?.items;
-  if (!Array.isArray(rawFleets) || !Array.isArray(items)) throw new Error('未能读取舰队和库存，暂停情报操作');
-  // Current WorldFleet encodes durability/maxDura/treasureLootUid as int32;
-  // normalize numeric values here so later comparisons cannot coerce objects.
+function checkedFleets(rawFleets) {
+  if (!Array.isArray(rawFleets)) throw new Error('未能读取完整舰队，暂停情报操作');
   const fleets = rawFleets.map(normalizeFleet);
   const ids = new Set();
   for (const fleet of fleets) {
     if (!fleet.buildingId || ids.has(fleet.buildingId)) throw new Error('舰队列表存在重复或缺失编号');
     ids.add(fleet.buildingId);
   }
+  return fleets;
+}
+
+async function fleetStock(client, session, { check, readEvents }) {
+  // Capture exact owners before any await: a late read cannot settle a newer
+  // operation, including a replacement operation using the same ship.
+  const baseline = new Map(session.fleets), reserves = [...session.reserves];
+  check();
+  const events = readEvents ? eventList((await read(client, 'RadarInfo'))?.radarInfo) : [];
+  check();
+  // Sequential reads avoid attributing an untagged PromptResponse to another query.
+  const rawFleets = (await read(client, 'MyFleets'))?.fleets;
+  check();
+  const fleets = checkedFleets(rawFleets);
+  observeFleets(session, fleets, events, baseline, true);
+  // A complete inventory read AFTER matching dispatch/repair evidence settles
+  // the debit even if production or rewards hid the decrease in fuel.
+  const confirmed = new Set(reserves.filter(r => r.pending.seen && r.pending.account === session.account));
+  const items = (await read(client, 'AllItem'))?.items;
+  check();
+  if (!Array.isArray(items)) throw new Error('未能读取完整库存，暂停情报操作');
   const stock = new Map();
   for (const item of items) {
     if (!item.itemId || stock.has(item.itemId) || safe(item.num) === null) throw new Error('库存数量无法确认，暂停情报操作');
     stock.set(item.itemId, safe(item.num));
   }
-  return { fleets, stock, fuel: stock.get('汽油') ?? 0 };
+  session.reserves = session.reserves.filter(r => !confirmed.has(r));
+  return { fleets, stock, events, fuel: stock.get('汽油') ?? 0 };
 }
 
-function settle(session, snapshot, events = []) {
+function dispatchObserved(pending, fleet, events) {
+  const event = events.find(e => e.key === pending.event && e.eventId === pending.eventId);
+  if (!event) return false;
+  if (event.state === 3 || event.state === 4) return true;
+  return event.state === 2 && fleetAtDispatchTarget(pending, fleet);
+}
+
+const fleetAtDispatchTarget = (pending, fleet) => Number.isSafeInteger(pending.gridIdx) && pending.gridIdx >= 0
+  && ((fleet.state === 2 && fleet.targetGridIdx === pending.gridIdx)
+    || (fleet.state === 3 && fleet.curGridIdx === pending.gridIdx));
+
+function observeFleets(session, fleets, events, baseline, businessEvidence) {
   // A lost response keeps its fleet reserved until the server shows the trip
   // progressing and returning. Merely seeing an idle fleet is not confirmation.
-  for (const [id, pending] of session.fleets) {
-    const fleet = snapshot.fleets.find(f => f.buildingId === id);
+  for (const [id, pending] of baseline) {
+    if (session.fleets.get(id) !== pending || pending.account !== session.account) continue;
+    const matching = fleets.filter(f => f.buildingId === id);
+    const fleet = matching.length === 1 && matching[0];
     if (!fleet) continue;
     if (pending.kind === 'repair') {
-      if (fleet.repairing || fleet.state === 4) pending.seen = true;
-      if (freeFleet(fleet) && fleet.durability >= pending.target) session.fleets.delete(id);
+      if (businessEvidence && ((fleet.state === 4 && safe(fleet.repairing?.endDura) >= pending.target
+        && safe(fleet.repairing?.endTs) > pending.sentAt)
+        || (freeFleet(fleet) && fleet.durability >= pending.target))) pending.seen = true;
+      if (pending.seen && freeFleet(fleet) && fleet.durability >= pending.target) session.fleets.delete(id);
     } else {
-      if (!freeFleet(fleet)) pending.seen = true;
-      const event = events.find(e => e.key === pending.event);
-      if (freeFleet(fleet) && (pending.seen || event?.state === 4)) session.fleets.delete(id);
+      const event = events.find(e => e.key === pending.event && e.eventId === pending.eventId);
+      const observed = businessEvidence ? dispatchObserved(pending, fleet, events) : fleetAtDispatchTarget(pending, fleet);
+      if (observed) {
+        pending.seen = true;
+        if (!freeFleet(fleet)) pending.traveled = true;
+      }
+      if (businessEvidence && pending.seen && (!event || event.state === 4)) pending.completed = true;
+      // An event can advance before MyFleets reflects departure. That first
+      // still-idle snapshot confirms the cost, not a completed round trip.
+      if (freeFleet(fleet) && (pending.traveled || pending.completed)) session.fleets.delete(id);
     }
   }
-  session.reserves = session.reserves.filter(r => snapshot.fuel > r.before - r.cost);
 }
 
 function eventPlan(event, config, season, stock) {
@@ -126,13 +170,20 @@ export async function serviceRadar(client, protocol, config, {
   const emit = entry => { entries.push(entry); report(entry); };
   const active = Object.fromEntries(['radarAuto', 'radarRepair'].map(key => [key, enabled(key) && (!scheduler || scheduler.due(key))]));
   if (!Object.values(active).some(Boolean)) return entries;
-  const session = stateFor(client);
+  const session = stateFor(client, player);
   if (session.busy) return entries;
   const initialGuild = uidText(player?.guildId);
   const initialPlayer = uidText(player?.playerId);
   const world = safe(player?.worldId);
   const sameAccount = () => uidText(player?.guildId) === initialGuild && uidText(player?.playerId) === initialPlayer && safe(player?.worldId) === world;
   const allowed = key => active[key] && enabled(key) && sameAccount();
+  const snapshotCheck = () => {
+    if (!sameAccount() || identity(player) !== session.account) throw new Error('联盟或账号信息已变化，保留原操作记录');
+    if (!Object.keys(active).some(allowed)) throw new Error('情报操作已暂停，保留待确认记录');
+  };
+  const snapshotNow = () => fleetStock(client, session, { check: snapshotCheck,
+    readEvents: active.radarAuto || session.reserves.some(r => r.pending.kind === 'dispatch')
+      || [...session.fleets.values()].some(pending => pending.kind === 'dispatch') });
   const defer = seconds => {
     for (const key of Object.keys(active).filter(k => active[k])) scheduler?.defer(key, (scheduler.now?.() ?? clock(client)) + seconds);
   };
@@ -146,6 +197,8 @@ export async function serviceRadar(client, protocol, config, {
   };
   session.busy = true;
   try {
+    snapshotCheck();
+    session.player = player;
     const level = rows(config, 'ModuleOpenCfg').find(r => r.moduleId === '联盟情报')?.playerLevel;
     if (!Number.isSafeInteger(level) || !Number.isSafeInteger(player?.level) || player.level < level || !initialGuild || !initialPlayer) {
       for (const key of Object.keys(active).filter(k => active[k])) skip(key, !initialGuild ? '当前账号未加入联盟或联盟身份未确认' : `联盟情报需要角色 ${level || '指定'} 级及完整账号信息`);
@@ -158,9 +211,8 @@ export async function serviceRadar(client, protocol, config, {
     }
     const guild = (await read(client, 'GuildInfo'))?.guild;
     if (uidText(guild?.guildId) !== initialGuild || !sameAccount()) throw new Error('联盟或账号信息已变化，暂停情报操作');
-    let events = active.radarAuto ? eventList((await read(client, 'RadarInfo'))?.radarInfo) : [];
-    let snapshot = await fleetStock(client);
-    settle(session, snapshot, events);
+    let snapshot = await snapshotNow();
+    let events = snapshot.events;
     let budget = new Map(snapshot.stock);
     const reconcileBudget = fresh => {
       for (const id of new Set([...budget.keys(), ...fresh.stock.keys()])) budget.set(id, Math.min(budget.get(id) ?? 0, fresh.stock.get(id) ?? 0));
@@ -202,9 +254,8 @@ export async function serviceRadar(client, protocol, config, {
         if (!allowed('radarAuto')) break;
         const attempt = session.events.get(target.key);
         if (attempt && (!attempt.retryAt || attempt.retryAt > clock(client))) continue;
-        events = eventList((await read(client, 'RadarInfo'))?.radarInfo);
-        snapshot = await fleetStock(client);
-        settle(session, snapshot, events);
+        snapshot = await snapshotNow();
+        events = snapshot.events;
         reconcileBudget(snapshot);
         const current = events.find(e => e.key === target.key && e.state === 1 && !(e.startTime > 0));
         const plan = current && eventPlan(current, config, season, budget);
@@ -216,26 +267,24 @@ export async function serviceRadar(client, protocol, config, {
         if (!fleet || !allowed('radarAuto')) continue;
         const id = fleet.buildingId;
         const cost = plan.costs.get('汽油');
-        const pending = { kind: 'dispatch', event: current.key, seen: false };
+        const pending = { kind: 'dispatch', account: session.account, event: current.key,
+          eventId: current.eventId, gridIdx: current.gridIdx, seen: false };
         session.events.set(current.key, {});
         session.fleets.set(id, pending);
-        const reserve = { before: budget.get('汽油'), cost };
+        const reserve = { pending, cost };
         session.reserves.push(reserve);
         used.add(id);
         for (const [material, amount] of plan.costs) budget.set(material, budget.get(material) - amount);
         try {
           const body = { fleetBuildingIds: [id], ...(current.fixed ? {} : { uid: wireUid(current.key) }) };
           await client.sendWatch('RadarSendFleetsRequest', body, { window: 500 });
-          const after = eventList((await read(client, 'RadarInfo'))?.radarInfo);
-          const changed = after.find(e => e.key === current.key);
-          snapshot = await fleetStock(client);
-          settle(session, snapshot, after);
-          if (!changed || !(changed.state === 3 || changed.state === 4 || changed.startTime > 0)) throw new Error('服务端未确认情报出征，已保留这支舰队，等待状态更新');
+          snapshot = await snapshotNow();
+          if (!pending.seen) throw new Error('服务端未确认情报出征，已保留这支舰队，等待状态更新');
           emit({ key: 'radarAuto', label: `联盟情报 · ${id} 已出征「${plan.name}」，汽油 ${cost}`, ok: true });
         } catch (error) {
-          if (error.prompt) {
+          if (error.prompt && error.request === 'RadarSendFleetsRequest') {
             session.events.set(current.key, { retryAt: clock(client) + 180 });
-            session.fleets.delete(id);
+            if (session.fleets.get(id) === pending) session.fleets.delete(id);
             session.reserves = session.reserves.filter(r => r !== reserve);
           }
           failed('radarAuto', `联盟情报 · ${id} 出征`, error);
@@ -247,13 +296,12 @@ export async function serviceRadar(client, protocol, config, {
     }
 
     if (allowed('radarRepair')) {
-      snapshot = await fleetStock(client);
-      settle(session, snapshot, events);
+      snapshot = await snapshotNow();
       for (const initial of snapshot.fleets) {
         if (!allowed('radarRepair')) break;
         if (!freeFleet(initial) || initial.durability >= initial.maxDura * 0.8 || used.has(initial.buildingId) || isFleetReserved(client, initial.buildingId)) continue;
         const param = await read(client, 'FleetRepairParam', { buildingId: initial.buildingId });
-        snapshot = await fleetStock(client);
+        snapshot = await snapshotNow();
         reconcileBudget(snapshot);
         const fleet = snapshot.fleets.find(f => f.buildingId === initial.buildingId);
         if (!freeFleet(fleet) || fleet.durability >= fleet.maxDura * 0.8 || isFleetReserved(client, fleet.buildingId)) continue;
@@ -266,20 +314,21 @@ export async function serviceRadar(client, protocol, config, {
         }
         if (otherPending()) return entries;
         if (!allowed('radarRepair')) break;
-        const reserve = { before: budget.get('汽油'), cost };
+        const pending = { kind: 'repair', account: session.account, target: fleet.maxDura, sentAt: clock(client), seen: false };
+        const reserve = { pending, cost };
         session.reserves.push(reserve);
-        session.fleets.set(fleet.buildingId, { kind: 'repair', target: fleet.maxDura, seen: false });
+        session.fleets.set(fleet.buildingId, pending);
         budget.set('汽油', budget.get('汽油') - cost);
         try {
           await client.sendWatch('RepairFleetRequest', { buildingId: fleet.buildingId }, { window: 500 });
-          snapshot = await fleetStock(client);
-          settle(session, snapshot, events);
-          const after = snapshot.fleets.find(f => f.buildingId === fleet.buildingId);
-          if (!(after?.state === 4 && after.repairing?.endDura >= fleet.maxDura && after.repairing?.endTs > clock(client))
-            && !(safe(after?.durability) >= fleet.maxDura)) throw new Error('服务端未确认舰队维修，已暂停重复维修这支舰队');
+          snapshot = await snapshotNow();
+          if (!pending.seen) throw new Error('服务端未确认舰队维修，已暂停重复维修这支舰队');
           emit({ key: 'radarRepair', label: `舰队维修 · ${fleet.buildingId} 已开始修满，汽油 ${cost}`, ok: true });
         } catch (error) {
-          if (error.prompt) { session.fleets.delete(fleet.buildingId); session.reserves = session.reserves.filter(r => r !== reserve); }
+          if (error.prompt && error.request === 'RepairFleetRequest') {
+            if (session.fleets.get(fleet.buildingId) === pending) session.fleets.delete(fleet.buildingId);
+            session.reserves = session.reserves.filter(r => r !== reserve);
+          }
           failed('radarRepair', `舰队维修 · ${fleet.buildingId}`, error);
           defer(180); return entries;
         }

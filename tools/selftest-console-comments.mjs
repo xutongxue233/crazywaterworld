@@ -93,6 +93,23 @@ await check('未知钻石结果保留额度，明确拒绝才释放', async () =
   assert.equal(g.ledger.snapshot().counters.diamonds ?? 0, 0);
   assert(option(await g.view(), 1007).token);
 });
+await check('单项钻石请求明确未发送时撤销额度，新报价可重试', async () => {
+  const f = setup(); f.settings.resources.allowDiamonds = true;
+  const token = option(await f.view(), 1007).token;
+  const send = f.client.sendWatch.bind(f.client);
+  f.client.sendWatch = async name => { throw Object.assign(new Error('连接已关闭，本次未发送'), { notSent: true, request: name }); };
+  await assert.rejects(f.run(token, { paid: true }), /未发送/);
+  assert.equal(f.state.writes.length, 0);
+  assert.equal(f.ledger.snapshot().counters.diamonds ?? 0, 0, '未发送不能占用每日钻石额度');
+  assert.equal(f.dailyState.attempted.size, 0, '未发送不能保留消费状态防重标记');
+  await assert.rejects(f.run(token, { paid: true }), /已经提交/, '旧报价仍不能重放');
+  const next = option(await f.view(), 1007).token;
+  assert(next && next !== token, '刷新生成可重新核对的新报价');
+  f.client.sendWatch = send;
+  assert((await f.run(next, { paid: true })).ok);
+  assert.equal(f.ledger.snapshot().counters.diamonds, 16);
+  assert.equal(f.state.writes.filter(row => row.name === 'DiscountShopBuyRequest').length, 1);
+});
 await check('真实协议个人求助类型与精确ID、角标计数', async () => {
   const f = setup(), view = await readGuild(f.client, config, f.player);
   assert.equal(view.requests.length, 2); assert.equal(view.myAidCount, 2);

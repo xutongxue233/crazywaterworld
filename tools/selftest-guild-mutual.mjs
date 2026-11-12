@@ -52,8 +52,52 @@ try{
   for(const failure of ['giftUnknown','giftEmpty']){const f=guildMutualFixture(),file=path.join(dir,failure+'.json');let l=createUsageLedger('qa',{file});f.state.failure=failure;const first=await run(f,l,{target:2});assert.equal(first.pending,true);assert.equal(first.sent,0);assert.equal(l.snapshot().counters.guildAidGifts,1);
    const g=guildMutualFixture(f.state);g.state.failure='';l=createUsageLedger('qa',{file});const second=await run(g,l,{target:2});assert.equal(second.pending,true);assert.equal(g.state.writes.filter(r=>r.name==='GuildAidHelpRequest').length,1);}
  });
+ await check('赠送成功同时补产，完整新库存不必低于赠送前数量',async()=>{
+  const f=guildMutualFixture(),l=ledger();f.state.onGift=()=>{f.state.stock.橡胶圈+=2;};
+  const result=await run(f,l,{target:2});assert.equal(result.sent,2);assert.equal(result.pending,undefined);assert.equal(f.state.stock.橡胶圈,3);assert.equal(l.snapshot().uncertain,0);
+ });
+ await check('回执已确认但库存读取失败，重建客户端和账本后核销且不重复赠送',async()=>{
+  const f=guildMutualFixture(),file=path.join(dir,'gift-ack-recovery.json');let l=createUsageLedger('qa',{file});
+  f.state.onRead=name=>{if(name==='AllItemRequest'&&f.state.writes.some(r=>r.name==='GuildAidHelpRequest'))throw Object.assign(Error('完整库存暂不可读'),{notSent:true,request:name});};
+  const first=await run(f,l,{target:1});assert.equal(first.pending,true);assert.equal(l.snapshot().uncertain,1);assert(Object.values(l.keyRecords()).some(r=>r.details.acknowledged));
+  f.state.onRead=null;f.state.stock.橡胶圈=8;const g=guildMutualFixture(f.state);l=createUsageLedger('qa',{file});
+  const recovered=await run(g,l,{target:1});assert.equal(recovered.pending,undefined);assert.equal(recovered.sent,0);assert.equal(l.snapshot().uncertain,0);assert.equal(g.state.writes.filter(r=>r.name==='GuildAidHelpRequest').length,1);
+ });
+ await check('回执后无关材料库存异常也不能作为完整同步，修复读数后恢复',async()=>{
+  const f=guildMutualFixture(),l=ledger();f.state.onGift=()=>{f.state.stock.木材=-1;};
+  assert.equal((await run(f,l,{target:1})).pending,true);assert.equal(l.snapshot().uncertain,1);
+  f.state.onGift=null;f.state.stock.木材=20;assert.equal((await run(f,l,{target:1})).pending,undefined);assert.equal(l.snapshot().uncertain,0);
+ });
+ await check('已回执的赠送跨日核销旧额度，不计入新日且不重发',async()=>{
+  const f=guildMutualFixture(),file=path.join(dir,'gift-ack-next-day.json'),l=createUsageLedger('qa',{file,now:()=>Date.now()+f.client.serverClockOffsetMs});
+  f.state.onRead=name=>{if(name==='AllItemRequest'&&f.state.writes.length)throw Error('读取中断');};
+  assert.equal((await run(f,l,{target:1})).pending,true);f.state.onRead=null;f.client.serverClockOffsetMs=86400000;
+  const result=await run(f,l,{target:0});assert.equal(result.sent,0);assert.equal(l.snapshot().uncertain,0);assert.equal(l.snapshot().counters.guildAidGifts,undefined);assert.equal(f.state.writes.length,1);
+ });
  await check('明确拒绝不消耗赠送预算，停止等待后不重发',async()=>{
   const f=guildMutualFixture(),l=ledger(),control=new AbortController();f.state.failure='giftReject';await assert.rejects(run(f,l,{target:1},{signal:control.signal,wait:async()=>control.abort(new Error('测试停止'))}));assert.equal(l.snapshot().counters.guildAidGifts,0);assert.equal(f.state.stock.橡胶圈,1);
+ });
+ await check('赠送明确未发送释放持久预算和防重键，重新检查后可安全重试',async()=>{
+  const f=guildMutualFixture(),l=ledger(),original=f.client.request;let unsent=true,attempts=0;
+  f.client.request=async(name,...args)=>{if(name==='GuildAidHelpRequest'){attempts++;if(unsent)throw Object.assign(Error('写入前断开'),{notSent:true});}return original(name,...args);};
+  const result=await run(f,l,{target:1},{wait:async()=>{if(unsent){assert.equal(l.snapshot().uncertain,0);assert.equal(l.snapshot().counters.guildAidGifts,0);unsent=false;}}});
+  assert.equal(result.sent,1);assert.equal(attempts,2);assert.equal(f.state.writes.filter(r=>r.name==='GuildAidHelpRequest').length,1);assert.equal(l.snapshot().uncertain,0);
+ });
+ await check('发布求助明确未发送释放预算，下次开启可正常发布',async()=>{
+  const f=guildMutualFixture(),l=ledger(),original=f.client.sendWatch;let unsent=true;
+  f.client.sendWatch=async(name,...args)=>{if(name==='GuildAidAskRequest'&&unsent)throw Object.assign(Error('未发送'),{notSent:true});return original(name,...args);};
+  assert.equal((await run(f,l,{target:0,askEnabled:true,askItemId:'橡胶圈',askTarget:1})).pending,false);assert.equal(l.snapshot().uncertain,0);assert.equal(l.snapshot().counters.guildAidAsks,0);
+  unsent=false;assert.equal((await run(f,l,{target:0,askEnabled:true,askItemId:'橡胶圈',askTarget:1})).published,1);
+ });
+ await check('领取明确未发送释放辅助模块和持久防重，后续读取未发送则保留已发记录',async()=>{
+  for(const stage of ['write','read']){
+   const f=guildMutualFixture(),l=ledger(),send=f.client.sendWatch,request=f.client.request;let blocked=true;
+   f.state.own=[{reqId:'9007199254799901',reqItemId:'木材',endTime:Math.floor(Date.now()/1000)+100,helper:{playerId:f.friend,nickname:'同名盟友'}}];
+   f.client.sendWatch=async(name,...args)=>{if(stage==='write'&&blocked&&name==='GotMyGuildAidRequest')throw Object.assign(Error('未发送领取'),{notSent:true});return send(name,...args);};
+   f.client.request=async(name,...args)=>{if(stage==='read'&&blocked&&name==='MyGuildAidRequest'&&f.state.writes.length)throw Object.assign(Error('未发送回读'),{notSent:true,request:name});return request(name,...args);};
+   const first=await run(f,l,{target:0});assert.equal(first.pending,stage==='read');assert.equal(l.snapshot().uncertain,stage==='read'?1:0);
+   blocked=false;await run(f,l,{target:0});assert.equal(l.snapshot().uncertain,0);assert.equal(f.state.writes.filter(r=>r.name==='GotMyGuildAidRequest').length,1);
+  }
  });
  await check('发布未知保留记录；后续真实计数和新请求确认后才继续',async()=>{
   const f=guildMutualFixture(),l=ledger();f.state.failure='askAcceptedUnknown';const first=await run(f,l,{target:0,askEnabled:true,askItemId:'橡胶圈',askTarget:2});assert.equal(first.pending,true);assert.equal(f.state.askUsed,1);f.state.failure='';const second=await run(f,l,{target:0,askEnabled:true,askItemId:'橡胶圈',askTarget:2});assert.equal(second.published,1);assert.equal(f.state.askUsed,2);

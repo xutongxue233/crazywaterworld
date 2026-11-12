@@ -1,5 +1,5 @@
 import { displayMaterial } from './config.mjs';
-import { readOrderReservedStock, beginOrderMaterialSpend, cancelOrderMaterialSpend } from './order-reservations.mjs';
+import { readOrderReservedStock, beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialOperation, refreshOrderMaterialSpends } from './order-reservations.mjs';
 import { toNumber } from './client.mjs';
 
 const key = 'guildOrders';
@@ -113,7 +113,7 @@ export async function readGuildOrderView(client, protocol, config, { player, ena
   if (maxNum !== -1 && doneToday >= maxNum) return { ...view, reason: '今日联盟订单已交 ' + doneToday + ' 单，达到本赛季上限 ' + maxNum };
   if (!requirements.size) return { ...view, reason: '当前没有联盟订单' };
   if (!city) return { ...view, reason: '联盟当前没有可提交订单的城市' };
-  const { stock, reservations } = await readOrderReservedStock(client, protocol, config, { player, enabled });
+  const { stock, reservations } = await readOrderReservedStock(client, protocol, config, { player, enabled, itemIds:[...requirements.keys()] });
   if (stamp !== identity(player) || !enabled()) throw new Error('账号或联盟状态已变化');
   view.requirements = [...requirements].map(([id, need]) => {
     const held = Object.fromEntries(Object.entries(reservations).map(([name, values]) => [name, values.get(id) ?? 0]));
@@ -137,11 +137,12 @@ export async function serviceGuildOrders(client, protocol, config, { player, ena
   if (busy.has(client)) return skip('正在核对联盟订单');
   busy.add(client);
   try {
+    await refreshOrderMaterialSpends(client,player,{enabled});
     const initial = await readGuildOrderView(client, protocol, config, { player, enabled });
     if (!initial.canFinish) { delay(180); return skip(initial.reason); }
     const saved = pending.get(initial.accountKey);
     if (saved) {
-      if (initial.day > saved.day || initial.doneToday > saved.doneToday) {
+      if ((initial.day === saved.day && initial.doneToday > saved.doneToday) || (initial.day > saved.day && saved.confirmed)) {
         pending.delete(initial.accountKey);
         delay(60);
         return skip('已重新核对上次联盟订单，下一轮继续');
@@ -159,21 +160,26 @@ export async function serviceGuildOrders(client, protocol, config, { player, ena
     if (!enabled() || identity(player) !== current.identity || idText(guild?.guildId) !== idText(player.guildId)) return skip('账号或联盟状态已变化');
     if (now(client) >= current.nextRefreshTime || dayOf(now(client)) !== current.day) return skip('订单已到刷新时间，下一轮重新核对');
     if (!protocol.FinishGuildOrderRequest || !protocol.FinishGuildOrderResponse) throw new Error('本地协议缺少联盟订单提交');
-    const debit = beginOrderMaterialSpend(player, current.requirements, '联盟订单');
-    pending.set(current.accountKey, { day: current.day, doneToday: current.doneToday });
+    const pendingOrder={ day: current.day, doneToday: current.doneToday, confirmed:false };
+    const debit = beginOrderMaterialSpend(player, current.requirements, '联盟订单',{operation:{onConfirmed:()=>{pendingOrder.confirmed=true;},verify:async(next,{player:actor,enabled:active})=>{
+      if(accountKey(actor)!==current.accountKey||dayOf(now(next))!==current.day||!active())return false;
+      const reply=await request(next,protocol,'CounterInfoRequest',active);
+      return active()&&accountKey(actor)===current.accountKey&&dayOf(now(next))===current.day&&countOf(reply)>current.doneToday;
+    }}});
+    pending.set(current.accountKey, pendingOrder);
     let reply;
     try {
       reply = await client.request('FinishGuildOrderRequest', { cityId: current.cityId }, 'FinishGuildOrderResponse');
     } catch (error) {
-      // A concrete server rejection is safe to retry after fresh reads. A
-      // timeout/disconnect has an unknown outcome and must retain the guard.
-      const refused = error.prompt && error.request === 'FinishGuildOrderRequest';
+      // A concrete rejection or definitely unsent write can retry after fresh
+      // reads. A timeout/disconnect with unknown delivery retains the guard.
+      const refused = error.notSent === true || error.prompt && error.request === 'FinishGuildOrderRequest';
       if (refused) {
         pending.delete(current.accountKey);
         cancelOrderMaterialSpend(debit);
       }
       delay(180);
-      return finish({ ok: false, error: refused ? '联盟订单被拒绝：' + error.message : '联盟订单结果未确认，已暂停重复提交：' + error.message });
+      return finish({ ok: false, error: error.notSent === true ? '联盟订单未发送：' + error.message : refused ? '联盟订单被拒绝：' + error.message : '联盟订单结果未确认，已暂停重复提交：' + error.message });
     }
     const rewards = reply?.reward?.asset;
     const confirmed = Array.isArray(rewards) && rewards.length && rewards.every(item =>
@@ -182,6 +188,9 @@ export async function serviceGuildOrders(client, protocol, config, { player, ena
       delay(180);
       return finish({ ok: false, error: '服务端未返回明确的联盟订单奖励，已暂停重复提交，请核对游戏记录' });
     }
+    pendingOrder.confirmed=true;
+    confirmOrderMaterialOperation(debit);
+    await refreshOrderMaterialSpends(client,player,{enabled});
     delay(60);
     return finish({ ok: true, label: label + ' · 已提交 1 单，获得' + rewards.map(item => displayMaterial(config, item.id) + ' ×' + toNumber(item.num)).join('、') });
   } catch (error) {

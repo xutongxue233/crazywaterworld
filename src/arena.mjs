@@ -46,7 +46,7 @@ function evaluateArena({ task, probe, dailyResetTime, client, now }) {
     cost: '挑战券 ×1', note: '挑战第 ' + target.rankNo + ' 名对手（战力 ' + toNumber(target.power) + '）' }] };
 }
 
-async function runArena({ client, protocol, action, timeout, allowAction }) {
+async function runArena({ client, protocol, action, timeout, allowAction, performWrite = write => write() }) {
   if (busy.has(client)) return skipped('正在核对上一场竞技场挑战');
   busy.add(client);
   try {
@@ -72,7 +72,7 @@ async function runArena({ client, protocol, action, timeout, allowAction }) {
     previous.snapshots.add(current.arenaSnapshot);
     const id = BigInt(current.body.challengeId);
     const challengeId = { low: Number(BigInt.asIntN(32, id)), high: Number(id >> 32n), unsigned: false };
-    const body = await client.request('ArenaChallengeRequest', { rank: current.body.rank, challengeId }, 'ArenaChallengeResponse', timeout);
+    const body = await performWrite(() => client.request('ArenaChallengeRequest', { rank: current.body.rank, challengeId }, 'ArenaChallengeResponse', timeout));
     if (body?.isChange) return skipped('对手排名已变更，本轮未挑战，等待新名单');
     if (uidText(body?.reportId)) return { body };
     const after = await request('ArenaInfo');

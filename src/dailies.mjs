@@ -448,6 +448,14 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
       }
       let ticket;
       let prepared = false;
+      let writeAttempted = false, writeFailure;
+      // Drivers include preflight and post-write reads. Cancellation evidence
+      // must belong to the mutation itself, never to a later read/hook.
+      const performWrite = async write => {
+        writeAttempted = true;
+        try { return await write(); }
+        catch (error) { writeFailure = error; throw error; }
+      };
       try {
         ticket = await beforeAction?.({ kind: 'daily', scope: 'daily', setting: 'dailies.enabled', label: action.note, ...action });
         prepared = true;
@@ -458,31 +466,33 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
         }
         let body;
         if (entry.task.id === 1010 && typeof DAILY_DRIVERS[1010].run === 'function') {
-          const sweepResult = await DAILY_DRIVERS[1010].run({ client, survey, action, timeout, allowAction, config });
+          const sweepResult = await DAILY_DRIVERS[1010].run({ client, survey, action, timeout, allowAction, config, performWrite });
           if (sweepResult?.skipped) {
-            await cancelAction?.(action, ticket, { notSent: true });
+            if (!writeAttempted) await cancelAction?.(action, ticket, { notSent: true });
             const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, skipped: true, reason: sweepResult.reason };
             results.push(outcome); onStep?.(outcome); continue;
           }
           body = sweepResult?.body;
         } else if (action.request === 'ArenaChallengeRequest' && typeof arenaDailyDriver.run === 'function') {
-          const arenaResult = await arenaDailyDriver.run({ client, protocol, action, timeout, allowAction });
+          const arenaResult = await arenaDailyDriver.run({ client, protocol, action, timeout, allowAction, performWrite });
           if (arenaResult?.skipped) {
-            await cancelAction?.(action, ticket, { notSent: true });
+            if (!writeAttempted) await cancelAction?.(action, ticket, { notSent: true });
             const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, skipped: true, reason: arenaResult.reason };
             results.push(outcome); onStep?.(outcome); continue;
           }
           body = arenaResult?.body;
         } else {
-          body = await sendAction(client, protocol, action, timeout);
+          body = await performWrite(() => sendAction(client, protocol, action, timeout));
         }
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: true, body };
         results.push(outcome);
         onStep?.(outcome);
         await afterAction?.(action, ticket, action.response ? outcome : { ...outcome, sent: true });
       } catch (error) {
-        if (prepared && (error.code === 'AUTOMATION_SKIP' || error.notSent === true || error.prompt && error.request === action.request)) {
-          await cancelAction?.(action, ticket, { notSent: error.code === 'AUTOMATION_SKIP' || error.notSent === true, error });
+        const notSent = !writeAttempted || (writeFailure === error && error.notSent === true);
+        const rejected = writeFailure === error && error.prompt && error.request === action.request;
+        if (prepared && (notSent || rejected)) {
+          await cancelAction?.(action, ticket, { notSent, error });
         }
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, way: action.body?.way, note: action.note, ok: false,
           ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true, reason: error.message } : {}), error: error.message };

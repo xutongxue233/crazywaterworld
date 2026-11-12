@@ -9,6 +9,7 @@ import { collectFloaters } from './collections.mjs';
 import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { readOrderReservedStock } from './order-reservations.mjs';
+import { petSpendSnapshot, confirmPetSpend } from './spend-evidence.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const quantities = list => (list ?? []).map(item => Array.isArray(item) ? { id: item[0], num: Number(item[1]) } : { id: item.id, num: Number(item.num) });
@@ -349,7 +350,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
   const results = [];
   for (const step of plan.actions) {
     if (!enabled()) break;
-    let ticket = null, choiceTicket = null, prepared = false, sent = false, entry;
+    let ticket = null, choiceTicket = null, prepared = false, sent = false, writePending = false, entry, petBefore, waterSnapshot;
     try {
       const current = getSettings();
       const [group, key] = step.setting.split('.');
@@ -363,7 +364,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         choiceTicket=ledger.reserve({},{},{},{uniqueKey:choiceKey,details:{kind:'choiceEvent',eventUid:step.body.uid}});
       }
       if (step.kind === 'museumStart' && player) {
-        const reserved = await readOrderReservedStock(client, protocol, config, { player, enabled: () => enabled() && current === getSettings() });
+        const reserved = await readOrderReservedStock(client, protocol, config, { player, enabled: () => enabled() && current === getSettings(), itemIds: (step.costs ?? []).map(row => row.id) });
         const costs = new Map();
         for (const cost of step.costs ?? []) {
           if (typeof cost.id !== 'string' || !Number.isSafeInteger(cost.num) || cost.num <= 0) throw new AutomationSkip('博物馆派遣消耗未确认');
@@ -373,13 +374,16 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         }
         if (!costs.size || [...costs].some(([id, need]) => (reserved.available.get(id) ?? 0) < need)) throw new AutomationSkip('博物馆派遣材料不足，或已为周订单、贸易港和居民订单预留');
       }
-      ticket = await guard.before(step); prepared = true;
-      if (!enabled()) { await guard.cancel(step, ticket, { notSent: true }); if(choiceTicket)ledger.cancel(choiceTicket); break; }
       if (['petBreed', 'petClaim', 'petFeed'].includes(step.kind)) {
         const fresh = normalize(await client.request('OnWaterRequest', {}, 'OnWaterResponse', 8000));
         if (!Array.isArray(fresh.building)) throw new AutomationSkip('海兽培育：未取得最新队列状态，等待下次检查');
         const rooms = petRooms(fresh.building, config), queues = rooms.map(room => petQueue(room, config));
         if (!rooms.length || queues.some(q => !q)) throw new AutomationSkip('海兽培育：真实培育室或队列容量未确认，暂不操作');
+        if (step.kind !== 'petClaim') {
+          petBefore = petSpendSnapshot(rooms);
+          if (!petBefore) throw new AutomationSkip('海兽培育：队列身份或时间数据不完整，暂不操作');
+          waterSnapshot = fresh;
+        }
         const mature = queues.reduce((n, q) => n + q.mature, 0);
         if (step.kind === 'petBreed') {
           if (mature) throw new AutomationSkip('海兽培育：有已完成海兽待领取，领取确认后再培育');
@@ -393,10 +397,14 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         }
         if (!enabled() || current !== getSettings() || !getSettings().pet.enabled || !getSettings().pet[key]) throw new AutomationSkip('海兽操作设置已变化或已暂停');
       }
+      ticket = await guard.before(step, { waterSnapshot }); prepared = true;
+      if (!enabled() || current !== getSettings()) { await guard.cancel(step, ticket, { notSent: true }); if(choiceTicket)ledger.cancel(choiceTicket); break; }
       const wireBody = step.kind === 'choiceEvent' ? { ...step.body, uid: automationWireId(step.body.uid) } : step.body;
-      sent = true;
+      sent = writePending = true;
       if (step.response && protocol[step.response]) {
-        let body = normalize(await client.request(step.request, wireBody, step.response, 15000));
+        const reply = await client.request(step.request, wireBody, step.response, 15000);
+        writePending = false;
+        let body = normalize(reply);
         if(step.kind==='choiceEvent' && !body.reward?.asset?.length)throw new Error('随机事件奖励回执尚未确认');
         if (step.kind === 'museumStart' && !(body.expedition?.endTime > 0)) throw new Error('服务器尚未确认探宝队伍出发');
         if (step.kind === 'museumComplete') {
@@ -419,7 +427,9 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         }
         entry = { step, ok: true, body };
       } else {
-        entry = { step, ok: true, sent: await client.sendWatch(step.request, wireBody, { window: 500 }) };
+        const watched = await client.sendWatch(step.request, wireBody, { window: 500 });
+        writePending = false;
+        entry = { step, ok: true, sent: watched };
         if (step.kind === 'museumAchievement') {
           const after = normalize(await client.request('MuseumInfoRequest', {}, 'MuseumInfoResponse'));
           if (!after.claimedAchievements?.some(score => Number(score) === step.body.popularityThreshold)) throw new Error('服务器尚未确认博物馆成就已领取');
@@ -429,10 +439,9 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
           if (!Array.isArray(after.building)) throw new Error('无法核对海兽培育状态');
           const rooms = petRooms(after.building, config);
           if (!rooms.length || rooms.some(room => !petQueue(room, config))) throw new Error('无法完整确认真实培育室队列，等待下次检查');
-          const jobs = rooms.flatMap(b => b.petBreed.breedQ ?? []);
           const mature = rooms.reduce((sum, b) => sum + (b.petBreed.maturePets?.length ?? 0), 0);
-          const job = jobs.find(job => job.idx === step.body.jobIdx);
-          const confirmed = rooms.length > 0 && (step.kind === 'petClaim' ? mature < step.verify.matureBefore : step.kind === 'petBreed' ? jobs.length > step.verify.queueBefore : !job || job.finishTime < step.verify.finishTime);
+          const confirmed = step.kind === 'petClaim' ? mature < step.verify.matureBefore
+            : confirmPetSpend(petBefore, petSpendSnapshot(rooms), step.request, step.body);
           if (!confirmed) throw new Error('服务器尚未确认海兽操作结果');
           entry = { step, ok: true, body: { confirmed: true } };
         } else if (step.kind === 'petAdvance' || step.kind === 'petAdvanceFeed') {
@@ -447,8 +456,9 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
       if (step.kind === 'choiceEvent') {ledger.confirm(choiceTicket);watchBasePushes(client).choices.delete(String(step.body.uid));}
       await guard.after(step, ticket, entry);
     } catch (error) {
-      if(choiceTicket && (!sent || error.prompt&&error.request==='SelectChoiceRequest'))ledger.cancel(choiceTicket);
-      if (prepared && (!sent || error.prompt && error.request === step.request)) await guard.cancel(step, ticket, { notSent: !sent, error });
+      const notSent = !sent || (writePending && error.notSent === true);
+      if(choiceTicket && (notSent || error.prompt&&error.request==='SelectChoiceRequest'))ledger.cancel(choiceTicket);
+      if (prepared && (notSent || error.prompt && error.request === step.request)) await guard.cancel(step, ticket, { notSent, error });
       entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
     }
     results.push(entry); onStep?.(entry);

@@ -266,7 +266,7 @@ export async function serviceMuseum(client, protocol, config, {
         if (!allowed('museumExplore')) break;
         const cfg = rows(config, 'MuseumExpeditionStageCfg').filter(r => r.stageId === candidate.stageId);
         if (cfg.length !== 1 || !(num(cfg[0].exploreTime, '探险时长', 1) > 0)) throw new Error('缺少当前探险关卡配置');
-        const reserved = await readOrderReservedStock(client, protocol, config, { player, enabled: () => allowed('museumExplore') });
+        const reserved = await readOrderReservedStock(client, protocol, config, { player, enabled: () => allowed('museumExplore'), itemIds: [...costsOf(candidate).keys()] });
         stages = await info('museumExplore');
         const current = stages.find(s => s.stageId === candidate.stageId);
         if (!current || !idle(current) || current.progress !== candidate.progress || JSON.stringify(current.expedition) !== JSON.stringify(candidate.expedition)

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { loadProtocol } from '../src/proto.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, syncFestivalDay, applyActiveScore } from '../src/free-rewards.mjs';
-import { activityEntries, runActivity } from '../src/activities.mjs';
+import { activityEntries, runActivity, readWeekOrder } from '../src/activities.mjs';
 
 const protocol = loadProtocol();
 const startOfDay = Math.floor((Date.now() / 1000 + 8 * 3600) / 86400) * 86400 - 8 * 3600;
@@ -241,6 +241,21 @@ const player = { playerId: 77, worldId: 1, guildId: 0 };
   });
   await claimWeeklyRewards(client, config, [week(5, 9)], onlyKeys('weekOrderSubmit'), record(), { player, readOrder: async () => ({ needed: new Map([['木板', 50]]), finished: false }) });
   assert.equal(client.calls.filter(name => name === 'FinishWeekOrderRequest').length, 1, '每次只提交一单');
+}
+
+for(const mode of ['production','lost','incomplete','notSent']){
+  const actor={playerId:mode==='production'?7801:mode==='lost'?7802:mode==='incomplete'?7803:7804,worldId:1,guildId:0};
+  let stock=10,writes=0,bad=false;const got=[];
+  const client=game({
+    WeekInfoRequest:()=>({activityTime:[week(5,9)]}),
+    WeekOrderInfoRequest:()=>({gotRwdId:[...got],isGotFinal:false,order:[{id:'木板',num:3}]}),
+    AllItemRequest:()=>bad?{}:{items:[{itemId:'木板',num:stock}]},
+    FinishWeekOrderRequest:()=>{writes++;if(mode==='notSent'&&writes===1)throw Object.assign(Error('not sent'),{notSent:true});stock+=2;got.push(writes);if(mode==='lost'&&writes===1)throw Error('accepted response lost');if(mode==='incomplete'&&writes===1)bad=true;return {randomRwdId:writes};},
+  });
+  const call=()=>claimWeeklyRewards(client,config,[week(5,9)],onlyKeys('weekOrderSubmit'),record(),{player:actor,readOrder:readWeekOrder});
+  await call();assert.equal(writes,1);
+  if(mode==='incomplete'){await call();assert.equal(writes,1,'完整库存缺失时旧周单也不能继续提交');bad=false;}
+  await call();assert.equal(writes,2,'旧周单在业务确认及完整库存后继续，兼容净增长、丢回包恢复和明确未发送释放');assert.equal(stock,mode==='notSent'?12:14);
 }
 
 // VIP daily: levels up to the current one, once a day.

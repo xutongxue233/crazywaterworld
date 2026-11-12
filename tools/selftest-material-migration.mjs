@@ -120,17 +120,19 @@ export async function testMaterialMigration() {
 
     const cargoFirst = fixture(directory);
     cargoFirst.ships[0].orderItem = [2, 3].map(num => ({ filled: false, asset: asset('fish', num) }));
+    cargoFirst.inventory = items => { if (cargoFirst.writes.length) throw new Error('消费后库存暂不可读'); return items; };
     await cargoFirst.cargo();
     assert.equal(cargoFirst.actual.get('fish'), 15, 'duplicate cargo materials aggregate into one shared debit');
     assert.equal(cargoFirst.prepared[0].request, 'FillCargoShipRequest');
     assert.equal(cargoFirst.ledger.snapshot().counters.cargoLoads, 1);
     assert.equal(cargoFirst.ledger.snapshot().uncertain, 0, 'acknowledged loading confirms the counter but still holds the inventory debit');
-    await assert.rejects(cargoFirst.read(), /扣款尚未确认/);
-    await assert.rejects(Object.create(cargoFirst).read(), /扣款尚未确认/);
+    await assert.rejects(cargoFirst.read(), /库存暂不可读/);
+    await assert.rejects(Object.create(cargoFirst).read(), /库存暂不可读/);
     const other = fixture(directory);
     await other.cargo(); other.stale = false; await other.read();
     assert.deepEqual(other.writes, ['FillCargoShipRequest'], 'another account has its own material barrier');
     cargoFirst.stale = false;
+    delete cargoFirst.inventory;
     assert.equal((await cargoFirst.read()).available.get('fish'), 15);
     const resumed = beginOrderMaterialSpend(cargoFirst.player, [{ id: 'fish', have: 15, need: 1 }], 'legacy resumed');
     cancelOrderMaterialSpend(resumed);
@@ -147,14 +149,14 @@ export async function testMaterialMigration() {
     for (const failure of ['timeout', 'lost', 'unattributed', 'unrelated']) {
       const uncertain = fixture(directory); uncertain.failure = failure;
       await assert.rejects(uncertain.cargo());
-      await assert.rejects(uncertain.read(), /扣款尚未确认/, failure + ' must retain its cross-module debit');
       assert.equal(uncertain.ledger.snapshot().counters.cargoLoads, 1);
       assert.equal(uncertain.ledger.snapshot().uncertain, 1);
       assert.equal(uncertain.cancelled.length, 0);
       if (failure === 'lost') {
         uncertain.stale = false;
-        assert.equal((await uncertain.read()).available.get('fish'), 15, 'inventory synchronization recovers a lost reply');
-      }
+        assert.equal((await uncertain.read()).available.get('fish'), 15, 'matching filled slots followed by complete inventory recover a lost reply');
+        assert.equal(uncertain.ledger.snapshot().uncertain, 0);
+      } else await assert.rejects(uncertain.read(), /扣款尚未确认/, failure + ' must retain its cross-module debit');
     }
 
     for (const stop of ['pause', 'setting']) {
@@ -175,10 +177,8 @@ export async function testMaterialMigration() {
       assert.equal(speed.prepared[0].request, 'SpeedUpShipRequest');
       assert.deepEqual(speed.writes, ['SpeedUpShipRequest']);
       if (failure === 'refused') await speed.read();
-      else {
-        await assert.rejects(speed.read(), /扣款尚未确认/, 'speed-up items also share the material barrier');
-        if (!failure) { speed.stale = false; await speed.read(); }
-      }
+      else if (failure) await assert.rejects(speed.read(), /扣款尚未确认/, 'unconfirmed speed-up retains its material reservation');
+      else { speed.stale = false; await speed.read(); }
     }
     const stoppedSpeed = fixture(directory); stoppedSpeed.ships[0].status = 1; stoppedSpeed.ships[0].arriveTime = now() + 3600;
     stoppedSpeed.afterBefore = () => { stoppedSpeed.running = false; };

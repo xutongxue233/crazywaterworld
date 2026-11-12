@@ -1,6 +1,6 @@
 import { toNumber } from './client.mjs';
 import { uidText } from './hero-equipment.mjs';
-import { reconcileGold, reserveGold, rejectGold } from './gold-reservations.mjs';
+import { reconcileGold, reserveGold, rejectGold, cancelUnsentGold, confirmGoldOperation, refreshGoldSpend } from './gold-reservations.mjs';
 
 export const petBreedGoldReserve = 10_000;
 const keys = ['petCollect', 'petBreed'];
@@ -47,12 +47,16 @@ function counts(pets) {
 }
 
 function jobKey(job) { return JSON.stringify([job.idx, job.petId, job.startTime, job.finishTime]); }
+// Feeding/speed-ups may change finishTime without creating a new queue entry.
+function jobIdentity(job) { return JSON.stringify([job.idx, job.petId, job.startTime]); }
 
 async function read(client, protocol, name, active) {
   if (!active()) throw new Error('账号已暂停或连接已更换');
   const response = name.replace(/Request$/, 'Response');
   if (!protocol?.[name] || !protocol[response]) throw new Error('本地协议缺少海兽查询：' + name);
-  return client.request(name, {}, response);
+  const result = await client.request(name, {}, response);
+  if (!active()) throw new Error('账号已暂停或连接已更换');
+  return result;
 }
 
 async function roomState(client, protocol, buildingId, active) {
@@ -148,7 +152,7 @@ function chooseRecipe(config, season, stock) {
   return candidates.sort((a, b) => b.quality - a.quality || a.spId - b.spId)[0];
 }
 
-async function confirmed(client, protocol, operation, active, room) {
+async function businessConfirmed(client, protocol, operation, active, room) {
   if (room.reason) return false;
   if (operation.key === 'petCollect') {
     if (room.mature.length) return false;
@@ -156,19 +160,27 @@ async function confirmed(client, protocol, operation, active, room) {
     const gained = counts([...pets].filter(([uid]) => !operation.pets.has(uid)).map(([, pet]) => pet));
     return [...counts(operation.mature)].every(([kind, amount]) => (gained.get(kind) ?? 0) >= amount);
   }
-  const added = room.jobs.some(job => job.petId === operation.petId && !operation.jobs.has(jobKey(job)));
-  const mature = room.mature.filter(pet => pet.petId === operation.petId).length > operation.mature.filter(pet => pet.petId === operation.petId).length;
-  let exists = added || mature;
-  if (!exists) {
-    const pets = await petInventory(client, protocol, active);
-    exists = [...pets].some(([uid, pet]) => !operation.pets.has(uid) && pet.petId === operation.petId);
-  }
-  if (!exists) return false;
-  // Queue acknowledgement alone is not enough to spend again: wait until the
-  // separately queried material and gold snapshots have reflected this cost.
-  const stock = await stockState(client, protocol, active);
-  reconcileGold(operation.player, stock.get('GOLD'));
-  return [...operation.costs].every(([id, amount]) => (stock.get(id) ?? 0) <= operation.stock.get(id) - amount);
+  if (room.jobs.some(job => job.petId === operation.petId && !operation.jobs.has(jobIdentity(job)))) return true;
+  // Every same-kind queue/mature pet present before this request may finish or
+  // be claimed while its outcome is unknown. Only gains beyond that upper
+  // bound can prove an additional pet was bred by a later operation.
+  const previousMature = operation.mature.filter(pet => pet.petId === operation.petId).length;
+  const previousTotal = operation.priorInFlight + previousMature;
+  if (!Number.isSafeInteger(previousTotal) || previousTotal < 0) return false;
+  if (room.mature.filter(pet => pet.petId === operation.petId).length > previousTotal) return true;
+  const pets = await petInventory(client, protocol, active);
+  return [...pets].filter(([uid, pet]) => !operation.pets.has(uid) && pet.petId === operation.petId).length > previousTotal;
+}
+
+async function confirmed(client, protocol, operation, active, room) {
+  if (!await businessConfirmed(client, protocol, operation, active, room)) return false;
+  if (operation.key === 'petCollect') return true;
+  // Query complete balances only after the matching queue/new pet is known.
+  // Production and rewards can hide the debit in the net balance.
+  await stockState(client, protocol, active);
+  if (!active()) return false;
+  confirmGoldOperation(operation.gold);
+  return refreshGoldSpend(client, operation.player, { enabled: active });
 }
 
 export async function servicePetBreeding(client, protocol, config, {
@@ -206,6 +218,7 @@ export async function servicePetBreeding(client, protocol, config, {
     account = identity(player);
     if (busy.has(account)) { for (const key of keys) skip(key, '正在核对上一轮海兽培育'); return; }
     busy.add(account); locked = true;
+    await refreshGoldSpend(client, player, { enabled: anyActive });
     let room = await roomState(client, protocol, rooms[0].buildingId, anyActive);
     const saved = pending.get(account);
     if (saved) {
@@ -269,15 +282,23 @@ export async function servicePetBreeding(client, protocol, config, {
     if (current?.petId !== recipe.petId) { skip('petBreed', '材料或金币余额已变化，下一轮重新选择配方'); return; }
     if (!protocol.PetBreedRequest) throw new Error('本地协议缺少海兽培育接口');
     if (!active('petBreed')) return;
-    const reservation = reserveGold(player, stock.get('GOLD'), current.costs.get('GOLD'), 'PetBreedRequest');
     const attempt = { key: 'petBreed', player: { playerId: uidText(player.playerId), worldId: number(player.worldId, '账号区服', 1) },
-      pets, mature: room.mature, jobs: new Set(room.jobs.map(jobKey)),
+      pets, mature: room.mature, jobs: new Set(room.jobs.map(jobIdentity)),
+      priorInFlight: room.jobs.filter(job => job.petId === current.petId).length,
       petId: current.petId, stock, costs: current.costs };
+    const buildingId = room.buildingId;
+    const reservation = reserveGold(player, stock.get('GOLD'), current.costs.get('GOLD'), 'PetBreedRequest', { operation: {
+      async verify(connection, { enabled: allowed }) {
+        const state = await roomState(connection, protocol, buildingId, allowed);
+        return businessConfirmed(connection, protocol, attempt, allowed, state);
+      },
+    } });
+    attempt.gold = reservation;
     pending.set(account, attempt);
     try { await client.sendWatch('PetBreedRequest', { petId: current.petId, universal: false }, { window: 500 }); }
     catch (error) {
-      rejectGold(reservation, error);
-      if (error.prompt && error.request === 'PetBreedRequest') pending.delete(account);
+      if (error.notSent === true) cancelUnsentGold(reservation); else rejectGold(reservation, error);
+      if (error.notSent === true || error.prompt && error.request === 'PetBreedRequest') pending.delete(account);
       throw error;
     }
     room = await roomState(client, protocol, room.buildingId, anyActive);

@@ -2,8 +2,8 @@ import { cleanupAfterClaim } from './claim-cleanup.mjs';
 // 正常装备锻造：读取配方和库存后下单，确认工厂状态，产出入库后才安排下一件。
 import { exactAutomationId } from './automation-policy.mjs';
 import { displayMaterial } from './config.mjs';
-import { reconcileGold, reserveGold, rejectGold, cancelUnsentGold } from './gold-reservations.mjs';
-import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
+import { reconcileGold, reserveGold, rejectGold, cancelUnsentGold, confirmGoldOperation, refreshGoldSpend } from './gold-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, confirmOrderMaterialOperation, refreshOrderMaterialSpends } from './order-reservations.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
@@ -22,7 +22,7 @@ function quantity(value) {
   return n >= 0n && n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : null;
 }
 
-export async function readEquipmentForge(client, protocol, config, player) {
+export async function readEquipmentForge(client, protocol, config, player, { enabled = () => true } = {}) {
   const worldId = exactAutomationId(player?.worldId);
   const snapshot = { now: nowOf(client), worldId, season: worldId ? Number(BigInt(worldId) / 1000000n % 1000n) : null,
     playerId: exactAutomationId(player?.playerId), forgeLevel: player?.forgeLevel ?? null, buildings: [], equipment: [], stock: new Map(), gold: null, reason: '' };
@@ -32,6 +32,8 @@ export async function readEquipmentForge(client, protocol, config, player) {
     return client.request(name, {}, response, 8000);
   };
   try {
+    await refreshGoldSpend(client, player, { enabled });
+    await refreshOrderMaterialSpends(client, player, { enabled });
     const [water, items, resources, equips] = await Promise.all([
       get('OnWaterRequest', 'OnWaterResponse'), get('AllItemRequest', 'AllItemResponse'),
       get('AllResourceRequest', 'AllResourceResponse'), get('EquipsRequest', 'EquipsResponse'),
@@ -181,7 +183,7 @@ export async function runEquipmentForge(client, protocol, config, player, { getS
   active.add(client);
   const results = [], report = entry => { results.push(entry); onStep?.(entry); };
   try {
-    const read = () => readEquipmentForge(client, protocol, config, player);
+    const read = () => readEquipmentForge(client, protocol, config, player, { enabled });
     const snapshot = await read(); reconcile(snapshot, ledger, report);
     const plan = planEquipmentForge(snapshot, config, getSettings(), { usage: ledger.snapshot(), keys: ledger.keyRecords() });
     const balances = new Map(snapshot.stock);
@@ -231,10 +233,19 @@ export async function runEquipmentForge(client, protocol, config, player, { getS
       const ticket = ledger.reserve({ forgeStarts: 1, forgeGold: step.gold }, { forgeStarts: settings.forge.dailyLimit, forgeGold: settings.forge.dailyGoldLimit }, {}, { uniqueKey: step.uniqueKey, details });
       if (!enabled() || settings !== getSettings() || !client.connected) { ledger.cancel(ticket); break; }
       let goldReservation, materialReservation;
+      const { buildingId, makeId, beforeFinishTime, sentAt } = details;
+      const operation = { async verify(current) {
+        const water = await current.request('OnWaterRequest', {}, 'OnWaterResponse');
+        if (!Array.isArray(water?.building)) return false;
+        const matches = water.building.filter(row => row.buildingId === buildingId);
+        const making = matches.length === 1 ? matches[0].equipMaking : null;
+        return making?.makeId === makeId && integer(making.finishTime, 1)
+          && making.finishTime > beforeFinishTime && making.finishTime >= sentAt;
+      } };
       try {
         confirmOrderMaterialSpends(player, actualStock);
-        materialReservation = beginOrderMaterialSpend(player, step.costs.filter(cost => cost.id !== 'GOLD').map(cost => ({ id: cost.id, have: actualStock.get(cost.id) ?? 0, need: cost.num })), step.label);
-        goldReservation = reserveGold(player, fresh.gold, step.gold, 'MakeEquipRequest');
+        materialReservation = beginOrderMaterialSpend(player, step.costs.filter(cost => cost.id !== 'GOLD').map(cost => ({ id: cost.id, have: actualStock.get(cost.id) ?? 0, need: cost.num })), step.label, { operation });
+        goldReservation = reserveGold(player, fresh.gold, step.gold, 'MakeEquipRequest', { operation });
       } catch (error) { cancelOrderMaterialSpend(materialReservation); cancelUnsentGold(goldReservation); ledger.cancel(ticket); report({ step, ok: false, skipped: true, error: error.message }); continue; }
       if (!enabled() || settings !== getSettings() || !client.connected) { cancelOrderMaterialSpend(materialReservation); cancelUnsentGold(goldReservation); ledger.cancel(ticket); break; }
       let entry;
@@ -243,10 +254,21 @@ export async function runEquipmentForge(client, protocol, config, player, { getS
         const after = await read(); reconcile(after, ledger, report);
         const record = ledger.keyRecords()[step.uniqueKey];
         const confirmed = !record || record.confirmed;
+        if (confirmed && !after.reason) {
+          confirmGoldOperation(goldReservation);
+          confirmOrderMaterialOperation(materialReservation);
+          await refreshGoldSpend(client, player, { enabled });
+          await refreshOrderMaterialSpends(client, player, { enabled });
+        }
         entry = { step, ok: confirmed, sent: true, status: confirmed ? 'confirmed' : 'unknown',
           note: confirmed ? '服务器已确认新的锻造任务' : '下单结果待确认，保留材料/金币预算并停止重复下单' };
       } catch (error) {
-        if (error.prompt && error.request === 'MakeEquipRequest') {
+        if (error.notSent === true) {
+          cancelOrderMaterialSpend(materialReservation);
+          cancelUnsentGold(goldReservation);
+          ledger.cancel(ticket);
+          entry = { step, ok: false, skipped: true, status: 'cancelled', error: error.message };
+        } else if (error.prompt && error.request === 'MakeEquipRequest') {
           cancelOrderMaterialSpend(materialReservation);
           rejectGold(goldReservation, error);
           ledger.cancel(ticket);

@@ -74,7 +74,7 @@ export function planPirateSweeps({ task, probe, player, config, now, client, dai
     : { status: 'ready', actions };
 }
 
-export async function runPirateSweep({ client, survey, action, timeout, allowAction, config }) {
+export async function runPirateSweep({ client, survey, action, timeout, allowAction, config, performWrite = write => write() }) {
   const read = name => client.request(name + 'Request', {}, name + 'Response', timeout);
   const daily = await read('DailyTaskInfo');
   const task = daily?.dailyTask?.find(row => row.id === 1010);
@@ -97,7 +97,7 @@ export async function runPirateSweep({ client, survey, action, timeout, allowAct
     return { skipped: true, reason: '该扫荡计划已经执行，请刷新' };
   const attempt = { used: map.sweepTimes, progress: task.progress, confirmed: false };
   attempts.set(action.body.uid, attempt);
-  await client.sendWatch('PirateSweepRequest', action.body, { window: 400 });
+  await performWrite(() => client.sendWatch('PirateSweepRequest', action.body, { window: 400 }));
   const after = await read('AllPirate');
   if (!Number.isSafeInteger(after?.sweepTimes) || after.sweepTimes <= map.sweepTimes) throw new Error('服务端未确认扫荡次数增加，已停止重复尝试此目标');
   attempt.confirmed = true;

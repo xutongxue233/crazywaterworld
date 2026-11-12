@@ -212,7 +212,7 @@ export function planHeroes({ config, heroes, itemNum, playerLevel, allowUniversa
 }
 
 // 逐条执行。HeroLevelUpRequest 一次只升一级，服务端没有批量接口，所以英雄升级会被展开成多次请求。
-export async function runHeroPlan(client, protocol, plan, { allowMutate = false, timeout = 15000, onStep, enabled = () => true, getSettings, beforeAction, afterAction } = {}) {
+export async function runHeroPlan(client, protocol, plan, { allowMutate = false, timeout = 15000, onStep, enabled = () => true, getSettings, beforeAction, afterAction, cancelAction } = {}) {
   if (!allowMutate) throw new Error('英雄养成会改变账号状态，需要 --yes');
   const results = [];
   // 同一英雄的同一类操作一旦被服务端拒了，后面的同类步骤必然同样被拒，直接跳过不再骚扰服务端。
@@ -236,16 +236,23 @@ export async function runHeroPlan(client, protocol, plan, { allowMutate = false,
         (step.kind === 'star' && ((pref.targetStar > 0 && step.to > pref.targetStar) || (step.universal && !pref.universal))))) break;
       const body = buildHeroBody(step);
       const targetLevel = step.kind === 'level' ? step.from + i + 1 : undefined;
+      const request = step.kind === 'level' ? 'HeroLevelUpRequest' : step.kind === 'star' ? 'HeroStarUpRequest' : 'HeroSkillLevelUpRequest';
+      const budgetStep = { ...step, request, body, targetLevel, scope: 'hero', setting: `heroes.${step.kind}`, label: `${step.heroId}养成`,
+        costs: step.kind === 'level' ? [{ id: HERO_EXP_ITEM, num: step.levelCosts?.[i] }] : step.costs };
+      let ticket = null, prepared = false, sent = false, writePending = false;
       try {
-        const budgetStep = { ...step, scope: 'hero', setting: `heroes.${step.kind}`, label: `${step.heroId}养成`,
-          costs: step.kind === 'level' ? [{ id: HERO_EXP_ITEM, num: step.levelCosts?.[i] }] : step.costs };
-        const ticket = await beforeAction?.(budgetStep);
+        ticket = await beforeAction?.(budgetStep); prepared = true;
+        if (!enabled()) { await cancelAction?.(budgetStep, ticket, { notSent: true }); break; }
+        sent = writePending = true;
         const outcome = await sendHero(client, protocol, step, body, timeout);
+        writePending = false;
         const entry = { step, targetLevel, ok: true, ...outcome };
         results.push(entry);
         onStep?.(entry);
         await afterAction?.(budgetStep, ticket, outcome.response ? entry : { ...entry, sent: true });
       } catch (error) {
+        const notSent = !sent || (writePending && error.notSent === true);
+        if (prepared && (notSent || error.prompt && error.request === request)) await cancelAction?.(budgetStep, ticket, { notSent, error });
         blocked.add(key);
         const entry = { step, targetLevel, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
         results.push(entry);
@@ -274,7 +281,7 @@ async function sendHero(client, protocol, step, body, timeout) {
     : step.kind === 'star'
       ? 'HeroStarUpRequest'
       : 'HeroSkillLevelUpRequest';
-  if (!protocol[request]) throw new Error(`protocol has no type ${request}`);
+  if (!protocol[request]) throw Object.assign(new Error(`protocol has no type ${request}`), { notSent: true });
   if (request === 'HeroStarUpRequest') {
     const response = await client.request(request, body, 'HeroStarUpResponse', timeout);
     return { response: 'HeroStarUpResponse', body: response };

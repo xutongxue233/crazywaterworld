@@ -11,7 +11,7 @@ import { readEquipmentCrafting, startEquipmentCraft } from '../src/equipment-cra
 import { runEquipmentForge } from '../src/equipment-forge.mjs';
 import { runBaseAutomation } from '../src/base-automation.mjs';
 import { servicePetBreeding } from '../src/pet-breeding.mjs';
-import { reserveGold, reconcileGold } from '../src/gold-reservations.mjs';
+import { reserveGold } from '../src/gold-reservations.mjs';
 import { beginOrderMaterialSpend, confirmOrderMaterialSpends, cancelOrderMaterialSpend } from '../src/order-reservations.mjs';
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-resource-migration-'));
@@ -37,7 +37,7 @@ function fixture() {
     return reply;
   };
   f.client.sendWatch = async (name, body, options) => {
-    if (name !== 'PetBreedRequest') return send(name, body, options);
+    if (name !== 'PetBreedRequest') { const result = await send(name, body, options); f.state.gold += f.replenishGold ?? 0; return result; }
     encode(f, name, body); f.client.writes.push({ name, body });
     if (f.petReject) throw Object.assign(new Error('模拟明确拒绝'), { prompt: {}, request: name });
     if (f.petUnknown) throw new Error('模拟连接中断');
@@ -46,6 +46,7 @@ function fixture() {
       if (id === 'GOLD') f.state.gold -= amount;
       else f.state.materials[id] -= amount;
     }
+    f.state.gold += f.replenishGold ?? 0;
   };
   f.oldCraft = async () => {
     const view = await readEquipmentCrafting(f.client, f.config, f.player);
@@ -72,32 +73,29 @@ async function check(name, run) {
   catch (error) { results.push({ name, passed: false, error: error.stack }); console.error('失败：' + name + '\n' + error.stack); }
 }
 
-await check('旧装备成功但金币滞后时，新锻造和新海兽都不再发包', async () => {
-  const f = fixture(); f.reportedGold = f.state.gold;
+await check('旧装备成功并回读完整金币后，收入增长不阻止新锻造和新海兽', async () => {
+  const f = fixture(); f.replenishGold = 5000;
   await f.oldCraft(); f.state.factory.equipMaking = null;
-  const forge = await f.forge(); assert(forge.results.some(row => row.skipped && /金币扣款尚未同步/.test(row.error)));
-  const pet = await f.basePet(); assert(pet[0].skipped); assert.match(pet[0].error, /金币扣款尚未同步/);
-  assert.deepEqual(f.client.writes.map(row => row.name), ['MakeEquipRequest']);
-  delete f.reportedGold; assert.equal(reconcileGold(f.player, f.state.gold), true);
+  assert.equal((await f.forge()).results[0].status, 'confirmed');
   assert.equal((await f.basePet())[0].ok, true);
+  assert.deepEqual(f.client.writes.map(row => row.name), ['MakeEquipRequest', 'MakeEquipRequest', 'PetBreedRequest']);
 });
 
-await check('新锻造确认队列而金币滞后时，旧装备和旧海兽都等待扣款', async () => {
-  const f = fixture(); f.reportedGold = f.state.gold;
+await check('新锻造确认队列且金币回涨时，旧装备和旧海兽可使用新余额', async () => {
+  const f = fixture(); f.replenishGold = 5000;
   assert.equal((await f.forge()).results[0].status, 'confirmed');
   f.state.factory.equipMaking = null;
-  await assert.rejects(f.oldCraft, /金币扣款尚未同步/);
-  assert((await f.oldPet()).some(row => /金币扣款尚未同步/.test(row.reason)));
-  assert.equal(f.client.writes.length, 1);
-  delete f.reportedGold; await f.oldCraft(); assert.equal(f.client.writes.length, 2);
+  await f.oldCraft();
+  assert((await f.oldPet()).some(row => row.ok));
+  assert.equal(f.client.writes.length, 3);
 });
 
-await check('新海兽确认队列而金币滞后时，旧装备和旧海兽都等待扣款', async () => {
-  const f = fixture(); f.petStale = true;
+await check('新海兽确认队列且金币回涨后，旧装备和旧海兽仍可继续', async () => {
+  const f = fixture(); f.replenishGold = 5000;
   assert.equal((await f.basePet())[0].ok, true);
-  await assert.rejects(f.oldCraft, /金币扣款尚未同步/);
-  assert((await f.oldPet()).some(row => /金币扣款尚未同步/.test(row.reason)));
-  assert.equal(f.client.writes.length, 1);
+  await f.oldCraft();
+  assert((await f.oldPet()).some(row => row.ok));
+  assert.equal(f.client.writes.length, 3);
 });
 
 await check('旧海兽结果未知时阻止新锻造，身份和区服隔离', async () => {
@@ -147,7 +145,7 @@ await check('无详细设置的 guard 仍遵守金币屏障，暂停复核未发
   const guard = createActionGuard(f.client, () => null, null, { player: f.player });
   const step = { request: 'PetBreedRequest', costs: [{ id: 'GOLD', num: 100 }] };
   await assert.rejects(() => guard.before(step), /金币扣款尚未同步/);
-  f.state.gold--; const ticket = await guard.before(step); assert.equal(ticket, null);
+  f.state.gold--; const ticket = await guard.before(step); assert(ticket, '无日用量计数的消费仍返回独立操作票据');
   await guard.cancel({ ...step }, ticket, { notSent: true }); await f.oldCraft();
   const paused = fixture(); let reads = 0;
   const original = paused.client.request;
@@ -173,12 +171,10 @@ await check('旧材料扣款未同步阻止新锻造，确认材料扣款后才�
   assert.equal((await f.forge()).results[0].status, 'confirmed');
 });
 
-await check('新锻造队列确认但材料快照滞后时，旧材料消费者仍被阻止', async () => {
+await check('新锻造队列确认并回读完整材料后，同期补充材料不再阻止旧消费者', async () => {
   const f = fixture(), send = f.client.sendWatch, before = f.state.materials.蓝武器材料;
-  f.client.sendWatch = async (...args) => { const result = await send(...args); if (args[0] === 'MakeEquipRequest') f.state.materials.蓝武器材料 = before; return result; };
+  f.client.sendWatch = async (...args) => { const result = await send(...args); if (args[0] === 'MakeEquipRequest') f.state.materials.蓝武器材料 = before + 40; return result; };
   assert.equal((await f.forge()).results[0].status, 'confirmed');
-  assert.throws(() => confirmOrderMaterialSpends(f.player, new Map(Object.entries(f.state.materials))), /材料扣款尚未确认/);
-  f.state.materials.蓝武器材料 -= 40;
   confirmOrderMaterialSpends(f.player, new Map(Object.entries(f.state.materials)));
   const next = beginOrderMaterialSpend(f.player, [{ id: '蓝武器材料', have: f.state.materials.蓝武器材料, need: 1 }], '下一笔旧订单');
   cancelOrderMaterialSpend(next);

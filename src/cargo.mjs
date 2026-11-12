@@ -8,21 +8,24 @@ export async function serviceCargo(client, config, { enabled, log, testSpeedUp =
     const current = getSettings?.();
     return enabled() && (!current || (current.loop.world && current.cargo.enabled));
   };
-  const perform = async (action, send) => {
-    let ticket = null, prepared = false, dispatched = false;
+  const perform = async (action, send, verify) => {
+    let ticket = null, prepared = false, dispatched = false, writePending = false;
     try {
       ticket = await beforeAction?.(action); prepared = true;
       if (!active()) {
         await cancelAction?.(action, ticket, { notSent: true });
         return null;
       }
-      dispatched = true;
-      const outcome = await send();
+      dispatched = writePending = true;
+      const reply = await send();
+      writePending = false;
+      const outcome = await verify(reply);
       await afterAction?.(action, ticket, outcome);
       return outcome;
     } catch (error) {
-      if (prepared && (!dispatched || error.prompt && error.request === action.request)) {
-        await cancelAction?.(action, ticket, { notSent: !dispatched, error });
+      const notSent = !dispatched || (writePending && error.notSent === true);
+      if (prepared && (notSent || error.prompt && error.request === action.request)) {
+        await cancelAction?.(action, ticket, { notSent, error });
       }
       throw error;
     }
@@ -63,8 +66,7 @@ export async function serviceCargo(client, config, { enabled, log, testSpeedUp =
         const action = { kind: 'cargoLoad', scope: 'base', setting: 'cargo.enabled', request: 'FillCargoShipRequest', body: { shipIndex: index, cargoIndex: slots },
           costs: slots.map(slot => ({ id: state.orderItem[slot - 1].asset.id, num: Number(state.orderItem[slot - 1].asset.num) })), counters: { cargoLoads: 1 }, label: label + '装货' };
         if (dryRun) { plannedLoads++; log(action.label + '：' + labels.join('、'), { planned: true, action: { ...action, label: action.label + '：' + labels.join('、') } }); continue; }
-        const outcome = await perform(action, async () => {
-          const reply = await client.request(action.request, action.body);
+        const outcome = await perform(action, () => client.request(action.request, action.body), async reply => {
           state = (await ships()).find(s => s.index === index);
           if (pref && (!state || ((state.status ?? 0) === 0 && slots.some(slot => !state.orderItem?.[slot - 1]?.filled)))) throw new Error('服务器尚未确认本批装货，额度暂时保留');
           return { ok: true, body: reply };
@@ -81,8 +83,7 @@ export async function serviceCargo(client, config, { enabled, log, testSpeedUp =
         const action = { kind: 'cargoSpeed', scope: 'base', setting: 'cargo.enabled', request: 'SpeedUpShipRequest',
           body: { index, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: 1 } }, costs: [{ id: SPEED_UP_ITEM, num: 1 }], label: label + '加速' };
         if (dryRun) { log(action.label, { planned: true, action }); continue; }
-        const outcome = await perform(action, async () => {
-          await client.sendWatch(action.request, action.body);
+        const outcome = await perform(action, () => client.sendWatch(action.request, action.body), async () => {
           state = (await ships()).find(s => s.index === index);
           return { ok: true, sent: true };
         });

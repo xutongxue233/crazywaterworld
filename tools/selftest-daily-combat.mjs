@@ -1,7 +1,25 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { runDailies, surveyDailies } from '../src/dailies.mjs';
 import { runLoop } from '../src/loop.mjs';
-import { defaultSettings } from '../src/automation-settings.mjs';
+import { defaultSettings, createUsageLedger } from '../src/automation-settings.mjs';
+import { createActionGuard } from '../src/automation-policy.mjs';
+
+const boundaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-daily-boundary-'));
+let boundarySequence = 0;
+function boundaryGuard(client) {
+  const settings = defaultSettings();
+  settings.dailies.enabled = true;
+  settings.resources.allowDiamonds = true;
+  settings.resources.diamondDailyLimit = 100;
+  settings.resources.diamondThreshold = 0;
+  settings.gold.times = 10;
+  const ledger = createUsageLedger('模拟日常边界账号', { file: path.join(boundaryDirectory, 'usage-' + (++boundarySequence) + '.json') });
+  const guard = createActionGuard(client, () => settings, ledger);
+  return { ledger, beforeAction: guard.before, afterAction: guard.after, cancelAction: guard.cancel };
+}
 
 const player = { playerId: 900, level: 17, worldId: 2004001001, vip: { vipLevel: 1 } };
 const config = { tables: {
@@ -143,6 +161,83 @@ for (const mode of ['stale', 'unknown']) {
   assert.equal(cancelled.length, mode === 'stale' ? 1 : 0, '明确跳过释放预算，已发送未知结果保留预算');
   assert.equal(f.writes.length, mode === 'unknown' ? 1 : 0);
   assert(!results.some(row => row.ok));
+}
+
+// A later read can be explicitly unsent without saying anything about the
+// already-sent mutation. Keep the real guard's usage ticket in that case.
+for (const delivery of ['response', 'silent']) for (const fault of [
+  { notSent: true, request: 'AllResourceRequest' },
+  { code: 'AUTOMATION_SKIP' },
+  { prompt: {}, request: 'ClickGoldRequest' },
+]) {
+  const action = { request: delivery === 'response' ? 'ClickGoldRequest' : 'DiscountShopBuyRequest',
+    response: delivery === 'response' ? 'ClickGoldResponse' : null, body: delivery === 'response' ? { free: false, times: 1 } : { id: 1 },
+    note: '日常钻石消费', costs: [{ id: 'RUBY', num: 5 }], counters: { goldPaidTimes: 1 } };
+  let writes = 0;
+  const client = { request: async name => {
+    if (name === 'AllResourceRequest') return { list: [{ res: 4, amount: 100 }] };
+    assert.equal(name, action.request); writes++; return {};
+  }, sendWatch: async name => { assert.equal(name, action.request); writes++; } };
+  const hooks = boundaryGuard(client);
+  await runDailies(client, { ClickGoldResponse: true }, {
+    tasks: [{ task: { id: 1006, title: '点金' }, status: 'paid', actions: [action] }],
+  }, { ...hooks, allowMutate: true, allowPaid: true, claimRewards: false,
+    afterAction: async () => { throw Object.assign(new Error('写后核对失败'), fault); },
+  });
+  assert.equal(writes, 1);
+  assert.equal(hooks.ledger.snapshot().counters.diamonds, 5, 'afterAction errors cannot refund an already-sent diamond debit');
+  assert.equal(hooks.ledger.snapshot().counters.goldPaidTimes, 1, 'afterAction errors cannot refund an already-sent daily quota');
+}
+
+for (const [fault, cancelled] of [
+  [{ notSent: true }, true],
+  [{ prompt: {}, request: 'ClickGoldRequest' }, true],
+  [{ code: 'AUTOMATION_SKIP' }, false],
+  [{ prompt: {}, request: 'AllResourceRequest' }, false],
+  [{}, false],
+]) {
+  const action = { request: 'ClickGoldRequest', response: 'ClickGoldResponse', body: { free: false, times: 1 },
+    note: '付费点金', costs: [{ id: 'RUBY', num: 5 }], counters: { goldPaidTimes: 1 } };
+  const client = { request: async name => {
+    if (name === 'AllResourceRequest') return { list: [{ res: 4, amount: 100 }] };
+    assert.equal(name, action.request); throw Object.assign(new Error('写调用失败'), fault);
+  } };
+  const hooks = boundaryGuard(client);
+  await runDailies(client, { ClickGoldResponse: true }, {
+    tasks: [{ task: { id: 1006, title: '点金' }, status: 'paid', actions: [action] }],
+  }, { ...hooks, allowMutate: true, allowPaid: true, claimRewards: false });
+  assert.equal(hooks.ledger.snapshot().counters.diamonds ?? 0, cancelled ? 0 : 5, 'only the mutation itself can supply cancellation evidence');
+}
+
+for (const taskId of [1005, 1010]) {
+  for (const phase of ['before', 'after']) {
+    for (const fault of [{ notSent: true }, { code: 'AUTOMATION_SKIP' }]) {
+      const f = fixture(taskId), survey = await f.preview();
+      survey.tasks[0].actions[0].counters = { dailyBoundary: 1 };
+      const request = f.request.bind(f), targetRead = taskId === 1005 ? 'ArenaInfoRequest' : 'AllPirateRequest';
+      const challenge = f.challenge.bind(f);
+      f.challenge = async body => { await challenge(body); return {}; };
+      f.request = async (name, body) => {
+        if (name === targetRead && (phase === 'before' || f.writes.length)) throw Object.assign(new Error('驱动读取失败'), { request: name, ...fault });
+        return request(name, body);
+      };
+      const hooks = boundaryGuard(f);
+      await runDailies(f, protocol, survey, { ...hooks, allowMutate: true, claimRewards: false, config });
+      assert.equal(f.writes.length, phase === 'before' ? 0 : 1);
+      assert.equal(hooks.ledger.snapshot().counters.dailyBoundary ?? 0, phase === 'before' ? 0 : 1,
+        'driver preflight failures release their ticket; post-write read failures retain it');
+    }
+  }
+}
+
+{
+  const f = fixture(1005), survey = await f.preview();
+  survey.tasks[0].actions[0].counters = { dailyBoundary: 1 };
+  f.challenge = async () => ({ isChange: true });
+  const hooks = boundaryGuard(f);
+  await runDailies(f, protocol, survey, { ...hooks, allowMutate: true, claimRewards: false, config });
+  assert.equal(f.writes.length, 1);
+  assert.equal(hooks.ledger.snapshot().counters.dailyBoundary, 1, 'a driver skip after sending is not proof that no request was sent');
 }
 
 for (const change of [

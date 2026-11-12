@@ -1,7 +1,8 @@
 import { normalize } from './worlds.mjs';
 import { displayMaterial } from './config.mjs';
 import { toNumber } from './client.mjs';
-import { beginOrderMaterialSpend, cancelOrderMaterialSpend } from './order-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialOperation, refreshOrderMaterialSpends } from './order-reservations.mjs';
+import { verifyWeekOrderOperation, readWeekOrderStock } from './activities.mjs';
 import { defaultCompassSpinCount } from './automation.mjs';
 
 export const festivalRewardKeys = ['festivalSign', 'festivalActive', 'festivalGifts', 'snowballFree', 'compassSpin'];
@@ -233,8 +234,8 @@ export async function weekOrderState(client, config, row, readOrder) {
   const order = normalize(await client.request('WeekOrderInfoRequest', {}, 'WeekOrderInfoResponse'));
   const prizes = tableRows(config, 'WeekOrderRwdCfg').filter(item => item.periodId === row.period && item.rwdId > 0);
   const finalReady = !order.isGotFinal && prizes.length > 0 && prizes.every(item => order.gotRwdId?.includes(item.rwdId));
-  const { needed, finished } = order.isGotFinal || finalReady ? { needed: new Map(), finished: true } : await readOrder(client, [row], config);
-  return { finalDone: Boolean(order.isGotFinal), finalReady, needed, finished };
+  const { needed, finished, evidence } = order.isGotFinal || finalReady ? { needed: new Map(), finished: true } : await readOrder(client, [row], config);
+  return { finalDone: Boolean(order.isGotFinal), finalReady, needed, finished, evidence };
 }
 
 const weeklyHandlers = {
@@ -265,22 +266,29 @@ const weeklyHandlers = {
       report({ label: '周订单最终奖励', ok: true });
     },
     weekOrderSubmit: async (client, config, row, allowed, report, { readOrder, player }) => {
+      const stock=await readWeekOrderStock(client,player,()=>allowed('weekOrderSubmit'));
       const view = await weekOrderState(client, config, row, readOrder);
       if (view.finished || !view.needed.size) return;
       const costs = [];
       for (const [id, need] of view.needed) {
-        const have = await itemCount(client, id);
+        const have = stock.get(id)??0;
         if (have < need) { report({ label: '周订单提交', skipped: true, reason: displayMaterial(config, id) + ' ' + have + '/' + need + '，等待备料' }); return; }
         costs.push({ id, have, need });
       }
       if (!allowed('weekOrderSubmit')) return;
-      const spend = beginOrderMaterialSpend(player, costs, '周订单提交');
+      const spend = beginOrderMaterialSpend(player, costs, '周订单提交',{operation:{verify:next=>verifyWeekOrderOperation(next,view.evidence)}});
+      let responseReceived=false;
       try {
         const reply = await client.request('FinishWeekOrderRequest', {}, 'FinishWeekOrderResponse');
+        responseReceived=true;
+        if(!Number.isSafeInteger(reply?.randomRwdId)||reply.randomRwdId<=0)throw new Error('周订单奖励回执尚未确认');
+        confirmOrderMaterialOperation(spend);
+        await refreshOrderMaterialSpends(client,player,{enabled:()=>allowed('weekOrderSubmit')});
         report({ label: '周订单提交 · 第 ' + reply.randomRwdId + ' 档奖励', ok: true });
       } catch (error) {
-        // Only a definite rejection releases the debit. A timeout may have consumed the materials.
-        if (error.prompt && error.request === 'FinishWeekOrderRequest') cancelOrderMaterialSpend(spend);
+        // Definite rejection/unsent writes release the debit. A later read
+        // failure cannot undo the already acknowledged material consumption.
+        if ((!responseReceived&&error.notSent===true) || error.prompt && error.request === 'FinishWeekOrderRequest') cancelOrderMaterialSpend(spend);
         throw error;
       }
     },

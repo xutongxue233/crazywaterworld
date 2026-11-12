@@ -69,19 +69,19 @@ const ask = (reqId, item = '木材') => ({ reqId: { low: reqId, high: 0 }, reqIt
   assert.equal(client.sent('GuildAidHelpRequest').length, 0);
 }
 {
-  let wood = 6;
-  const client = fakeClient({ ...reservedWorld(() => [{ itemId: '木材', num: wood }], [{ type: 0, id: '木材', num: 5 }]),
+  let wood = 6,inventoryReady=true;
+  const client = fakeClient({ ...reservedWorld(() => inventoryReady?[{ itemId: '木材', num: wood }]:undefined, [{ type: 0, id: '木材', num: 5 }]),
     GuildAidListRequest: { askItems: [ask(1), ask(2)] },
-    GuildAidHelpRequest: () => ({ reward: { asset: [{ id: '功勋', num: 10 }] } }) });
+    GuildAidHelpRequest: () => {inventoryReady=false;return { reward: { asset: [{ id: '功勋', num: 10 }] } };} });
   const { entries, report } = collect();
   const player = aidPlayer(12);
   await serviceGuildAid(client, protocol, reservationConfig, { player, enabled: () => true, report });
   assert.equal(entries[0].ok, true);
   assert.equal(client.sent('GuildAidHelpRequest')[0][1].reqId.length, 1, '一次只响应一个，结果才可确认');
   await serviceGuildAid(client, protocol, reservationConfig, { player, enabled: () => true, report });
-  assert.match(entries[1].reason, /尚未确认/, '库存未同步时不能重复消耗');
+  assert.match(entries[1].reason??entries[1].error, /库存|尚未确认/, '完整库存不可读时不能继续消耗');
   assert.equal(client.sent('GuildAidHelpRequest').length, 1);
-  wood = 5;
+  wood = 5;inventoryReady=true;
   await serviceGuildAid(client, protocol, reservationConfig, { player, enabled: () => true, report });
   assert.match(entries[2].reason, /没有可用于互助/, '扣减后不再有余量');
 }
@@ -94,6 +94,30 @@ const ask = (reqId, item = '木材') => ({ reqId: { low: reqId, high: 0 }, reqIt
   assert.equal(entries[0].ok, false);
   await serviceGuildAid(client, protocol, reservationConfig, { player, enabled: () => true, report });
   assert.equal(client.sent('GuildAidHelpRequest').length, 2, '明确被拒后释放预扣，可以重新核对');
+}
+{
+  let wood=3;const asks=[ask(701),ask(702)],player=aidPlayer(701);
+  const client=fakeClient({...reservedWorld(()=>[{itemId:'木材',num:wood}]),GuildAidListRequest:()=>({askItems:asks}),
+    GuildAidHelpRequest:body=>{wood+=2;asks.splice(asks.findIndex(row=>row.reqId.low===body.reqId[0].low),1);return {reward:{asset:[{id:'功勋',num:10}]}};}});
+  assert.equal((await serviceGuildAid(client,protocol,reservationConfig,{player,enabled:()=>true})).ok,true);
+  assert.equal((await serviceGuildAid(client,protocol,reservationConfig,{player,enabled:()=>true})).ok,true);
+  assert.equal(wood,7);assert.equal(client.sent('GuildAidHelpRequest').length,2,'互助成功后的补产不会卡住后续请求');
+}
+{
+  const player=aidPlayer(702),asks=[ask(711),ask(712,'玻璃')];let writes=0;
+  const client=fakeClient({...reservedWorld(()=>[{itemId:'木材',num:8},{itemId:'玻璃',num:8}]),GuildAidListRequest:()=>({askItems:asks}),
+    GuildAidHelpRequest:()=>{writes++;if(writes===1)throw Error('unknown gift');return {reward:{asset:[{id:'功勋',num:10}]}};}});
+  assert.equal((await serviceGuildAid(client,protocol,reservationConfig,{player,enabled:()=>true})).ok,false);
+  assert.equal((await serviceGuildAid(client,protocol,reservationConfig,{player,enabled:()=>true})).ok,true,'木材赠送未知不阻止无关玻璃赠送');
+  assert.equal(writes,2);
+}
+{
+  const player=aidPlayer(703);let unsent=true;
+  const client=fakeClient({...reservedWorld(()=>[{itemId:'木材',num:8}]),GuildAidListRequest:()=>({askItems:[ask(713)]}),
+    GuildAidHelpRequest:()=>{if(unsent)throw Object.assign(Error('not sent'),{notSent:true});return {reward:{asset:[{id:'功勋',num:10}]}};}});
+  assert.equal((await serviceGuildAid(client,protocol,reservationConfig,{player,enabled:()=>true})).ok,false);unsent=false;
+  assert.equal((await serviceGuildAid(client,protocol,reservationConfig,{player,enabled:()=>true})).ok,true,'明确未发送后释放材料及求助ID记录');
+  assert.equal(client.sent('GuildAidHelpRequest').length,2);
 }
 {
   const client = fakeClient({});

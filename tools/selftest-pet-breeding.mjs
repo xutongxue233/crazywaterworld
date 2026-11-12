@@ -81,6 +81,7 @@ function fixture() {
         if (!this.noQueue) this.setJob({ petId: body.petId, idx: Math.max(-1, ...this.building.petBreed.breedQ.map(job => job.idx)) + 1,
           finishTime: now() + recipe.breedTime });
       }
+      await this.afterWrite?.(name);
       return { sent: 1 };
     },
   };
@@ -198,11 +199,17 @@ export async function testPetBreeding() {
     await reconnected.run(); assert.equal(f.writes.length, 1, '换连接不能清除账号未知操作');
     const other = fixture(); await other.run(); assert.equal(other.writes.length, 1, '一个账号的未知操作不阻塞其他账号');
   }
-  for (const flag of ['silent', 'unknown', 'noQueue', 'staleStock']) {
+  for (const flag of ['silent', 'unknown', 'noQueue']) {
     const f = fixture(); f[flag] = true;
     await f.run(); assert.equal(f.writes.length, 1);
-    f.deadlines.clear(); await f.run(); assert.equal(f.writes.length, 1, '未知培育或尚未扣款不能重复花余额');
+    f.deadlines.clear(); await f.run(); assert.equal(f.writes.length, 1, '未知培育不能重复花余额');
   }
+  const replenished = fixture();
+  replenished.afterWrite = name => {
+    if (name === 'PetBreedRequest') { replenished.gold += 500000; replenished.items.宠物1橙基因 += 1600; }
+  };
+  await replenished.run(); replenished.deadlines.clear(); await replenished.run();
+  assert.equal(replenished.writes.length, 2, '队列确认后读取的新库存即使增长也允许下一次培育');
   const late = fixture(); late.unknown = true;
   await late.run();
   late.unknown = false;
@@ -219,36 +226,34 @@ export async function testPetBreeding() {
   await Promise.all([concurrent.run(), Object.create(concurrent).run()]);
   assert.equal(concurrent.writes.length, 1, '同账号跨连接并发也不重复');
 
-  // An acknowledged equipment queue is not proof that gold has been debited.
+  // Queue evidence followed by a complete balance allows new income to be used.
   const equipmentFirst = withEquipment(fixture());
-  equipmentFirst.gold = 20000; equipmentFirst.reportedGold = 20000;
+  equipmentFirst.gold = 20000;
+  equipmentFirst.afterWrite = name => { if (name === 'MakeEquipRequest') equipmentFirst.gold += 10000; };
   await equipmentFirst.startEquipment();
-  assert.equal(equipmentFirst.gold, 10000);
+  assert.equal(equipmentFirst.gold, 20000);
   await equipmentFirst.run();
-  assert.equal(equipmentFirst.writes.length, 1, '旧余额不能让宠物再扣4000，击穿保留额');
-  assert(equipmentFirst.reports.some(row => /扣款尚未同步/.test(row.reason)));
+  assert.equal(equipmentFirst.writes.length, 2, '装备完成确认后，新增金币可继续用于培育');
   const newConnection = Object.create(equipmentFirst);
   newConnection.deadlines.clear(); await newConnection.run();
-  assert.equal(equipmentFirst.writes.length, 1, '金币屏障跨连接保留');
-  newConnection.reportedGold = 10000; newConnection.deadlines.clear(); await newConnection.run();
-  assert.equal(equipmentFirst.writes.length, 1, '同步后仍应保留1万');
-  newConnection.reportedGold = undefined; newConnection.gold = 14000;
-  newConnection.deadlines.clear(); await newConnection.run();
-  assert.equal(equipmentFirst.writes.length, 2, '扣款确认后新增金币可继续培育');
-  assert.equal(newConnection.gold, 10000);
+  assert.equal(equipmentFirst.writes.length, 3, '换连接后仍可使用已确认的新余额');
+  const floor = withEquipment(fixture()); floor.gold = 20000;
+  await floor.startEquipment(); await floor.run();
+  assert.equal(floor.writes.length, 1, '业务已确认仍不能击穿一万金币保留量');
+  floor.gold = 14000; floor.deadlines.clear(); await floor.run();
+  assert.equal(floor.writes.length, 2); assert.equal(floor.gold, 10000);
 
-  // The reverse order has the same barrier; it never blocks a free pickup.
-  const petFirst = withEquipment(fixture()); petFirst.gold = 20000; petFirst.reportedGold = 20000;
+  // The reverse order uses the new balance and still enforces each caller's floor.
+  const petFirst = withEquipment(fixture()); petFirst.gold = 20000;
   await petFirst.run();
   assert.equal(petFirst.gold, 16000);
-  await assert.rejects(petFirst.startEquipment(), /扣款尚未同步/);
+  await assert.rejects(petFirst.startEquipment(), /保留至少/);
   assert.equal(petFirst.writes.length, 1);
   const independent = withEquipment(fixture()); independent.gold = 20000;
   await independent.startEquipment(); assert.equal(independent.writes.length, 1, '账号之间不共享金币屏障');
   const otherWorld = withEquipment(fixture()); otherWorld.player.playerId = petFirst.player.playerId;
   otherWorld.player.worldId = 2001001001; otherWorld.gold = 20000;
   await otherWorld.startEquipment(); assert.equal(otherWorld.writes.length, 1, '同ID不同区服不共享金币屏障');
-  petFirst.reportedGold = undefined;
   await petFirst.startEquipment(1001);
   assert.equal(petFirst.gold, 14000, '余额同步后装备制造可继续');
 

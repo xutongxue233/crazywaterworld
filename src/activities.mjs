@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { usageLimits, resourceReserve } from './automation-policy.mjs';
+import { usageLimits, resourceReserve, exactAutomationId } from './automation-policy.mjs';
 import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
 import { claimCollection, newbieView } from './collections.mjs';
 import { toNumber } from './client.mjs';
 import { campaignReportState, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
 import { claimReportRewards } from './missing-rewards.mjs';
-import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends } from './order-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, confirmOrderMaterialOperation, readOrderMaterialState, settleOrderMaterialState } from './order-reservations.mjs';
 import { riverActivity, edictPassActivity } from './seasonal-activities.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys, festivalRewardState, snowballState,
   compassState, weekChargeState, weekHeroStarState, weekFreePackState, weekOrderState, vipDailyState, syncFestivalDay } from './free-rewards.mjs';
@@ -143,7 +143,19 @@ export async function readWeekOrder(client, week, config) {
   }
   const identity = [current.period, current.startTime, current.endTime, order.gotRwdId, [...needed]];
   const orderKey = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
-  return { needed, finished: false, orderKey };
+  const evidence={period:current.period,startTime:current.startTime,endTime:current.endTime,rewards:[...(order.gotRwdId??[])]};
+  return { needed, finished: false, orderKey, evidence };
+}
+
+// An order's requirements may be refreshed without completing it. Only an
+// additional reward in the same weekly event proves that a submission finished.
+export async function verifyWeekOrderOperation(client,evidence) {
+  if(!evidence||!Array.isArray(evidence.rewards))return false;
+  const active=(await weekSchedule(client)).filter(row=>row.type===5&&open(row,serverNow(client)));
+  if(active.length!==1||!active.some(row=>row.period===evidence.period&&row.startTime===evidence.startTime&&row.endTime===evidence.endTime))return false;
+  const after=await client.request('WeekOrderInfoRequest',{},'WeekOrderInfoResponse'),rewards=after?.gotRwdId;
+  return Array.isArray(rewards)&&rewards.every(id=>Number.isSafeInteger(id)&&id>0)&&new Set(rewards).size===rewards.length&&
+    evidence.rewards.every(id=>rewards.includes(id))&&rewards.some(id=>!evidence.rewards.includes(id));
 }
 
 function lotteryProgress(config, period, info) {
@@ -349,7 +361,7 @@ async function activityDetails(client, config, week, activities) {
   }
   if (!week.some(row => row.type === 5)) return { activities, lottery, lotteryError, order: null };
   try {
-    const { needed, finished, finalReady, orderKey } = await readWeekOrder(client, week, config);
+    const { needed, finished, finalReady, orderKey, evidence } = await readWeekOrder(client, week, config);
     if (finished) return { activities, lottery, lotteryError, order: { materials: [], finished, finalReady } };
     const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
     if (!Array.isArray(bag?.items)) throw new Error('未能确认仓库库存');
@@ -365,7 +377,7 @@ async function activityDetails(client, config, week, activities) {
         sources: config?.materialSources?.(id) ?? [], name: displayMaterial(config, id), required, owned,
         missing: Math.max(0, required - owned) };
     });
-    return { activities, lottery, lotteryError, order: { materials, finished, orderKey, ready: materials.every(m => m.missing === 0) } };
+    return { activities, lottery, lotteryError, order: { materials, finished, orderKey, evidence, ready: materials.every(m => m.missing === 0) } };
   } catch (error) {
     return { activities, lottery, lotteryError, order: null, orderError: error.message };
   }
@@ -480,7 +492,73 @@ export async function claimWeekly(client, config, enabled, report, playerLevel, 
   }
 }
 
+function weekOrderActor(player) {
+  const playerId=exactAutomationId(player?.playerId),worldId=exactAutomationId(player?.worldId);
+  if(!playerId||!worldId||playerId==='0'||worldId==='0')throw Error('无法确认材料消费账号');
+  return {playerId,worldId};
+}
+
+export async function readWeekOrderStock(client,player,enabled=()=>true) {
+  const stamp=JSON.stringify(weekOrderActor(player));
+  const check=()=>{if(!enabled()||client.connected===false||JSON.stringify(weekOrderActor(player))!==stamp)throw Error('账号连接已变化');};
+  check();
+  const snapshot=await readOrderMaterialState(client,player,{enabled});
+  const bag=await client.request('AllItemRequest',{},'AllItemResponse'),stock=new Map();
+  check();
+  if(!Array.isArray(bag?.items))throw Error('未能确认仓库库存');
+  for(const row of bag.items){
+    const count=row?.num==null?NaN:toNumber(row.num);
+    if(typeof row?.itemId!=='string'||!row.itemId||stock.has(row.itemId)||!Number.isSafeInteger(count)||count<0)throw Error('仓库材料库存异常');
+    stock.set(row.itemId,count);
+  }
+  settleOrderMaterialState(player,snapshot,stock);
+  return stock;
+}
+
+async function readWeekPurchaseBalances(client,check) {
+  check();
+  const bag=await client.request('AllItemRequest',{},'AllItemResponse');
+  check();
+  const resources=await client.request('AllResourceRequest',{},'AllResourceResponse');
+  check();
+  if(!Array.isArray(bag?.items)||!Array.isArray(resources?.list))throw Error('购买后完整库存或资源尚未确认');
+  const items=new Set(),ids=new Set();
+  for(const row of bag.items){
+    const count=row?.num==null?NaN:toNumber(row.num);
+    if(typeof row.itemId!=='string'||!row.itemId||items.has(row.itemId)||!Number.isSafeInteger(count)||count<0)throw Error('购买后完整库存尚未确认');
+    items.add(row.itemId);
+  }
+  for(const row of resources.list){
+    const count=row?.amount==null?NaN:toNumber(row.amount);
+    if(!Number.isSafeInteger(row.res)||ids.has(row.res)||!Number.isSafeInteger(count)||count<0)throw Error('购买后完整资源尚未确认');
+    ids.add(row.res);
+  }
+  if(!ids.has(4))throw Error('购买后钻石余额尚未确认');
+}
+
 export async function runWeekOrder(client,config,settings,ledger,enabled,action,payload,{player=null}={}){
+  const actor=weekOrderActor(player),stamp=JSON.stringify(actor);
+  const check=()=>{if(!enabled()||client.connected===false||JSON.stringify(weekOrderActor(player))!==stamp)throw Error('账号连接已变化');};
+  check();
+  const requestedKey='week-order:'+createHash('sha256').update(JSON.stringify([action,payload?.orderKey,action==='buy'?payload?.itemId:null])).digest('hex');
+  for(const [savedKey,record] of Object.entries(ledger.keyRecords())){
+    const details=record.details;
+    if(record.confirmed||!['weekOrderBuy','weekOrderSubmit'].includes(details?.kind)||details.playerId!==actor.playerId||details.worldId!==actor.worldId)continue;
+    if(details.kind==='weekOrderBuy'){
+      if(!details.acknowledged){if(action==='buy')throw Error('上次周订单购买结果待确认，暂不重复购买');continue;}
+      await readWeekPurchaseBalances(client,check);
+    }else{
+      if(!details.acknowledged&&!await verifyWeekOrderOperation(client,details.evidence)){
+        if(action==='submit')throw Error('该操作已提交，结果待确认，请核对订单记录');
+        continue;
+      }
+      check();
+      await readWeekOrderStock(client,player,()=>{check();return true;});
+    }
+    check();
+    ledger.resolveKey(savedKey,true);
+    if(savedKey===requestedKey)return {message:details.kind==='weekOrderBuy'?'已核对上次周订单材料购买及最新库存':'已核对上次周订单提交及最新库存'};
+  }
   const state=await activityDetails(client,config,await weekly(client),[]),view=state.order;
   if(state.orderError)throw Error(state.orderError);
   if(!view?.orderKey || view.orderKey!==payload?.orderKey)throw Error('订单已变化，请刷新');
@@ -495,43 +573,46 @@ export async function runWeekOrder(client,config,settings,ledger,enabled,action,
     rubyBefore=resources.list?.find(r=>r.res===4)?.amount;
     if(!Number.isSafeInteger(rubyBefore)||rubyBefore-cost<resourceReserve(settings,'RUBY'))throw Error('钻石不足或低于保留量');
   }else if(action!=='submit'||!view.ready)throw Error('材料未齐，请先补齐');
-  if(!enabled())throw Error('账号连接已变化');
+  check();
   const key='week-order:'+createHash('sha256').update(JSON.stringify([action,view.orderKey,buy?item.id:null])).digest('hex');
   if(ledger.hasKey(key))throw Error('该操作已提交，请核对订单记录');
   let costs;
   if(!buy){
-    const bag=normalize(await client.request('AllItemRequest',{},'AllItemResponse')),stock=new Map();
-    if(!Array.isArray(bag.items))throw Error('未能确认仓库库存');
-    for(const item of bag.items){
-      if(typeof item.itemId!=='string'||!item.itemId||stock.has(item.itemId)||!Number.isSafeInteger(item.num)||item.num<0)throw Error('仓库材料库存异常');
-      stock.set(item.itemId,item.num);
-    }
-    confirmOrderMaterialSpends(player,stock);
+    const stock=await readWeekOrderStock(client,player,()=>{check();return true;});
+    confirmOrderMaterialSpends(player,stock,view.materials.map(row=>row.id));
     costs=view.materials.map(row=>({id:row.id,have:stock.get(row.id)??0,need:row.required}));
     if(costs.some(row=>row.have<row.need))throw Error('材料未齐，请刷新库存');
-    if(!enabled())throw Error('账号连接已变化');
+    check();
   }
-  const ticket=ledger.reserve(buy?{diamonds:cost}:{},usageLimits(settings),{},{uniqueKey:key});
+  const ticket=ledger.reserve(buy?{diamonds:cost}:{},usageLimits(settings),{},{uniqueKey:key,
+    details:buy?{kind:'weekOrderBuy',...actor,itemId:item.id,quantity:item.missing,cost,acknowledged:false}:
+      {kind:'weekOrderSubmit',...actor,evidence:view.evidence,acknowledged:false}});
   let materialSpend;
   try{
-    if(!buy)materialSpend=beginOrderMaterialSpend(player,costs,'周订单提交');
+    if(!buy)materialSpend=beginOrderMaterialSpend(player,costs,'周订单提交',{operation:{verify:(next)=>verifyWeekOrderOperation(next,view.evidence)}});
   }catch(error){ledger.cancel(ticket);throw error;}
   const name=buy?'CommonBuyGoods':'FinishWeekOrder';
+  let responseReceived=false;
   try{
     const result=await client.request(name+'Request',buy?{goods:[{itemId:item.id,num:item.missing}]}:{},name+'Response');
+    responseReceived=true;
     if(buy){
-      const bag=normalize(await client.request('AllItemRequest',{},'AllItemResponse'));
-      const owned=bag.items?.filter(x=>x.itemId===item.id).reduce((n,x)=>n+x.num,0);
-      const resources=normalize(await client.request('AllResourceRequest',{},'AllResourceResponse'));
-      if(!(owned>=item.required)||resources.list?.find(r=>r.res===4)?.amount!==rubyBefore-cost)throw Error('库存或钻石变动待确认，请刷新核对');
+      if(!Array.isArray(result?.reward?.asset)||!result.reward.asset.some(row=>row.id===item.id&&toNumber(row.num)===item.missing))throw Error('购买奖励回执尚未确认，保留预算和防重记录');
+      ledger.updateKeyDetails(key,{...ledger.keyRecords()[key].details,acknowledged:true});
+      await readWeekPurchaseBalances(client,check);
     }else{
+      if(!Number.isSafeInteger(result?.randomRwdId)||result.randomRwdId<=0||view.evidence.rewards.includes(result.randomRwdId))throw Error('提交奖励回执未确认');
+      ledger.updateKeyDetails(key,{...ledger.keyRecords()[key].details,acknowledged:true,rewardId:result.randomRwdId});
+      confirmOrderMaterialOperation(materialSpend);
       const after=await client.request('WeekOrderInfoRequest',{},'WeekOrderInfoResponse');
-      if(!result.randomRwdId||!after.gotRwdId?.includes(result.randomRwdId))throw Error('提交结果未确认');
+      if(!after.gotRwdId?.includes(result.randomRwdId))throw Error('提交结果未确认');
+      check();
+      await readWeekOrderStock(client,player,()=>{check();return true;});
     }
     ledger.confirm(ticket);
     return {message:buy?'已购买 '+item.name+' ×'+item.missing+'，花费 '+cost+' 钻石':'整单已提交'};
   }catch(error){
-    if(error.prompt&&error.request===name+'Request'){
+    if((!responseReceived&&error.notSent===true)||error.prompt&&error.request===name+'Request'){
       ledger.cancel(ticket);
       cancelOrderMaterialSpend(materialSpend);
     }

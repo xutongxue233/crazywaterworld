@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readGuildOrderView, serviceGuildOrders } from '../src/guild-orders.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, pendingOrderMaterialSpends } from '../src/order-reservations.mjs';
 
 const stamp = Math.floor(Date.now() / 1000);
 const config = { tables: {
@@ -79,6 +80,39 @@ export async function testGuildOrders() {
   assert.match((await f.run()).reason, /重新核对/);
   assert.equal((await f.run()).ok, true);
   assert.equal(f.writes().length, 2);
+
+  const production = fixture();
+  production.hook(name=>{if(name==='FinishGuildOrderRequest'){
+    production.bodies.AllItemRequest.items[0].num+=10;
+    production.bodies.CounterInfoRequest={counters:[{type:'DAILY_FINISH_GUILD_ORDER',num:production.writes().length}]};
+  }});
+  assert.equal((await production.run()).ok,true);
+  assert.equal(production.bodies.AllItemRequest.items[0].num,35);
+  assert.equal(pendingOrderMaterialSpends(production.player).length,0,'明确奖励后的完整库存允许补产抵消扣款');
+  assert.match((await production.run()).reason,/重新核对/);
+  assert.equal((await production.run()).ok,true);
+  assert.equal(production.writes().length,2);
+
+  const lostAccepted=fixture();
+  lostAccepted.hook(name=>{if(name==='FinishGuildOrderRequest'){
+    lostAccepted.bodies.AllItemRequest.items[0].num+=5;
+    lostAccepted.bodies.CounterInfoRequest={counters:[{type:'DAILY_FINISH_GUILD_ORDER',num:1}]};
+    lostAccepted.bodies.FinishGuildOrderRequest=new Error('accepted reply lost');
+  }});
+  assert.match((await lostAccepted.run()).error,/结果未确认/);
+  assert.equal(pendingOrderMaterialSpends(lostAccepted.player).length,1);
+  assert.match((await serviceGuildOrders({...lostAccepted.client},protocol,config,lostAccepted.options)).reason,/重新核对/);
+  assert.equal(pendingOrderMaterialSpends(lostAccepted.player).length,0,'跨连接按完成计数和新库存核销未知扣款');
+  assert.equal(lostAccepted.writes().length,1);
+
+  const incomplete=fixture();
+  incomplete.hook(name=>{if(name==='AllItemRequest'&&incomplete.writes().length)incomplete.bodies.AllItemRequest={};});
+  assert.equal((await incomplete.run()).ok,true);
+  assert.equal(pendingOrderMaterialSpends(incomplete.player).length,1,'业务回执不能替代完整库存');
+  const unrelated=beginOrderMaterialSpend(incomplete.player,[{id:'wood',have:20,need:1}],'无关材料',{operation:{}});cancelOrderMaterialSpend(unrelated);
+  assert.equal(pendingOrderMaterialSpends(incomplete.player).length,1,'无关材料不释放或占用旧小麦票据');
+  incomplete.hook(()=>{});incomplete.bodies.AllItemRequest={items:[{itemId:'WHEAT',num:50}]};
+  await incomplete.run();assert.equal(pendingOrderMaterialSpends(incomplete.player).length,0);
 
   const held = fixture();
   held.bodies.WeekInfoRequest.activityTime = [{ type: 5, period: 1, startTime: stamp - 100, endTime: stamp + 86400 }];
@@ -167,6 +201,10 @@ export async function testGuildOrders() {
   rejected.bodies.FinishGuildOrderRequest = { reward: { asset: [{ id: 'MERIT', type: 0, num: 225 }] } };
   assert.equal((await rejected.run()).ok, true);
   assert.equal(rejected.writes().length, 2, 'explicit rejection can retry after fresh reads');
+  const unsent=fixture();unsent.bodies.FinishGuildOrderRequest=Object.assign(new Error('socket closed before send'),{notSent:true});
+  assert.match((await unsent.run()).error,/未发送/);assert.equal(pendingOrderMaterialSpends(unsent.player).length,0);
+  unsent.bodies.FinishGuildOrderRequest={reward:{asset:[{id:'MERIT',type:0,num:225}]}};
+  assert.equal((await unsent.run()).ok,true);assert.equal(unsent.writes().length,2,'明确未发送释放共享材料及私有订单防重，允许重新核对后发送');
   const timeout = fixture(); timeout.bodies.FinishGuildOrderRequest = new Error('timeout');
   assert.match((await timeout.run()).error, /结果未确认/);
   assert.match((await timeout.run()).reason, /尚未确认/);
@@ -174,6 +212,10 @@ export async function testGuildOrders() {
   const reconnected = { ...timeout.client };
   assert.match((await serviceGuildOrders(reconnected, protocol, config, timeout.options)).reason, /尚未确认/);
   assert.equal(timeout.writes().length, 1, 'unknown outcome guard survives connection replacement');
+  timeout.client.serverClockOffsetMs=86400000;
+  await timeout.run();
+  assert.equal(pendingOrderMaterialSpends(timeout.player).length,1,'跨日或库存变化本身不能证明未知订单成功');
+  assert.equal(timeout.writes().length,1);
   const empty = fixture(); empty.bodies.FinishGuildOrderRequest = {};
   assert.match((await empty.run()).error, /未返回明确/);
   assert((await empty.run()).skipped);

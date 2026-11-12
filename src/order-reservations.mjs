@@ -40,7 +40,7 @@ function accountKey(player) {
   return JSON.stringify([role, world]);
 }
 
-export function beginOrderMaterialSpend(player, costs, label, { farm = null, museum = null } = {}) {
+export function beginOrderMaterialSpend(player, costs, label, { farm = null, museum = null, operation = null } = {}) {
   const account = accountKey(player);
   const remaining = new Map();
   const checkedCosts = [];
@@ -53,6 +53,8 @@ export function beginOrderMaterialSpend(player, costs, label, { farm = null, mus
     checkedCosts.push({ id: row.id, have, need });
   }
   if (!remaining.size) throw new Error('加工品消费清单为空');
+  if (operation !== null && (farm !== null || museum !== null || typeof operation !== 'object'
+    || (operation.verify != null && typeof operation.verify !== 'function'))) throw new Error('材料消费核对方式异常');
   let checkedFarm = null;
   const plots = new Set();
   if (farm !== null) {
@@ -79,14 +81,14 @@ export function beginOrderMaterialSpend(player, costs, label, { farm = null, mus
   const scope = new Set(remaining.keys());
   const saved = materialSpends.get(account) ?? new Set();
   for (const prior of saved) {
-    if ((!prior.farm && !prior.museum) || [...scope].some(id => prior.scope.has(id))
+    if ((!prior.farm && !prior.museum && !prior.operation) || [...scope].some(id => prior.scope.has(id))
       || (checkedFarm && prior.farm?.args.some(row => plots.has(row.buildingId)))
       || (checkedMuseum && prior.museum && (prior.museum.stageId === checkedMuseum.stageId
         || prior.museum.heroIds.some(id => checkedMuseum.heroIds.includes(id))))) {
       throw new Error('上次加工品扣款尚未确认，请等待库存同步');
     }
   }
-  const handle = { account, remaining, label, costs: checkedCosts, scope, farm: checkedFarm, museum: checkedMuseum };
+  const handle = { account, remaining, label, costs: checkedCosts, scope, farm: checkedFarm, museum: checkedMuseum, operation };
   saved.add(handle);
   materialSpends.set(account, saved);
   return handle;
@@ -104,6 +106,60 @@ function removeMaterialSpend(handle) {
 // and disconnect retain it until inventory or farm-state reconciliation.
 export function cancelOrderMaterialSpend(handle) {
   removeMaterialSpend(handle);
+}
+
+export function confirmOrderMaterialOperation(handle) {
+  if (handle?.operation && materialSpends.get(handle.account)?.has(handle)) handle.operation.confirmed = true;
+}
+
+export function pendingOrderMaterialSpends(player) {
+  return [...(materialSpends.get(accountKey(player)) ?? [])].filter(handle => handle.operation);
+}
+
+// Freeze the candidate handles BEFORE querying business state and then inventory.
+// Neither an unrelated debit nor an older read can settle a newer operation.
+export async function readOrderMaterialState(client, player, { enabled = () => true } = {}) {
+  const account = accountKey(player), candidates = pendingOrderMaterialSpends(player), handles = [];
+  if (!candidates.length || !enabled()) return null;
+  for (const handle of candidates) {
+    try {
+      const confirmed = handle.operation.confirmed === true || await handle.operation.verify?.(client, { player, enabled }) === true;
+      if (!enabled() || accountKey(player) !== account || client.connected === false) return null;
+      if (confirmed) {
+        handle.operation.confirmed = true;
+        handle.operation.onConfirmed?.();
+        handles.push(handle);
+      }
+    } catch { /* A failed probe keeps only this operation's materials reserved. */ }
+    if (!enabled() || accountKey(player) !== account || client.connected === false) return null;
+  }
+  return { account, handles };
+}
+
+export function settleOrderMaterialState(player, snapshot, stock) {
+  if (!snapshot || accountKey(player) !== snapshot.account) return false;
+  if (!(stock instanceof Map)) throw new Error('未能确认消费后的完整库存');
+  for (const [id, count] of stock) {
+    if (typeof id !== 'string' || !id) throw new Error('库存道具编号异常');
+    amount(count, '消费后库存');
+  }
+  for (const handle of snapshot.handles) removeMaterialSpend(handle);
+  return true;
+}
+
+export async function refreshOrderMaterialSpends(client, player, { enabled = () => true } = {}) {
+  try {
+    const snapshot = await readOrderMaterialState(client, player, { enabled });
+    if (!snapshot?.handles.length) return null;
+    const reply = await client.request('AllItemRequest', {}, 'AllItemResponse'), stock = new Map();
+    for (const row of list(reply?.items, '消费后库存')) {
+      if (typeof row?.itemId !== 'string' || !row.itemId || stock.has(row.itemId)) throw new Error('库存道具记录异常');
+      stock.set(row.itemId, amount(row.num, '消费后库存'));
+    }
+    if (!enabled() || client.connected === false || accountKey(player) !== snapshot.account) return null;
+    settleOrderMaterialState(player, snapshot, stock);
+    return stock;
+  } catch { return null; }
 }
 
 export function pendingFarmMaterialSpends(player) {
@@ -142,7 +198,7 @@ export function confirmOrderMaterialSpends(player, stock, itemIds = null) {
       if (requested && [...requested].some(id => handle.scope.has(id))) pending ??= handle;
       continue;
     }
-    if (handle.museum) {
+    if (handle.museum || handle.operation) {
       if (!requested || [...requested].some(id => handle.scope.has(id))) pending ??= handle;
       continue;
     }
@@ -170,7 +226,7 @@ function assets(value, name) {
 // A read-only snapshot for optional consumers of processed goods. Callers must
 // obtain a fresh snapshot immediately before their write and keep their own
 // per-account execution lock; these Maps do not reserve stock on the server.
-export async function readOrderReservedStock(client, protocol, config, { player, enabled = () => true } = {}) {
+export async function readOrderReservedStock(client, protocol, config, { player, enabled = () => true, itemIds = null } = {}) {
   if (!player || !Number.isSafeInteger(player.level) || player.level < 1
     || !idText(player.playerId) || BigInt(idText(player.playerId)) <= 0n
     || !idText(player.worldId) || BigInt(idText(player.worldId)) <= 0n) throw new Error('无法确认材料预留的账号身份');
@@ -193,6 +249,7 @@ export async function readOrderReservedStock(client, protocol, config, { player,
   // Observe pending expeditions BEFORE the complete inventory snapshot. New
   // production may mask the debit, so an absolute old balance is insufficient.
   const museumState = await readMuseumMaterialState(client, player, { enabled: () => { check(); return true; } });
+  const materialState = await readOrderMaterialState(client, player, { enabled: () => { check(); return true; } });
   const [water, inventory, schedule, ships] = await Promise.all([
     get('OnWaterRequest'), get('AllItemRequest'), get('WeekInfoRequest'),
     player.level >= cargoLevel ? get('CargoShipsRequest') : { ship: [] },
@@ -204,7 +261,8 @@ export async function readOrderReservedStock(client, protocol, config, { player,
   }
   check();
   settleMuseumMaterialState(player, museumState, stock);
-  confirmOrderMaterialSpends(player, stock);
+  settleOrderMaterialState(player, materialState, stock);
+  confirmOrderMaterialSpends(player, stock, itemIds);
   const reservations = { weekly: new Map(), cargo: new Map(), resident: new Map() };
   const add = (target, id, n) => target.set(id, amount((target.get(id) ?? 0) + n, '预留数量'));
   const times = list(schedule?.activityTime, '周活动时间');

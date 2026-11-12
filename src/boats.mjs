@@ -24,10 +24,19 @@ async function enhance(client, boat, info, cfg, next, buildingCount, enabled, op
   }
   if (!enabled(boat.enhance)) return;
   const action = { kind: boat.enhance, scope: 'base', setting: boat.enhance === 'diveEnhance' ? 'gather.upgradeDiving' : 'gather.upgradeSalvage',
+    request: boat.command + 'LevelUpRequest', response: 'SC' + boat.command + 'LevelUpdate', body: {},
     costs: promote ? [] : [{ id: 'GOLD', num: cfg.cost[1] }], label: boat.name + '养成' };
   if (options.dryRun) return { action: { ...action, label: boat.name + (promote ? '升级至 ' + next.level + ' 级' : '强化一次') } };
   const ticket = await options.beforeAction?.(action);
-  const reply = await client.request(boat.command + 'LevelUpRequest', {}, 'SC' + boat.command + 'LevelUpdate');
+  if (!enabled(boat.enhance)) { await options.cancelAction?.(action, ticket, { notSent: true }); return { reason: '已暂停' }; }
+  let reply;
+  try { reply = await client.request(action.request, action.body, action.response); }
+  catch (error) {
+    if (error.notSent === true || error.prompt && error.request === action.request) {
+      await options.cancelAction?.(action, ticket, { notSent: error.notSent === true, error });
+    }
+    throw error;
+  }
   const after = reply.levelInfo;
   if (!(after?.level > info.level || (after?.level === info.level && after.enhance > (info.enhance ?? 0)))) {
     throw new Error('未确认强化进度增加');

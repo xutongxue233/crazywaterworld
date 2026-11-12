@@ -12,7 +12,10 @@ const action = { kind: 'build', request: 'BuildBuildingRequest', response: 'Buil
 function fixture(player = { playerId: ++sequence, worldId: 9001, level: 16 }) {
   const state = { stock: 10, writes: [], mode: 'ok' };
   const client = { async request(name) {
-    if (name === 'AllItemRequest') return { items: [{ itemId: 'fish', num: state.stock }] };
+    if (name === 'AllItemRequest') {
+      if (state.unavailable && state.writes.length) throw new Error('消费后库存暂不可读');
+      return { items: [{ itemId: 'fish', num: state.stock }] };
+    }
     if (name === 'OnWaterRequest') return { building: [], workerOrder: [{ index: 1, workerId: 1, requirements: [{ id: 'fish', num: 3 }] }] };
     if (name === 'WeekInfoRequest') return { activityTime: [] };
     if (name === 'BuildBuildingRequest' || name === 'FinishWorkerOrderRequest') {
@@ -41,16 +44,17 @@ await test('直接海面执行被旧材料扣款阻止，同步后恢复', async
   assert.equal(f.state.writes.length, 0);
   f.state.stock = 7;
   assert.equal((await f.run()).results[0].ok, true);
-  assert.throws(() => confirmOrderMaterialSpends(f.player, new Map([['fish', 7]])), /尚未确认/);
-  confirmOrderMaterialSpends(f.player, new Map([['fish', 4]]));
+  assert.doesNotThrow(() => confirmOrderMaterialSpends(f.player, new Map([['fish', 7]])), '明确结果后的完整新库存完成结算，不要求净下降');
 });
-await test('海面成功与未知结果均阻止换连接后再次消费', async () => {
+await test('海面成功后换连接可补读库存，未知业务继续保护', async () => {
   for (const mode of ['ok', 'unknown']) {
-    const first = fixture(); first.state.mode = mode;
+    const first = fixture(); first.state.mode = mode; first.state.unavailable = true;
     await first.run();
+    assert.throws(() => confirmOrderMaterialSpends(first.player, new Map([['fish', 0]])), /尚未确认/, '缓存余额不能替代业务证据后的完整读取');
     const replacement = fixture({ ...first.player, guildId: 22 });
-    assert.equal((await replacement.run()).results[0].skipped, true);
-    assert.equal(replacement.state.writes.length, 0);
+    const result = (await replacement.run()).results[0];
+    assert.equal(mode === 'ok' ? result.ok : result.skipped, true);
+    assert.equal(replacement.state.writes.length, mode === 'ok' ? 1 : 0);
     assert.equal((await fixture().run()).results[0].ok, true, '其他账号不共享消费屏障');
   }
 });
@@ -77,8 +81,7 @@ await test('手动居民交单与旧消费者双向共享未同步扣款', async
   f.state.stock = 7;
   await f.submit();
   assert.deepEqual(f.state.writes, ['FinishWorkerOrderRequest']);
-  assert.throws(() => confirmOrderMaterialSpends(f.player, new Map([['fish', 7]])), /尚未确认/);
-  confirmOrderMaterialSpends(f.player, new Map([['fish', 4]]));
+  assert.doesNotThrow(() => confirmOrderMaterialSpends(f.player, new Map([['fish', 7]])));
 });
 await test('手动交单明确拒绝可重读重试，未知结果保留材料', async () => {
   for (const mode of ['reject', 'unknown']) {

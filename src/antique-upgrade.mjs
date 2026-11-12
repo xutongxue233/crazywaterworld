@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { exactAutomationId } from './automation-policy.mjs';
-import { cancelUnsentGold, reconcileGold, rejectGold, reserveGold } from './gold-reservations.mjs';
+import { cancelUnsentGold, reconcileGold, rejectGold, reserveGold, confirmGoldOperation, refreshGoldSpend } from './gold-reservations.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
@@ -57,7 +57,7 @@ function suitName(config, id) {
   return rows(config, 'AntiqueSuitCfg').find(row => row.suitId === id)?.suitName || ('套装' + id);
 }
 
-export async function readAntiqueUpgrade(client, protocol, config, player) {
+export async function readAntiqueUpgrade(client, protocol, config, player, { enabled = () => true } = {}) {
   const snapshot = { now: nowOf(client), worldId: exactAutomationId(player?.worldId), playerId: exactAutomationId(player?.playerId),
     antiques: [], suits: [], masterLv: null, items: new Map(), gold: null, goldSynced: false, reason: '' };
   const required = rows(config, 'ModuleOpenCfg').find(row => row.moduleId === '藏品')?.playerLevel;
@@ -70,9 +70,11 @@ export async function readAntiqueUpgrade(client, protocol, config, player) {
     return client.request(request, {}, response, 8000);
   };
   try {
+    await refreshGoldSpend(client, player, { enabled });
     const [antiqueReply, itemReply, resourceReply] = await Promise.all([
       get('AllAntiqueRequest', 'AllAntiqueResponse'), get('AllItemRequest', 'AllItemResponse'), get('AllResourceRequest', 'AllResourceResponse'),
     ]);
+    if (exactAutomationId(player?.playerId) !== snapshot.playerId || exactAutomationId(player?.worldId) !== snapshot.worldId) throw new Error('账号已变化，不能使用原账号藏品状态');
     if (!Array.isArray(antiqueReply.antiques) || !Array.isArray(antiqueReply.suits) || !integer(antiqueReply.masterLv, 0)) throw new Error('藏品、套装或大师等级数据不完整');
     const antiqueIds = new Set();
     for (const item of antiqueReply.antiques) {
@@ -95,8 +97,8 @@ export async function readAntiqueUpgrade(client, protocol, config, player) {
       snapshot.items.set(item.itemId, sum);
     }
     if (!Array.isArray(resourceReply.list)) throw new Error('金币余额未同步');
-    const gold = resourceReply.list.find(row => row.res === 3);
-    snapshot.gold = gold ? quantity(gold.amount) : 0;
+    const gold = resourceReply.list.filter(row => row.res === 3);
+    snapshot.gold = gold.length === 1 ? quantity(gold[0].amount) : null;
     if (!integer(snapshot.gold)) throw new Error('金币余额无法精确确认');
     snapshot.goldSynced = reconcileGold(player, snapshot.gold);
   } catch (error) { snapshot.reason = '藏品状态未确认：' + error.message; }
@@ -104,7 +106,7 @@ export async function readAntiqueUpgrade(client, protocol, config, player) {
 }
 
 function confirmed(details, snapshot) {
-  if (!details) return false;
+  if (!details || snapshot.reason) return false;
   if (details.kind === 'antiqueActivate') return snapshot.antiques.some(row => row.id === details.antiqueId);
   if (details.kind === 'antiqueStar') return (snapshot.antiques.find(row => row.id === details.antiqueId)?.star ?? -1) >= details.targetStar;
   if (details.kind === 'antiqueSuit') return (snapshot.suits.find(row => row.id === details.suitId)?.level ?? -1) >= details.targetLevel;
@@ -267,8 +269,9 @@ function detailsOf(step, now) {
 }
 
 function reconcile(snapshot, ledger, onStep) {
+  if (snapshot.reason) return;
   for (const [key, record] of Object.entries(ledger.keyRecords())) {
-    if (!key.startsWith('antique:') || !record.details) continue;
+    if (!record.details || !key.startsWith('antique:' + record.details.kind + ':' + snapshot.worldId + ':')) continue;
     if (!confirmed(record.details, snapshot)) {
       if (record.confirmed) { try { ledger.releaseCompletedKey(key); } catch { /* 等下次读取再释放 */ } }
       continue;
@@ -291,7 +294,7 @@ export async function runAntiqueUpgrade(client, protocol, config, player, { getS
   const results = [];
   const report = entry => { results.push(entry); onStep?.(entry); };
   try {
-    const read = () => readAntiqueUpgrade(client, protocol, config, player);
+    const read = () => readAntiqueUpgrade(client, protocol, config, player, { enabled });
     const snapshot = await read();
     const settings = getSettings();
     reconcile(snapshot, ledger, report);
@@ -310,7 +313,15 @@ export async function runAntiqueUpgrade(client, protocol, config, player, { getS
       if (failure && failure.until > Date.now() && failure.signature === JSON.stringify(step.body)) continue;
       let goldTicket;
       if (step.goldCost > 0) {
-        try { goldTicket = reserveGold(player, fresh.gold, step.goldCost, step.request); }
+        const { suitId, targetLevel } = step;
+        try { goldTicket = reserveGold(player, fresh.gold, step.goldCost, step.request, { operation: {
+          async verify(current) {
+            const response = await current.request('AllAntiqueRequest', {}, 'AllAntiqueResponse');
+            if (!Array.isArray(response?.suits)) return false;
+            const suits = response.suits.filter(row => row.id === suitId);
+            return suits.length === 1 && integer(suits[0].level) && suits[0].level >= targetLevel;
+          },
+        } }); }
         catch (error) { report({ step, skipped: true, error: error.message }); continue; }
       }
       let ticket;
@@ -340,6 +351,10 @@ export async function runAntiqueUpgrade(client, protocol, config, player, { getS
         const after = await read();
         const ok = confirmed(detailsOf(step, fresh.now), after);
         if (ok) {
+          if (goldTicket) {
+            confirmGoldOperation(goldTicket);
+            await refreshGoldSpend(client, player, { enabled });
+          }
           ledger.resolveKey(step.uniqueKey, true);
           ledger.releaseCompletedKey(step.uniqueKey);
           entry = { step, ok: true, sent: true, status: 'confirmed', note: '服务器状态已确认' };
@@ -347,7 +362,11 @@ export async function runAntiqueUpgrade(client, protocol, config, player, { getS
           entry = { step, ok: false, sent: true, status: 'unknown', note: '请求已发送，结果待确认；保留记录，不重复发送' };
         }
       } catch (error) {
-        if (error.prompt && error.request === step.request) {
+        if (error.notSent === true) {
+          ledger.cancel(ticket);
+          cancelUnsentGold(goldTicket);
+          entry = { step, ok: false, skipped: true, status: 'cancelled', error: error.message };
+        } else if (error.prompt && error.request === step.request) {
           ledger.cancel(ticket);
           rejectGold(goldTicket, error);
           const failures = rejected.get(client) ?? new Map();

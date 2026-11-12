@@ -1220,7 +1220,7 @@ export async function runWorld(client, protocol, plan, {
       const prepareAction = localGuard?.before ?? beforeStep;
       const finishAction = localGuard?.after ?? afterStep;
       const cancelAction = localGuard?.cancel ?? cancelStep;
-      let ticket = null, prepared = false, dispatched = false;
+      let ticket = null, prepared = false, dispatched = false, writePending = false;
       let actual = step;
       try {
         // The official client waits for a business Response for planting. Keep
@@ -1281,15 +1281,17 @@ export async function runWorld(client, protocol, plan, {
           session.delete(step.body.index); // A lost reply can still have consumed this slot.
         }
         if (response && protocol[response]) {
-          dispatched = true;
+          dispatched = writePending = true;
           const body = await client.request(step.request, step.body, response, timeout);
+          writePending = false;
           if (step.kind === 'finishOrder' && !body?.reward?.asset?.length) throw new Error('服务端尚未返回居民订单的交付奖励');
           for (const item of actual.weeklyBorrowed ?? []) confirmedBorrow.set(item.id, (confirmedBorrow.get(item.id) ?? 0) + item.num);
           entry = { step: actual, ok: true, body };
         } else {
           // 没有配套 Response：静默即成功，回包是 PromptResponse 就是被拒。
-          dispatched = true;
+          dispatched = writePending = true;
           const sent = await client.sendWatch(step.request, step.body, { window });
+          writePending = false;
           entry = { step, ok: true, sent };
           if (step.request === 'SetFactoryAutoProduceRequest') {
             const water = normalize(await client.request('OnWaterRequest', {}, 'OnWaterResponse'));
@@ -1300,12 +1302,14 @@ export async function runWorld(client, protocol, plan, {
         }
         await finishAction?.(actual, ticket, entry);
       } catch (error) {
-        if (prepared && (!dispatched || error.prompt && error.request === actual.request)) await cancelAction?.(actual, ticket, { notSent: !dispatched, error });
+        // A later read/settlement failure cannot prove the completed write was unsent.
+        const notSent = !dispatched || (writePending && error.notSent === true);
+        if (prepared && (notSent || error.prompt && error.request === actual.request)) await cancelAction?.(actual, ticket, { notSent, error });
         if(['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)&&error.prompt&&error.request===step.request){
           const failures=factoryFailures.get(client)??new Map();factoryFailures.set(client,failures);
           failures.set(JSON.stringify([step.request,step.body]),{signature:step.eligibilityKey,until:/limited item not available/i.test(error.message)?Infinity:Date.now()+300000,reason:error.message});
         }
-        if(step.request==='SetFactoryAutoProduceRequest'&&(!dispatched||error.prompt&&error.request===step.request))nativeTargetChecks.get(client)?.delete(step.body.buildingId);
+        if(step.request==='SetFactoryAutoProduceRequest'&&(notSent||error.prompt&&error.request===step.request))nativeTargetChecks.get(client)?.delete(step.body.buildingId);
         if (recipe && error.code !== 'AUTOMATION_SKIP') failedRecipes.add(recipe);
         // Each plot has independent prerequisites. A failed build must not
         // suppress other plots, or prevent a later fresh survey from retrying it.
@@ -1314,7 +1318,7 @@ export async function runWorld(client, protocol, plan, {
           blocked.add(step.kind);
         }
         entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
-        if (step.request === 'FarmPlantRequest' && prepared && dispatched && !(error.prompt && error.request === actual.request)) {
+        if (step.request === 'FarmPlantRequest' && prepared && !notSent && !(error.prompt && error.request === actual.request)) {
           entry.status = 'unknown';
           entry.reason = '播种响应未确认：' + error.message;
           await finishAction?.(actual, ticket, entry);

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { toNumber } from './client.mjs';
 import { displayMaterial } from './config.mjs';
 import { uidText } from './hero-equipment.mjs';
-import { goldAccountKey, reserveGold, rejectGold } from './gold-reservations.mjs';
+import { goldAccountKey, reserveGold, rejectGold, cancelUnsentGold, confirmGoldOperation, refreshGoldSpend } from './gold-reservations.mjs';
 
 const rows = (config, table) => config?.tables?.[table]?.data ?? [];
 const now = client => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
@@ -90,7 +90,7 @@ function constructionReason(unlock, all, buildCosts) {
     : '建厂材料已齐，可在海面建造装备厂';
 }
 
-export async function readEquipmentCrafting(client, config, player) {
+export async function readEquipmentCrafting(client, config, player, { enabled = () => true } = {}) {
   const unlock = rows(config, 'BuildingUnlockCfg').find(row => row.buildingType === '装备厂');
   if (!unlock?.buildingId || !(unlock.playerLevel > 0)) throw new Error('缺少装备厂开放配置');
   const world = toNumber(player?.worldId);
@@ -102,6 +102,7 @@ export async function readEquipmentCrafting(client, config, player) {
     view.reason = '角色 ' + unlock.playerLevel + ' 级开放装备厂';
     return view;
   }
+  await refreshGoldSpend(client, player, { enabled });
   const [all, stock] = await Promise.all([buildings(client), materialStock(client)]);
   view.serverNow = now(client);
   const plot = factoryAt(all, unlock.buildingId);
@@ -158,7 +159,7 @@ export async function startEquipmentCraft(client, config, player, { buildingId, 
   if (busy.has(client)) throw new Error('装备厂正在处理上一次操作');
   busy.add(client);
   try {
-    const view = await readEquipmentCrafting(client, config, player);
+    const view = await readEquipmentCrafting(client, config, player, { enabled });
     const recipe = view.recipes.find(row => row.makeId === makeId);
     if (buildingId !== view.buildingId || !recipe) throw new Error('没有找到所选装备厂或赛季配方，请刷新');
     if (!recipe.canStart) throw new Error(recipe.reason);
@@ -168,12 +169,24 @@ export async function startEquipmentCraft(client, config, player, { buildingId, 
     }
     if (!previewKey || recipe.previewKey !== previewKey) throw new Error('装备厂或配方已变化，请重新确认');
     if (!enabled() || goldAccountKey(player) !== account) throw new Error('账号已暂停或连接已更换');
-    const reservation = reserveGold(player, gold?.have, gold?.need, 'MakeEquipRequest');
+    const sentAt = now(client);
+    const reservation = reserveGold(player, gold?.have, gold?.need, 'MakeEquipRequest', { operation: {
+      async verify(current) {
+        const job = workOrder(factoryAt(await buildings(current), buildingId));
+        return job?.makeId === makeId && job.finishTime >= sentAt;
+      },
+    } });
     previews.delete(client);
     try { await client.sendWatch('MakeEquipRequest', { buildingId, makeId, universal: false }); }
-    catch (error) { rejectGold(reservation, error); throw error; }
+    catch (error) {
+      if (error.notSent === true) cancelUnsentGold(reservation); else rejectGold(reservation, error);
+      throw error;
+    }
     const job = workOrder(factoryAt(await buildings(client), buildingId));
-    if (job?.makeId !== makeId) throw new Error('服务端未确认本批装备开工，请刷新队列');
+    if (!enabled() || goldAccountKey(player) !== account) throw new Error('账号已暂停或连接已更换，保留装备开工记录');
+    if (job?.makeId !== makeId || job.finishTime < sentAt) throw new Error('服务端未确认本批装备开工，请刷新队列');
+    confirmGoldOperation(reservation);
+    await refreshGoldSpend(client, player, { enabled });
     return { label: '装备厂已开始制作' + recipe.name };
   } finally {
     busy.delete(client);

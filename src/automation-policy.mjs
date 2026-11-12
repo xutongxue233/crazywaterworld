@@ -1,8 +1,10 @@
 import { normalize } from './worlds.mjs';
-import { goldAccountKey, reserveGold, rejectGold, cancelUnsentGold } from './gold-reservations.mjs';
-import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, pendingFarmMaterialSpends, pendingMuseumMaterialSpends } from './order-reservations.mjs';
+import { goldAccountKey, reserveGold, rejectGold, cancelUnsentGold, confirmGoldOperation, readGoldSpendState, settleGoldSpendState, refreshGoldSpend } from './gold-reservations.mjs';
+import { beginOrderMaterialSpend, cancelOrderMaterialSpend, confirmOrderMaterialSpends, pendingFarmMaterialSpends, pendingMuseumMaterialSpends,
+  confirmOrderMaterialOperation, readOrderMaterialState, settleOrderMaterialState, refreshOrderMaterialSpends } from './order-reservations.mjs';
 import { assertFarmPlantingReady, farmInventory, farmPlantArgs, readFarmMaterialState, settleFarmMaterialState } from './farm-planting.mjs';
 import { museumMaterialDetails, readMuseumMaterialState, settleMuseumMaterialState } from './museum-materials.mjs';
+import { captureSpendOperation } from './spend-evidence.mjs';
 
 export class AutomationSkip extends Error {
   constructor(message) { super(message); this.code = 'AUTOMATION_SKIP'; }
@@ -154,12 +156,12 @@ export function actionCounters(step) {
 // 同一计划中的成本按发送顺序扣减。读取失败、额度文件损坏或金额不明均不发送消费动作。
 export function createActionGuard(client, getSettings, ledger, { enabled = () => true, player = null } = {}) {
   const remaining = new Map();
-  const reservations = [];
-  const sameAction = (a, b) => a === b || (a.request === b.request && JSON.stringify(a.body ?? {}) === JSON.stringify(b.body ?? {}) && JSON.stringify(a.costs ?? []) === JSON.stringify(b.costs ?? []));
-  const reservationFor = (step, ticket) => reservations.find(record => ticket ? record.ticket === ticket : sameAction(record.step, step));
-  const forget = record => { if (record) reservations.splice(reservations.indexOf(record), 1); };
+  const reservations = new Map();
+  // Even actions without daily counters need a distinct generation. Identical
+  // request bodies may be retried after an earlier unknown action is settled.
+  const forget = record => reservations.delete(record.token);
   return {
-    async before(step) {
+    async before(step, { waterSnapshot } = {}) {
       let settings = getSettings?.();
       const planting = step.request === 'FarmPlantRequest';
       const exploring = step.request === 'MuseumStartExploreRequest';
@@ -186,11 +188,12 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         const resourceIds = [...costs.keys()].filter(id => !itemIds.includes(id));
         const balances = new Map();
         if (itemIds.length) {
-          let farmState, museumState;
+          let farmState, museumState, materialState;
           if (account) {
             try {
               farmState = await readFarmMaterialState(client, player, { step: planting ? step : null, enabled });
               museumState = await readMuseumMaterialState(client, player, { step: exploring ? step : null, enabled });
+              materialState = await readOrderMaterialState(client, player, { enabled });
             }
             catch (error) { throw new AutomationSkip(error.message); }
           }
@@ -203,6 +206,7 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
             try {
               settleFarmMaterialState(player, farmState, materialStock);
               settleMuseumMaterialState(player, museumState, materialStock);
+              settleOrderMaterialState(player, materialState, materialStock);
               if (planting) assertFarmPlantingReady(player, step, farmState);
               if (exploring) museumDetails = museumMaterialDetails(player, step, museumState);
               confirmOrderMaterialSpends(player, materialStock, itemIds);
@@ -212,7 +216,11 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
           for (const id of itemIds) balances.set(id, materialStock.get(id) ?? 0);
         }
         if (resourceIds.length) {
+          const goldState = account && resourceIds.includes('GOLD') ? await readGoldSpendState(client, player, { enabled }) : null;
           const resources = normalize(await client.request('AllResourceRequest', {}, 'AllResourceResponse'));
+          if (!enabled() || (account && goldAccountKey(player) !== account)) throw new AutomationSkip('操作已暂停或账号已切换');
+          if (!Array.isArray(resources.list) || new Set(resources.list.map(row => row.res)).size !== resources.list.length
+            || resources.list.some(row => !Number.isSafeInteger(row.res) || !Number.isSafeInteger(row.amount) || row.amount < 0)) throw new AutomationSkip('无法完整确认当前资源余额');
           const ids = { EXP: 1, GOLD: 3, RUBY: 4, ARENA_POINT: 5, LEAGUE_POINT: 6 };
           for (const id of resourceIds) {
             const row = resources.list?.find(r => r.res === ids[id]);
@@ -220,6 +228,7 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
             balances.set(id, row.amount);
             if (id === 'GOLD') actualGold = row.amount;
           }
+          if (goldState) settleGoldSpendState(player, goldState, actualGold);
         }
         settings = getSettings?.() ?? settings;
         if (!worldPreferenceEnabled(settings, step.kind)) throw new AutomationSkip('对应设置已关闭');
@@ -244,14 +253,16 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         try { ticket = ledger.reserve(counters, usageLimits(settings), step.counterMinimums); }
         catch (error) { throw new AutomationSkip(error.message); }
       }
+      let materials, gold, operation;
       if (account) {
-        let materials, gold;
         try {
           if (!enabled() || goldAccountKey(player) !== account) throw new AutomationSkip('操作已暂停或账号已切换');
+          operation = !planting && !exploring ? await captureSpendOperation(client, step, { waterSnapshot }).catch(() => ({ confirmed: false })) : null;
+          if (!enabled() || goldAccountKey(player) !== account) throw new AutomationSkip('操作已暂停或账号已切换');
+          if (operation && ticket) operation.onConfirmed = () => ledger.confirm(ticket);
           if (materialStock) materials = beginOrderMaterialSpend(player, [...costs].filter(([id]) => !['GOLD', 'RUBY', 'EXP', 'ARENA_POINT', 'LEAGUE_POINT'].includes(id)).map(([id, need]) => ({ id, need, have: materialStock.get(id) ?? 0 })), step.label || step.request,
-            planting ? { farm: { args: farmPlantArgs(step) } } : exploring ? { museum: museumDetails } : {});
-          if (costs.has('GOLD')) gold = reserveGold(player, actualGold, costs.get('GOLD'), step.request);
-          if (materials || gold) reservations.push({ step, ticket, gold, materials, account, request: step.request });
+            planting ? { farm: { args: farmPlantArgs(step) } } : exploring ? { museum: museumDetails } : { operation });
+          if (costs.has('GOLD')) gold = reserveGold(player, actualGold, costs.get('GOLD'), step.request, { operation });
         } catch (error) {
           cancelOrderMaterialSpend(materials); cancelUnsentGold(gold);
           if (ticket) ledger.cancel(ticket);
@@ -259,10 +270,26 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         }
       }
       for (const [id, balance] of nextBalances) remaining.set(id, balance);
-      return ticket;
+      const token = ticket ?? Object.freeze({});
+      reservations.set(token, { token, ticket, gold, materials, operation, account, request: step.request, costs });
+      return token;
     },
     async after(step, ticket, outcome) {
-      const record = reservationFor(step, ticket);
+      const record = reservations.get(ticket);
+      if (!record) return;
+      if (record?.operation && enabled() && client.connected !== false && goldAccountKey(player) === record.account) {
+        if (outcome?.ok && !('sent' in outcome)) {
+          confirmOrderMaterialOperation(record.materials);
+          confirmGoldOperation(record.gold);
+        }
+        if (record.materials) await refreshOrderMaterialSpends(client, player, { enabled });
+        if (record.gold) await refreshGoldSpend(client, player, { enabled });
+        if (record.operation.confirmed && outcome) {
+          outcome.ok = true;
+          outcome.status = 'confirmed';
+          delete outcome.sent;
+        }
+      }
       if (record?.materials?.farm) {
         try {
           if (goldAccountKey(player) !== record.account) throw new Error('账号已切换，保留原账号播种记录');
@@ -299,21 +326,21 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
           outcome.reason = '探宝材料待确认：' + error.message;
         }
       }
-      if (ticket && outcome?.ok && !('sent' in outcome)) ledger.confirm(ticket);
-      // Other consumers still need an observed debit. Farms and museum trips
-      // can settle from their business state followed by a complete inventory.
+      if (record.ticket && outcome?.ok && !('sent' in outcome)) ledger.confirm(record.ticket);
+      // Shared records outlive this guard and retain their business probe if a
+      // receipt or complete inventory is unavailable until a later connection.
       forget(record);
     },
     async cancel(step, ticket, { notSent = false, error } = {}) {
-      const record = reservationFor(step, ticket);
-      if (record) {
-        if (notSent) { cancelUnsentGold(record.gold); cancelOrderMaterialSpend(record.materials); }
-        else if (error?.prompt && error.request === record.request) { rejectGold(record.gold, error); cancelOrderMaterialSpend(record.materials); }
-        else return;
-        forget(record);
-      }
-      if (ticket) ledger.cancel(ticket);
-      for (const [id, amount] of actionCosts(step)) if (remaining.has(id)) remaining.set(id, remaining.get(id) + amount);
+      const record = reservations.get(ticket);
+      if (!record) return;
+      if (record.operation?.confirmed) { forget(record); return; }
+      if (notSent) { cancelUnsentGold(record.gold); cancelOrderMaterialSpend(record.materials); }
+      else if (error?.prompt && error.request === record.request) { rejectGold(record.gold, error); cancelOrderMaterialSpend(record.materials); }
+      else return;
+      forget(record);
+      if (record.ticket) ledger.cancel(record.ticket);
+      for (const [id, amount] of record.costs) if (remaining.has(id)) remaining.set(id, remaining.get(id) + amount);
     },
   };
 }

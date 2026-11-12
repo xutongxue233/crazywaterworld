@@ -85,7 +85,10 @@ export async function runDailySingle(client, protocol, { state, token, paid = fa
       else await client.sendWatch(action.request, action.body, { window: 400 });
       sent++;
     } catch (error) {
-      if (error.prompt && error.request === action.request) { await guard.cancel(action, ticket, { error }); state.attempted.delete(current.fingerprint); }
+      if (error.notSent === true || error.prompt && error.request === action.request) {
+        await guard.cancel(action, ticket, { notSent: error.notSent === true, error });
+        state.attempted.delete(current.fingerprint);
+      }
       throw error;
     }
     let confirmed = false;

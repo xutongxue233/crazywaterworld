@@ -1783,7 +1783,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
             allowMutate: true,
             timeout: 8000,
             enabled: () => !session.paused && instance.connected,
-            getSettings: () => session.preferences, beforeAction: guard.before, afterAction: guard.after,
+            getSettings: () => session.preferences, beforeAction: guard.before, afterAction: guard.after, cancelAction: guard.cancel,
             onStep: (entry) => {
               const step = entry.step;
               const label = step.kind === 'level' ? `${step.heroId} 升级请求 · 目标 ${entry.targetLevel} 级` : step.kind === 'star' ? `${step.heroId} 升到 ${step.to} 星` : `${step.heroId} 技能 ${step.slot + 1}`;

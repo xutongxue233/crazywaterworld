@@ -2,7 +2,7 @@ import { normalize } from './worlds.mjs';
 
 const skip = reason => ({ label: '钓具养成', skipped: true, reason });
 
-export async function upgradeFishingOnce(client, config, { playerLevel, reserveGold, enabled, targetLevel = Infinity, beforeAction, afterAction, dryRun = false }) {
+export async function upgradeFishingOnce(client, config, { playerLevel, reserveGold, enabled, targetLevel = Infinity, beforeAction, afterAction, cancelAction, dryRun = false }) {
   if (!enabled()) return skip('已暂停');
   const tables = config?.tables;
   const unlock = tables?.ModuleOpenCfg?.data?.find(row => row.moduleId === '小玩法升级')?.playerLevel;
@@ -41,10 +41,20 @@ export async function upgradeFishingOnce(client, config, { playerLevel, reserveG
   }
 
   if (!enabled()) return skip('已暂停');
-  const action = { kind: 'fishEnhance', scope: 'base', setting: 'gather.upgradeFishing', costs: promote ? [] : [{ id: 'GOLD', num: current.cost[1] }], label: '钓具强化与升级' };
+  const action = { kind: 'fishEnhance', scope: 'base', setting: 'gather.upgradeFishing',
+    request: 'FishingLevelUpRequest', response: 'SCFishingLevelUpdate', body: {},
+    costs: promote ? [] : [{ id: 'GOLD', num: current.cost[1] }], label: '钓具强化与升级' };
   if (dryRun) return { planned: true, action: { ...action, label: promote ? '钓具升至 ' + next.level + ' 级' : '钓具强化一次' } };
   const ticket = await beforeAction?.(action);
-  const reply = await client.request('FishingLevelUpRequest', {}, 'SCFishingLevelUpdate');
+  if (!enabled()) { await cancelAction?.(action, ticket, { notSent: true }); return skip('已暂停'); }
+  let reply;
+  try { reply = await client.request(action.request, action.body, action.response); }
+  catch (error) {
+    if (error.notSent === true || error.prompt && error.request === action.request) {
+      await cancelAction?.(action, ticket, { notSent: error.notSent === true, error });
+    }
+    throw error;
+  }
   const after = reply?.levelInfo;
   if (promote && after?.level === next.level) { await afterAction?.(action, ticket, { ok: true, body: reply }); return { label: '钓具已从 ' + level + ' 级升至 ' + after.level + ' 级', ok: true }; }
   if (!promote && after?.level === level && Number.isSafeInteger(after.enhance) && after.enhance > progress) {

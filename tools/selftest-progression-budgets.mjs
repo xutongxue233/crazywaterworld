@@ -37,7 +37,12 @@ function fixture() {
         case 'GuildCityInfoRequest': result = { cities: [{ cityId: 1, recommended: true }] }; break;
         case 'CounterInfoRequest': result = { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: this.done }] }; break;
         case 'OnWaterRequest': result = { building: [{ buildingId: 'museum', level: 1 }], workerOrder: [{ index: 1, workerId: 1, requirements: [asset(5)] }] }; break;
-        case 'AllItemRequest': result = { items: [{ itemId: 'wood', num: this.stale ? this.visibleStock : this.actualStock }] }; break;
+        case 'AllItemRequest':
+          if (this.itemReadMode === 'failed') throw new Error('inventory read failed');
+          result = this.itemReadMode === 'missing' ? {}
+            : this.itemReadMode === 'duplicate' ? { items: [{ itemId: 'wood', num: 10 }, { itemId: 'wood', num: 10 }] }
+              : { items: [{ itemId: 'wood', num: this.itemReadMode === 'negative' ? -1 : this.stale ? this.visibleStock : this.actualStock }] };
+          break;
         case 'WeekInfoRequest': result = { activityTime: [] }; break;
         case 'CargoShipsRequest': result = { ship: [] }; break;
         case 'AllHeroRequest': result = { heroes: [{ heroId: 'h1', power: 100, star: 1 }] }; break;
@@ -48,6 +53,7 @@ function fixture() {
           if (this.uncertainPrompt === name) throw Object.assign(new Error('unattributed prompt'), { prompt: {} });
           if (this.timeout === name) throw new Error('timeout');
           this.actualStock -= 5; this.done++;
+          this.afterWrite?.(name);
           result = { reward: { asset: [{ type: 0, id: '功勋', num: 25 }] } };
           if (this.lost === name) throw new Error('reply lost');
           break;
@@ -58,6 +64,7 @@ function fixture() {
           if (this.timeout === name) throw new Error('timeout');
           this.actualStock -= 5;
           this.stages[0].expedition = { ...this.stages[0].expedition, heroIds: body.heroIds, startTime: now(), endTime: now() + 14400 };
+          this.afterWrite?.(name);
           result = { expedition: this.stages[0].expedition };
           if (this.lost === name) throw new Error('reply lost');
           break;
@@ -75,27 +82,41 @@ function fixture() {
 
 export async function testProgressionBudgets() {
   const guildFirst = fixture();
+  guildFirst.stale = false;
+  guildFirst.afterWrite = request => { if (request === 'FinishGuildOrderRequest') guildFirst.actualStock += 5; };
   assert((await guildFirst.guild()).ok);
-  assert.equal(guildFirst.actualStock, 5);
-  assert((await guildFirst.museum()).some(e => e.skipped && /扣款尚未确认/.test(e.reason)));
-  assert.deepEqual(guildFirst.writes, ['FinishGuildOrderRequest']);
+  assert.equal(guildFirst.actualStock, 10, 'production restores the consumed materials before the complete inventory read');
+  assert((await guildFirst.museum()).some(e => e.ok), 'acknowledged order and complete replenished inventory allow the next consumer');
+  assert.deepEqual(guildFirst.writes, ['FinishGuildOrderRequest', 'MuseumStartExploreRequest']);
+  assert.equal(guildFirst.actualStock, 5, 'the next consumer still leaves the resident reservation intact');
   await guildFirst.museum();
-  assert.equal(guildFirst.writes.length, 1, 'another loop cannot spend the stale balance');
+  assert.equal(guildFirst.writes.length, 2, 'another loop cannot repeat a running expedition');
   const reconnected = Object.create(guildFirst);
   await reconnected.museum();
-  assert.equal(guildFirst.writes.length, 1, 'changing connection cannot release a pending material debit');
-  guildFirst.player.guildId = 456;
-  await reconnected.museum();
-  assert.equal(guildFirst.writes.length, 1, 'changing guild cannot release the same role/world debit');
+  assert.equal(guildFirst.writes.length, 2, 'reconnection still recognizes the running expedition');
+
+  for (const mode of ['missing', 'duplicate', 'negative', 'failed']) {
+    const incomplete = fixture();
+    incomplete.stale = false;
+    incomplete.afterWrite = request => {
+      if (request === 'FinishGuildOrderRequest') { incomplete.actualStock += 5; incomplete.itemReadMode = mode; }
+    };
+    assert((await incomplete.guild()).ok, 'the direct order receipt confirms the operation');
+    await assert.rejects(incomplete.stock(), /库存|inventory/, 'invalid inventory cannot settle an acknowledged debit');
+    assert(!(await incomplete.museum()).some(e => e.ok));
+    await Object.create(incomplete).museum();
+    incomplete.player.guildId = 456;
+    await Object.create(incomplete).museum();
+    assert.deepEqual(incomplete.writes, ['FinishGuildOrderRequest'], 'read failures retain protection across connections and guild changes');
+    incomplete.itemReadMode = undefined;
+    assert((await incomplete.museum()).some(e => e.ok), 'a later complete replenished inventory recovers the acknowledged order');
+    assert.equal(incomplete.actualStock, 5, 'recovery still preserves resident materials');
+  }
 
   const otherAccount = fixture();
   assert((await otherAccount.museum()).some(e => e.ok));
   assert.equal(otherAccount.writes.length, 1, 'pending materials are account-isolated');
-  guildFirst.stale = false;
   assert.equal((await guildFirst.stock()).available.get('wood'), 0, 'a confirmed debit leaves existing resident goods intact');
-  guildFirst.actualStock += 5;
-  assert((await guildFirst.museum()).some(e => e.ok));
-  assert.equal(guildFirst.actualStock, 5);
 
   const museumFirst = fixture();
   museumFirst.staleMuseumState = true;
@@ -129,10 +150,13 @@ export async function testProgressionBudgets() {
 
     const late = fixture(); late.lost = request;
     late.staleMuseumState = true;
+    late.afterWrite = () => { late.actualStock += 5; };
     if (request === 'FinishGuildOrderRequest') await late.guild(); else await late.museum();
-    await assert.rejects(late.stock(), /扣款尚未确认/);
+    if (request === 'MuseumStartExploreRequest') await assert.rejects(late.stock(), /扣款尚未确认/, 'inventory alone cannot prove an unobserved expedition');
+    else assert.equal((await late.stock()).available.get('wood'), 5, 'same-day order counter growth followed by complete replenished inventory recovers a lost receipt');
+    assert.equal(late.writes.length, 1, 'recovery reads never repeat the operation');
     late.stale = false;
-    assert.equal((await late.stock()).available.get('wood'), 0, 'a lost reply can recover once inventory confirms the debit');
+    assert.equal((await late.stock()).available.get('wood'), 5, 'matching business state followed by complete inventory recovers without a net decrease');
 
     const unattributed = fixture(); unattributed.uncertainPrompt = request;
     if (request === 'FinishGuildOrderRequest') await unattributed.guild(); else await unattributed.museum();
@@ -144,5 +168,5 @@ export async function testProgressionBudgets() {
 
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
   await testProgressionBudgets();
-  console.log('progression material budgets ok: guild/museum stale snapshots in both directions, reconnects, guild changes and unknown outcomes');
+  console.log('progression material budgets ok: replenished balances, invalid inventory protection, business evidence, reconnects, guild changes and unknown outcomes');
 }

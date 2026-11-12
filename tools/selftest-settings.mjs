@@ -342,7 +342,7 @@ try {
     const guard = createActionGuard(client, () => settings, ledger);
     const step = { kind: 'daily', costs: [{ id: 'RUBY', num: 70 }] }; const ticket = await guard.before(step); assert.equal(ledger.snapshot().counters.diamonds, 70);
     await assert.rejects(() => guard.before({ kind: 'daily', costs: [{ id: 'RUBY', num: 11 }] }), /保留数量/);
-    await guard.cancel(step, ticket); assert.equal(ledger.snapshot().counters.diamonds, 0);
+    await guard.cancel(step, ticket, { notSent: true }); assert.equal(ledger.snapshot().counters.diamonds, 0);
     settings.factory.enabled = false;
     const result = await runWorld(client, { StartFactoryProduceRequest: {} }, { actions: [{ kind: 'startProduce', request: 'StartFactoryProduceRequest', body: { buildingId: '1食品厂', productId: '产品甲' }, costs: [{ id: '木材', num: 1 }] }] }, { allowMutate: true, config, settings, beforeStep: guard.before });
     assert.equal(result.results[0].skipped, true); assert.deepEqual(sent, []);
