@@ -60,6 +60,7 @@ import { setTimeout as pause } from 'node:timers/promises';
 import { claimRewards } from './claim-rewards.mjs';
 import { claimWeekly, runLinkage, weekSchedule, readWeekOrder, runWeekOrder, activityView } from './activities.mjs';
 import { automationTasks, dailyTaskKey, defaultFishingGoldReserve, defaultCompassSpinCount, worldTaskKey } from './automation.mjs';
+import { isActivityTaskAvailable } from './activity-availability.mjs';
 
 const defaultSleep = (ms, signal) => pause(ms, undefined, { signal });
 const dailyActionKeys = {
@@ -151,7 +152,7 @@ export async function runLoop(client, protocol, {
     const empty = () => ({ planned: 0, results: [] });
     const summary = { round, startedAt: Math.floor(Date.now() / 1000), tasks: empty(), dailies: empty(), world: empty() };
     const settings = getSettings();
-    const enabled = key => !stop.aborted && nativePreferenceEnabled(getSettings(), key) && (!isEnabled || (isEnabled(key) && rewards.due(key)));
+    const enabled = key => !stop.aborted && isActivityTaskAvailable(key, client) && nativePreferenceEnabled(getSettings(), key) && (!isEnabled || (isEnabled(key) && rewards.due(key)));
     const guard = createActionGuard(client, getSettings, usageLedger, { player, enabled: () => !stop.aborted && client.connected });
     const usage = () => usageLedger?.snapshot() ?? { counters: {} };
     let extraDemand = [];
@@ -180,7 +181,7 @@ export async function runLoop(client, protocol, {
     const logReward = (entry, category = '领奖') => stepLog('tasks')({ title: entry.label, ...entry, taskKey:entry.taskKey||entry.key, category });
     const allowDaily = (id, action) => !(getSettings() && action.request === 'ClickGoldRequest' && !action.body.free) && enabled(dailyTaskKey(id, action));
     const allowWorld = kind => enabled(worldTaskKey(kind));
-    const active = key => !stop.aborted && nativePreferenceEnabled(getSettings(), key) && Boolean(isEnabled?.(key));
+    const active = key => !stop.aborted && isActivityTaskAvailable(key, client) && nativePreferenceEnabled(getSettings(), key) && Boolean(isEnabled?.(key));
     const aliases = { vipDailyGift:['vipDaily'], worldOnlineRewards:['worldOnline'],
       festivalActiveRewards:['festivalActive'], battleReportRewards:['campaignReports'],
       weekSupplyFree:['weekChipFree','weekUniqueFree'], worldBossRewards:['worldBossDamage'],
@@ -188,8 +189,8 @@ export async function runLoop(client, protocol, {
       riverScore:['snowballFree'], riverHelp:['snowballFree'],
       pirateRankRewards:['openRankRewards'], warRankRewards:['openRankRewards'] };
     // 战报旧开关在未保存详细设置时也走统一账本，与手动和推送领奖共享未知结果保护。
-    const serviceEnabled = key => enabled(key) || Boolean((getSettings() || key === 'battleReportRewards') && aliases[key]?.some(enabled));
-    const serviceActive = key => active(key) || Boolean((getSettings() || key === 'battleReportRewards') && aliases[key]?.some(active));
+    const serviceEnabled = key => isActivityTaskAvailable(key, client) && (enabled(key) || Boolean((getSettings() || key === 'battleReportRewards') && aliases[key]?.some(enabled)));
+    const serviceActive = key => isActivityTaskAvailable(key, client) && (active(key) || Boolean((getSettings() || key === 'battleReportRewards') && aliases[key]?.some(active)));
     const takeoverReason = key => {
       const s = getSettings();
       if (s?.radar?.enabled && ['radarAuto','radarRepair'].includes(key)) return '联盟情报';

@@ -22,6 +22,7 @@ import { fleetRecordReason, dispatchReservationReason, reserveDispatch, fleetDis
 import { watchFreeRewardClock } from './extra-free-rewards.mjs';
 import { createPirateAdvanceTask } from './pirate-advance.mjs';
 import { automationControlView, setAutomationControl } from './automation-controls.mjs';
+import { activityAvailability, isActivityTaskAvailable } from './activity-availability.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -296,8 +297,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
       everySeconds: session.loop.everyMs / 1000, fishingGoldReserve: session.loop.fishingGoldReserve,
     });
     const baseRevision = createHash('sha256').update(JSON.stringify([session.loop.tasks, session.loop.everyMs, session.loop.fishingGoldReserve])).digest('hex');
+    const availability = activityAvailability(session.client);
     return { settings, revision: saved.revision, savedAt: saved.savedAt, baseRevision, catalog: settingsCatalog(loadConfigSafe()),
-      tasks: automationTasks, rules: settingsUiRules(), usage: usageFor(session).snapshot(), pendingUsage: usageFor(session).pendingCounters(), running: session.loop.running };
+      tasks: automationTasks.filter(task => !availability.hiddenTasks.includes(task.key)), rules: { ...settingsUiRules(), hiddenFields: availability.hiddenFields },
+      usage: usageFor(session).snapshot(), pendingUsage: usageFor(session).pendingCounters(), running: session.loop.running };
   }
 
   async function refreshFleetReservations(session,settings) {
@@ -860,7 +863,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         if (category === 'runtime') {
           json({ checkedAt: new Date().toISOString(), usage: usageFor(session).snapshot(), actions: [], counts: {}, viewOnly: true, scopeLabel: '运行安排（仅查看，不执行）',
             notes: [`当前${session.loop.running ? '正在挂机' : '未在挂机'}；配置轮数${settings.loop.rounds === 0 ? '持续运行' : settings.loop.rounds}，间隔${settings.loop.everySeconds}秒。`,
-              '已启用：' + automationTasks.filter(task => nativeTaskValues(settings, session.loop.tasks)[task.key]).map(task => task.label).join('、'),
+              '已启用：' + automationTasks.filter(task => isActivityTaskAvailable(task.key, session.client) && nativeTaskValues(settings, session.loop.tasks)[task.key]).map(task => task.label).join('、'),
               '运行安排不是游戏动作计划。基地、英雄、日常、活动、联盟/城战和锻造请在范围中分别选择。'] }); return;
         }
         if (!session.client?.connected || session.paused) throw new Error('请先连接当前账号，再读取真实游戏状态');
@@ -1543,7 +1546,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         if (view.lotteryError) emit(session, 'error', '读取周抽奖进度失败：' + view.lotteryError);
         if (view.orderError) emit(session, 'error', '读取周订单失败：' + view.orderError);
         const activityTasks = new Set(['fishBook', 'vipDaily', 'campaignReports', 'openRankRewards', ...view.activities.flatMap(row => row.taskKeys ?? [])]);
-        view.eventTasks = automationTasks.filter(task => activityTasks.has(task.key)).map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
+        view.eventTasks = automationTasks.filter(task => activityTasks.has(task.key) && isActivityTaskAvailable(task.key, client)).map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
         view.serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
         json(view);
         return;
@@ -1999,6 +2002,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         const payload=jsonBody();needConfirm(payload);const {session}=scoped_(parsed);
         const current=settingsView(session);
         if(payload.revision!==current.revision) throw new SettingsError({revision:'配置已变化，请刷新挂机设置后再操作'});
+        if(payload.enabled===true && current.rules.hiddenFields.includes(payload.key)) throw new Error('该活动已下线，重新开放后可启用');
         const next=setAutomationControl(current.settings,payload.key,payload.enabled);
         adoptPreferences(session,saveAutomationSettings(session.id,next,{revision:current.revision,catalog:current.catalog}));
         if(session.client) for(const task of automationTasks) rewardSchedule(session.client).clearTask(task.key);
@@ -2010,6 +2014,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         const { session } = scoped_(parsed);
         const task = automationTasks.find(item => item.key === payload.key);
         if (!task || typeof payload.enabled !== 'boolean') throw new Error('无效的自动任务设置');
+        if (payload.enabled && !isActivityTaskAvailable(task.key, session.client)) throw new Error('该活动已下线，重新开放后可启用');
         const tasks = { ...session.loop.tasks, [task.key]: payload.enabled };
         if (session.preferences) {
           const current = settingsView(session);
@@ -2181,7 +2186,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
       fleetMaintenance:{...(loop.fleetMaintenance??{rows:[],reason:'等待首次检查'}),enabled:loop.running&&!!session.client?.connected&&fleetMaintenanceEnabled(settingsView(session).settings)},
       singleTasks: {pirate:session.pirateAdvance.view(), stages:session.stages?.view?.(), mutual:session.mutualAid?.view?.()},
       pirateAdvance: session.pirateAdvance.view(),
-      controls: automationControlView(settingsView(session).settings).map(control=>{
+      controls: automationControlView(settingsView(session).settings).filter(control => !control.taskKey || isActivityTaskAvailable(control.taskKey, session.client)).map(control=>{
         const aliases={'factory.produce':'startProduce','factory.cooperateNative':'nativeProduce','factory.gain':'collect','factory.speedUp':'speedUp','building.build':'build','building.upgrade':'upgrade','building.finish':'finishUpgrade','resident.enabled':'finishOrder','resident.reroll':'denyOrder','farm.enabled':'farm','radar.enabled':'联盟情报','treasure.enabled':'万吨巨轮','cityWar.enabled':'城战接续','forge.enabled':'装备锻造','antique.enabled':'藏品养成','dailies.claimTasks':'dailyRewards','dailies.claimDailyChest':'chests','dailies.claimWeeklyChest':'chests','dailies.claimGift':'gift','resident.rewards':'orderDaily','trials.paid':'trialPaidSweep','trials.ads':'trialAdSweep'};
         const key=control.taskKey||aliases[control.key]||({'worldBoss.enabled':'worldBoss','gather.fishing':'autoFish','gather.upgradeFishing':'fishEnhance','gather.diving':'autoDive','gather.salvage':'autoSalvage','gather.upgradeDiving':'diveEnhance','gather.upgradeSalvage':'salvageEnhance','gather.floaters':'floaters','gather.antiqueFloaters':'antiqueFloaters','cargo.enabled':'cargo','building.collect':'collect','building.supply':'buildSupply','building.speedUp':'speedUp','gold.enabled':'paidGold'})[control.key]||control.key;
         const recorded=loop.controlStatus?.get(key),observed=rewards?.status(key);
@@ -2193,7 +2198,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
       }),
       running: loop.running,
       stopping: !!loop.controller?.signal.aborted,
-      tasks: automationTasks.map(({ key, label, group }) => ({
+      tasks: automationTasks.filter(task => isActivityTaskAvailable(task.key, session.client)).map(({ key, label, group }) => ({
         key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(session.preferences, key),
         nextCheck: loop.tasks[key] && nativePreferenceEnabled(session.preferences, key) ? rewards?.nextCheck(key) : null,
       })),

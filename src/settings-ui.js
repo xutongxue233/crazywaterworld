@@ -398,9 +398,11 @@ function configRender() {
   configEditor.fields.clear(); configEditor.widgets.clear(); configEditor.groups.clear(); configEditor.playerWidgets = [];
   const root = clear($('config-fields'));
   const groups = configGroups.map(group => ({ ...group, fields: [...group.fields] }));
+  const hiddenFields = new Set(configEditor.data.rules?.hiddenFields ?? []);
+  for (const group of groups) group.fields = group.fields.filter(field => !hiddenFields.has(field.key));
   const mapped = new Set(configEditor.data.rules?.mappedTasks ?? []);
   const staticFields=new Set(groups.flatMap(g=>g.fields.map(f=>f.key)));
-  const tasks = (configEditor.data.tasks ?? []).filter(task => !mapped.has(task.key)&&!staticFields.has('schedule.'+task.key)).map(task => ['freeRecruit', 'ticketRecruit'].includes(task.key) ? { ...task, group: '招募' } : task);
+  const tasks = (configEditor.data.tasks ?? []).filter(task => !mapped.has(task.key)&&!hiddenFields.has('schedule.'+task.key)&&!staticFields.has('schedule.'+task.key)).map(task => ['freeRecruit', 'ticketRecruit'].includes(task.key) ? { ...task, group: '招募' } : task);
   const destinations = { '联盟': ['cityWar', '联盟/城战'], '海面': ['building', '建筑'], '领奖': ['rewards', '任务与领奖'],
     '周期活动': ['daily-weekly', '周期活动'], '限时活动': ['daily-events', '限时活动'], '藏品': ['daily-collections', '日常招募'],
     '招募': ['daily-collections', '日常招募'], '日常': ['daily-actions', '日常行动'], '挑战': ['daily-challenges', '挑战与扫荡'] };
@@ -422,6 +424,7 @@ function configRender() {
     configField('trials.maxSingleCost', '单次钻石费用上限', 'number', { unit:'钻石', help:'当前普通付费档为50钻，实际费用以游戏最新配置为准，超过此值不执行。' }),
     configField('trials.dailyDiamondBudget', '试炼每日钻石预算', 'number', { unit:'钻石', help:'三个副本共用，也计入全局每日钻石用量。结果未知仍保留额度，跨日未知请求先核对，不重复发送。' }),
   );
+  for (let index = groups.length - 1; index >= 0; index--) if (!groups[index].fields.length) groups.splice(index, 1);
   const movedFields = new Set(configEditor.data.rules?.controlFields ?? []);
   movedFields.add('loop.rounds'); movedFields.add('loop.everySeconds');
   for (const group of groups) {
@@ -572,7 +575,6 @@ function configRenderUsage() {
 async function configLoad(force = false) {
   if (configEditor.busy || configEditor.loading) return;
   if (!current) { configMessage('请先添加或选择账号。'); return; }
-  if (!force && configEditor.owner === current && configIsDirty()) return;
   const account = current, version = ++configEditor.serial;
   configEditor.loading = true; configBusy(true); configMessage(''); configUpdateState();
   try {
@@ -581,7 +583,11 @@ async function configLoad(force = false) {
     if(!force&&configEditor.owner===account&&configEditor.draft&&
       (configIsDirty() || (data.revision===configEditor.data?.revision && data.baseRevision===configEditor.data?.baseRevision && JSON.stringify(data.settings)===JSON.stringify(configEditor.baseline) && JSON.stringify(data.catalog)===JSON.stringify(configEditor.data.catalog)))){
       configEditor.runtime=runtime;configEditor.data.usage=data.usage;configEditor.data.pendingUsage=data.pendingUsage;
-      configRenderUsage();return;
+      const displayChanged=JSON.stringify(data.rules)!==JSON.stringify(configEditor.data.rules)||JSON.stringify(data.tasks)!==JSON.stringify(configEditor.data.tasks);
+      configEditor.data.rules=data.rules;configEditor.data.tasks=data.tasks;
+      // 活动开放状态独立于保存版本；更新入口时保留草稿和原基线，避免覆盖编辑或绕过版本冲突。
+      if(displayChanged){configEditor.previewSummary=null;configRender();}else configRenderUsage();
+      return;
     }
     configEditor.runtime=runtime;configEditor.previewSummary=null;
     configEditor.owner = account; configEditor.data = data; configEditor.draft = structuredClone(data.settings); configEditor.baseline = structuredClone(data.settings); configEditor.errors = {};
@@ -839,6 +845,7 @@ async function configSave(event) {
     const data = await call('/api/settings', { method: 'POST', body: JSON.stringify({ settings: JSON.parse(text), revision: configEditor.data.revision, baseRevision: configEditor.data.baseRevision }) });
     if (account !== current) return;
     const edited = JSON.stringify(configEditor.draft) !== text;
+    const displayChanged=JSON.stringify(data.rules)!==JSON.stringify(configEditor.data.rules)||JSON.stringify(data.tasks)!==JSON.stringify(configEditor.data.tasks);
     configEditor.data = data; configEditor.baseline = structuredClone(data.settings);
     if (!edited) {
       const normalized=JSON.stringify(data.settings)!==text;
@@ -852,6 +859,7 @@ async function configSave(event) {
       }
       configUpdateVisibility();
     }
+    if(displayChanged){configEditor.previewSummary=null;configRender();}
     configRenderUsage(); configMessage(edited ? '已保存提交时的配置。保存期间新增的更改仍在草稿中，请再次保存。' : '配置已保存。不会自动开始挂机。', 'success');
     if (!data.running) {
       const prior=loopFieldDefaults;
