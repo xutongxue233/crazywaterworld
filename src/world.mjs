@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SERVER, assetUrl } from '../tools/sync-art.mjs';
+import { activeResources } from './resource-store.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import { normalize } from './worlds.mjs';
 import { residentFilter, resourceReserve, worldPreferenceEnabled, worldActionAllowed, exactAutomationId, AutomationSkip, createActionGuard } from './automation-policy.mjs';
@@ -1368,18 +1369,20 @@ async function fetchMap(file, scenarioId) {
   return map;
 }
 
-export function loadMapAsset(id) {
+export function loadMapAsset(id, resources = activeResources()) {
   const scenarioId = id > 0 ? id : 1;
   if (!Number.isSafeInteger(scenarioId)) throw new Error('地图场景编号无效');
-  if (!mapLoads.has(scenarioId)) {
-    const file = mapPath(scenarioId);
+  const file = resources ? resources.mapFiles[scenarioId] : mapPath(scenarioId);
+  if (!file) throw new Error('当前资源版本中没有场景 ' + scenarioId + ' 的地图');
+  if (!mapLoads.has(file)) {
     const job = (async () => {
       try { return parseMap(JSON.parse(fs.readFileSync(file, 'utf8')), file, scenarioId); }
-      catch { return fetchMap(file, scenarioId); }
-    })().catch(error => { mapLoads.delete(scenarioId); throw error; });
-    mapLoads.set(scenarioId, job);
+      catch (error) { if (resources) throw error; return fetchMap(file, scenarioId); }
+    })().catch(error => { mapLoads.delete(file); throw error; });
+    mapLoads.set(file, job);
+    if (mapLoads.size > 16) mapLoads.delete(mapLoads.keys().next().value);
   }
-  return mapLoads.get(scenarioId);
+  return mapLoads.get(file);
 }
 
 function parseMap(raw, file, scenarioId) {

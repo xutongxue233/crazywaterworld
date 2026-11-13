@@ -74,10 +74,8 @@ export function atlasFile(bundle, file) {
 
 // ---- 游戏实体 → 图标名 ----------------------------------------------------
 
-let tables = null;
 function cfg() {
-  if (!tables) tables = getConfig();
-  return tables;
+  return getConfig();
 }
 
 let maps = null;

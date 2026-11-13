@@ -10,7 +10,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-config-cache-'));
 const home = path.join(directory, 'home');
 const cache = path.join(home, 'AppData/Roaming/Tencent/xwechat/radium/users/test/applet/local/wx2ea52a972ea18e5e/usr/gamecaches/config_cn');
 const local = path.join(directory, 'work/cdn/config_cn_pack.json');
-const originalHome = os.homedir, originalOverride = process.env.CW_CONFIG_PACK;
+const originalHome = os.homedir, originalOverride = process.env.CW_CONFIG_PACK, originalResourceDir = process.env.CW_RESOURCE_DIR;
 const results = [];
 const pack = (marker, size = 1_010_000) => JSON.stringify([
   ...Array.from({ length: 100 }, (_, i) => [i, 'Table' + i, { data: [] }]),
@@ -30,10 +30,11 @@ const check = async (name, run) => {
 try {
   fs.mkdirSync(path.join(directory, 'src'), { recursive: true });
   fs.mkdirSync(path.join(directory, 'tools'), { recursive: true });
-  for (const name of ['src/config.mjs', 'tools/sync-config.mjs']) {
+  for (const name of ['src/config.mjs', 'src/resource-store.mjs', 'tools/sync-config.mjs']) {
     fs.copyFileSync(new URL('../' + name, import.meta.url), path.join(directory, name));
   }
   os.homedir = () => home;
+  process.env.CW_RESOURCE_DIR = path.join(directory, 'work/cdn/resources');
   delete process.env.CW_CONFIG_PACK;
   const { findConfigPack, loadTables } = await import(pathToFileURL(path.join(directory, 'src/config.mjs')));
   const old = write(path.join(cache, '1000.json'), 'old', 1000, 1_100_000);
@@ -91,6 +92,8 @@ try {
   os.homedir = originalHome;
   if (originalOverride === undefined) delete process.env.CW_CONFIG_PACK;
   else process.env.CW_CONFIG_PACK = originalOverride;
+  if (originalResourceDir === undefined) delete process.env.CW_RESOURCE_DIR;
+  else process.env.CW_RESOURCE_DIR = originalResourceDir;
   fs.rmSync(directory, { recursive: true, force: true });
 }
 console.log(results.filter(Boolean).length + '/' + results.length + ' 通过');

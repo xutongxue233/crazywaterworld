@@ -84,6 +84,7 @@ function nextFactoryCheck(buildings, offset, collect) {
 
 export async function runLoop(client, protocol, {
   config = null,
+  refreshConfig = null,
   player = null,
   adChannel = {},
   rounds = 1,
@@ -166,6 +167,8 @@ export async function runLoop(client, protocol, {
   try{
   for (let round = 1; round <= total; round += 1) {
     if (stop.aborted) break;
+    // 配置对象和配套地图均为不可变版本快照；只在下一轮开始时采用新发布。
+    if (refreshConfig) config = refreshConfig();
     const roundStartedMs = Date.now();
     let mainRoundFinished = false;
     const empty = () => ({ planned: 0, results: [] });

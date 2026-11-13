@@ -287,7 +287,9 @@ MonthCardDailyRewardRequest          领取月卡每日奖励，无响应类型
 
 ## 6. 配置表
 
-配置表不在游戏包里，是 Cocos 的独立远程 bundle `config_cn`，运行时从 `https://dhyaoj-cdn.khlgamen.com/HotUpdateRes/wx/remote/config_cn/` 下载，整包被打成单个 JSON，共 **591 张表**。三个来源按优先级：环境变量 `CW_CONFIG_PACK`、`work/cdn/config_cn_pack.json`、微信缓存 `%APPDATA%\Tencent\xwechat\radium\users\*\applet\local\wx2ea52a972ea18e5e\usr\gamecaches\config_cn\*.json`。
+配置表不在游戏包里，是 Cocos 的独立远程 bundle `config_cn`。2026-11-13 实测客户端 1.14.5 读取 `https://dhyaoj-cdn.khlgamen.com/HotUpdateRes/wx/1.14.5/version.manifest`，发布版本为 1.14.5.112，`bundleVers.config_cn=f6b95`、`bundleVers.world_map=cda1a`。先获取 `remote/config_cn/config.<版本>.json`，再按 `packs/uuids/versions.import` 取得实际 JSON 数据包；当前为 635 张表。地图也按同一发布清单的版本和资源索引下载，不将旧地图与新配置混用。
+
+控制台和 CLI 持续挂机启动检查并默认每 30 分钟复查，配置与地图验证后保存在 `work/cdn/resources/<版本目录>/`，最后原子替换 `active.json`。旧任务保留配置及地图目录快照，下一轮重新读取新配置。配置来源优先级为 `CW_CONFIG_PACK` 显式文件、已验证远程版本、按修改时间选择的本地同步副本/微信缓存。显式文件会停用远程更新；下载失败不破坏已有版本。`npm run sync-resources` 可手动触发，`CW_RESOURCE_UPDATE_MINUTES` 调整间隔，`GET /api/resources` 查询状态。客户端大版本需另外确认兼容性后调整 `CW_RESOURCE_APP_VERSION`，协议代码仍来自本机客户端包。
 
 `src/config.mjs` 负责加载，`node tools/sync-config.mjs` 把缓存快照到 `work/cdn/`，`node src/app.mjs config [表名]` 查看。
 

@@ -19,6 +19,7 @@ import { runStages, stageFailureLimit } from './stages.mjs';
 import { createPhoneLogin } from './phone-login.mjs';
 import { worldName } from './world-name.mjs';
 import { createConsoleOutput } from './console-output.mjs';
+import { createResourceUpdater } from './resource-updater.mjs';
 
 let consoleOutput = null;
 
@@ -559,7 +560,7 @@ async function field({ sub, gridIdx, fleets, allowMutate }) {
     const player = response.playerInfo;
     let map = null;
     try {
-      map = await loadMapAsset(Number(player?.scenarioId ?? 0));
+      map = await loadMapAsset(Number(player?.scenarioId ?? 0), config?.resources ?? null);
     } catch (error) {
       console.log(`warn: 地图资源读取失败 (${error.message})`);
     }
@@ -612,8 +613,11 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
     stop.aborted = true;
     console.log('\n收到 Ctrl-C：本轮结束后退出');
   };
+  const resources = createResourceUpdater({ onEvent: ({ message }) => console.log(message) });
   process.on('SIGINT', onSigint);
   try {
+    await resources.start();
+    if (stop.aborted) return;
     const response = await client.connect(login);
     const config = loadConfigSafe();
     const player = response.playerInfo;
@@ -621,6 +625,7 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
     console.log(`开关: 加速=${allowSpeedUp ? '开(只花' + SPEED_UP_ITEM + ')' : '关'} 拒绝重刷=${allowReroll ? '开' : '关'}`);
     await runLoop(client, protocol, {
       config,
+      refreshConfig: loadConfigSafe,
       player,
       rounds,
       everyMs: everySeconds * 1000,
@@ -633,6 +638,7 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
       onStep: entry => console.log('  ' + formatLoopStep(entry)),
     });
   } finally {
+    await resources.stop();
     process.off('SIGINT', onSigint);
     client.stop();
   }
@@ -1006,7 +1012,7 @@ async function main() {
   const output = consoleOutput = createConsoleOutput();
   const restoreOutput = () => output.restore();
   process.once('exit', restoreOutput);
-  const console_ = createConsole({ port, onLog: entry => output.log(entry) });
+  const console_ = createConsole({ port, onLog: entry => output.log(entry), resourceUpdates: true });
   const url = await console_.listen();
   output.start(url);
   let shuttingDown = false;

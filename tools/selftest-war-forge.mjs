@@ -69,6 +69,26 @@ await check('补齐场景2配置后恢复计划和派遣，费用与结果仍回
   assert.equal(usage.snapshot().counters.cityWarDispatches,1);
   assert.equal(usage.snapshot().counters.cityWarPetrol,40);
 });
+await check('持续挂机在下一轮取得新费用配置，已开始的轮次保留原快照', async () => {
+  const originalNow=Date.now;let time=originalNow();Date.now=()=>time;
+  try {
+    const f=warForgeFixture(),s=warForgeSettings();s.forge.enabled=false;s.cityWar.fleetIds=['1远征船'];
+    const next={...f.config,tables:structuredClone(f.config.tables)};
+    next.tables['1_AttackCityConsumeCfg'].data.forEach(row=>{row.cost*=2;});
+    let current=f.config,reads=0;const costs=[];
+    await runLoop(f.client,f.protocol,{config:f.config,refreshConfig:()=>{
+      if(++reads===2){time+=15001;f.returnFleet('1远征船');f.state.fleets[0].durability=2000;}
+      return current;
+    },player:f.player,
+      rounds:2,everyMs:60000,allowMutate:true,getSettings:()=>s,usageLedger:ledger(),isEnabled:()=>false,
+      sleep:async ms=>{time+=Math.max(1,ms);},onRound:summary=>{
+        costs.push(...summary.world.results.filter(entry=>entry.step?.kind==='cityDispatch').map(entry=>entry.step.cost));
+        current=next;
+      }});
+    assert.equal(reads,2);assert.equal(costs.length,2);assert(costs[1]>costs[0],JSON.stringify(costs));
+    assert.equal(f.config.tables['1_AttackCityConsumeCfg'].data[0].cost,0.4);
+  } finally {Date.now=originalNow;}
+});
 
 await check('默认关闭、旧设置和版本1导入兼容且不写旧文件', () => {
   const original = defaultSettings(); delete original.cityWar; delete original.forge;

@@ -24,6 +24,7 @@ npm run test:wechat
 npm run test:wxapkg
 node tools/selftest-radar.mjs # 单独运行对应测试文件
 npm run sync-config           # 同步配置表到 work/
+npm run sync-resources        # 从游戏发布清单更新配置表和世界地图
 npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 ```
 
@@ -48,7 +49,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 
 - `proto.mjs` 执行游戏自带 `game.js`，取得 protobufjs 编解码类。`protocol-source.mjs` 按 `CW_PROTO_BUNDLE`、微信缓存最高版本 `_src_chunks_.wxapkg`、`work/extracted/` 查找。
 - 无反射信息，使用 `tools/describe.mjs` 还原字段、`tools/ctx.mjs` 查压缩代码上下文。`work/extracted/` 可能落后于微信缓存，客户端逻辑以缓存最高版本的主包为准。请求名和响应名必须核对真实 `protocol[name]`，不能凭名称推测接口。
-- `config.mjs` 按 `CW_CONFIG_PACK`、`work/cdn/config_cn_pack.json`、微信缓存查找。同步命令是 `npm run sync-config`；旧注释中的 `tools/fetch-config.mjs` 已不存在。
+- `config.mjs` 按 `CW_CONFIG_PACK`、已验证的远程资源快照、较新的本地同步副本或微信缓存查找。`resource-updater.mjs` 在控制台和 CLI 持续挂机启动时及每 30 分钟检查发布清单（`CW_RESOURCE_UPDATE_MINUTES` 可调），验证配置和地图后原子启用；`config.resources` 保留任务的地图快照，挂机只在下一轮切换。`npm run sync-resources` 手动更新远程资源，`npm run sync-config` 备份本地配置来源；旧注释中的 `tools/fetch-config.mjs` 已不存在。测试应使用临时 `CW_RESOURCE_DIR`，控制台测试默认不启用远程更新。
 - `actions.mjs` 是协议操作目录，`mutate` 区分读写；`CW_DEBUG=1` 可同时在终端输出协议日志，原始日志默认写项目 `data/protocol.log`，主日志与 `.1` 按 `CW_PROTOCOL_LOG_MAX_BYTES`（默认 5 MB）轮转。
 
 ### 执行与调度

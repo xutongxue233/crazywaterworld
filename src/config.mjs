@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { activeResources } from './resource-store.mjs';
 
 // 客户端的配置表不在游戏包里，而是运行时从 CDN 拉取的独立 bundle `config_cn`，
-// 整包被 Cocos 打成单个 JSON。微信小游戏会把它缓存在本地，这里直接读缓存。
-// 缓存失效时先进入游戏，再用 `npm run sync-config` 同步。
+// 整包被 Cocos 打成 JSON。优先读取已验证的远程资源快照，微信缓存作兼容来源。
+// 远程资源可用 `npm run sync-resources` 更新，本地缓存可用 `npm run sync-config` 同步。
 export const APPID = 'wx2ea52a972ea18e5e';
 export const CONFIG_PACK_PATH = path.resolve(import.meta.dirname, '../work/cdn/config_cn_pack.json');
 
@@ -29,6 +30,8 @@ function cachedPackCandidates() {
 // 同步副本仅作可离线保留的来源，不能永久遮蔽游戏刚下载的新缓存。
 export function findConfigPack() {
   if (process.env.CW_CONFIG_PACK && fs.existsSync(process.env.CW_CONFIG_PACK)) return process.env.CW_CONFIG_PACK;
+  const resources = activeResources();
+  if (resources) return resources.configFile;
   const candidates = cachedPackCandidates().filter((file) => fs.statSync(file).size > 1_000_000);
   if (fs.existsSync(CONFIG_PACK_PATH)) candidates.unshift(CONFIG_PACK_PATH);
   if (!candidates.length) return null;
@@ -58,7 +61,7 @@ export function extractTables(pack) {
 }
 
 export function loadTables(file = findConfigPack()) {
-  if (!file) throw new Error('找不到配置表缓存，请先进入游戏，再运行 npm run sync-config');
+  if (!file) throw new Error('找不到配置表，请运行 npm run sync-resources；使用微信缓存时请先进入游戏，再运行 npm run sync-config');
   return extractTables(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
 
@@ -68,15 +71,15 @@ export function displayMaterial(config, id) {
   return config?.materialName?.(id) || '未知材料';
 }
 
-export function loadConfig({ file } = {}) {
-  const tables = loadTables(file);
+export function loadConfig({ file, resources = file ? null : activeResources() } = {}) {
+  const tables = loadTables(file || resources?.configFile || findConfigPack());
   const resourceCfg = new Map(rows(tables, 'ResourceCfg').map((row) => [row.id, row]));
   const itemCfg = new Map(rows(tables, 'ItemCfg').map(row => [row.id, row]));
 
   const access = new Map(rows(tables, 'ItemAccessCfg').map(row => [row.id, row.name]));
   const sources = new Map(rows(tables, 'ItemJumpCfg').map(row => [row.id,
     [...new Set((row.accessList ?? []).map(key => access.get(key)).filter(Boolean))]]));
-  return {
+  const config = {
     materialSources(id) { return sources.get(RESOURCE[id] ?? id) ?? []; },
     tables,
     names: Object.keys(tables).sort(),
@@ -109,10 +112,17 @@ export function loadConfig({ file } = {}) {
       return null;
     },
   };
+  Object.defineProperty(config, 'resources', { value: resources });
+  return config;
 }
 
-let cached = null;
+let cached = null, cachedSource = '';
 export function getConfig() {
-  if (!cached) cached = loadConfig();
+  const resources = activeResources(), file = resources?.configFile || findConfigPack();
+  const signature = file ? file + ':' + fs.statSync(file).mtimeMs : '';
+  if (!cached || cachedSource !== signature) {
+    const next = loadConfig({ file, resources });
+    cached = next; cachedSource = signature;
+  }
   return cached;
 }

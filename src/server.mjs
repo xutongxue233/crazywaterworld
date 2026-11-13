@@ -1,4 +1,5 @@
 import { createTraceLog } from './trace-log.mjs';
+import { createResourceUpdater } from './resource-updater.mjs';
 import {checkFleetSettlement,invalidateFleetReports} from './fleet-settlement.mjs';
 import { recoverPirateHunts } from './pirate-recovery.mjs';
 import {readGuildTech,upgradeGuildTech} from './guild-tech.mjs';
@@ -114,13 +115,14 @@ const pageAsset = {
   etag: '"' + createHash('sha1').update(pageRaw).digest('hex').slice(0, 16) + '"',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs } = {}) {
+export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs, resourceUpdates = false, resourceUpdater = null } = {}) {
   // 保留测试/嵌入调用方注入延迟的能力；正常运行时由当前账号的登录设置决定。
   const injectedRecoveryDelay = typeof recoveryDelayMs === 'function' ? recoveryDelayMs : null;
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
+  const resources = resourceUpdater || (resourceUpdates ? createResourceUpdater({ onEvent: ({ level, message }) => emit(null, level, message) }) : null);
   // 手机号登录分两步：先认证并换游戏凭证，用户核对 openId 后再保存。
   // 密码只用于当次请求；待保存凭证和待选账号只放在内存，十分钟后清理。
   const pendingPhoneLogins = new Map();
@@ -733,7 +735,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     }).orderDecisions : [];
     let map = null, mapError;
     try {
-      map = await loadMapAsset(Number(session.player?.scenarioId ?? 0));
+      map = await loadMapAsset(Number(session.player?.scenarioId ?? 0), config?.resources ?? null);
     } catch (error) {
       mapError = error.message;
     }
@@ -905,6 +907,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         return;
       }
       if (parsed.pathname.startsWith('/api/settings') && body.length > 262144) throw new SettingsError({ import: '配置文件不能超过 256 KB' });
+      if (route === 'GET /api/resources') {
+        json(resources?.view() ?? { enabled: false, status: 'disabled' });
+        return;
+      }
       if (route === 'GET /api/settings') {
         const { session } = scoped_(parsed);
         json(settingsView(session));
@@ -2261,7 +2267,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         loop.recovery = null;
         const completedBefore = loop.completed;
         const { appId, channelId, originVersion } = currentAccount.login?.eworldClientInfo ?? {};
-        await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
+        await runLoop(client, protocol, { config: loadConfigSafe(), refreshConfig: loadConfigSafe, player: session.player,
           adChannel: { clientInfo: { appId, channelId, originVersion }, language: currentAccount.login?.language },
           rounds: rounds === 0 ? 0 : rounds - completedBefore, everyMs: loop.everyMs, allowMutate: true, stop: attemptController.signal,
           schedule: work => enqueue(session, work),
@@ -2462,8 +2468,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
 
   return {
     server,
-    listen: () =>
-      new Promise((resolve) => {
+    listen: async () => {
+      await resources?.start();
+      return new Promise((resolve) => {
         server.listen(port, host, () => {
           const address = `http://${host}:${server.address().port}`;
           emit(null, 'info', `控制台已启动 ${address}`);
@@ -2475,8 +2482,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           }
           resolve(address);
         });
-      }),
-    close: () => {
+      });
+    },
+    close: async () => {
+      await resources?.stop();
       for (const stream of streams) stream.destroy();
       streams.clear();
       for (const session of sessions.values()) {

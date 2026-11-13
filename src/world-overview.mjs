@@ -10,7 +10,7 @@ export async function readWorldOverview(client,config,player,settings,ledger,{ma
  const scenario=player.scenarioId||1,notes=[],layers={};
  const get=async(name,body={})=>{try{return await client.request(name,body,name.replace(/Request$/,'Response'),8000);}catch{notes.push(({WorldInfoRequest:'城池',MyFleetsRequest:'舰队',AllItemRequest:'资源库存',MyResFieldsRequest:'本人资源田',TreasureLootListRequest:'巨轮',AllPirateRequest:'海盗',RadarInfoRequest:'情报',WorldBossInfoRequest:'世界Boss',AllGuildAbstractionRequest:'联盟名称',WarDeclarationRequest:'城战宣战'})[name]+'未同步');return null;}};
  const [map,world,own,bag,fields,treasure,pirates,radar,boss,guildList,war]=await Promise.all([
-  mapLoader(scenario).catch(()=>null),get('WorldInfoRequest',{screenCenter:{x:0,y:0}}),get('MyFleetsRequest'),get('AllItemRequest'),get('MyResFieldsRequest'),get('TreasureLootListRequest'),get('AllPirateRequest'),get('RadarInfoRequest'),get('WorldBossInfoRequest'),get('AllGuildAbstractionRequest'),get('WarDeclarationRequest')]);
+  mapLoader(scenario,config?.resources??null).catch(()=>null),get('WorldInfoRequest',{screenCenter:{x:0,y:0}}),get('MyFleetsRequest'),get('AllItemRequest'),get('MyResFieldsRequest'),get('TreasureLootListRequest'),get('AllPirateRequest'),get('RadarInfoRequest'),get('WorldBossInfoRequest'),get('AllGuildAbstractionRequest'),get('WarDeclarationRequest')]);
  const now=Math.floor((Date.now()+(client.serverClockOffsetMs||0))/1000),points=[],routes=[];
  const pos=grid=>mapPosition(map,grid);
  const add=(layer,key,name,grid,detail,extra={})=>{const at=pos(grid);if(at && (['cities','fields'].includes(layer)||grid>0))points.push({layer,key,name,grid,...at,detail,...extra});};

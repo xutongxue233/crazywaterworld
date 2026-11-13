@@ -14,6 +14,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { parsePackage, ITEM_TYPE } from '../src/fgui.mjs';
 import { getConfig } from '../src/config.mjs';
+import { activeResources } from '../src/resource-store.mjs';
 import { decrypt, inspectArchive } from './wxapkg.mjs';
 
 export const APPID = 'wx2ea52a972ea18e5e';
@@ -74,6 +75,8 @@ export function findCacheDir() {
 // Use the active game's bundle versions: a cache may retain multiple versions
 // of the same bundle, each packing its sprites at different coordinates.
 function bundleVersions(cacheDir) {
+  const resources = activeResources();
+  if (resources?.bundleVersions) return { versions: resources.bundleVersions, fallback: false };
   const root = path.resolve(cacheDir, '../../../../packages', APPID);
   if (!fs.existsSync(root)) return { versions: {}, fallback: true };
   const files = fs.readdirSync(root).filter(v => /^\d+$/.test(v)).sort((a, b) => Number(b) - Number(a));
