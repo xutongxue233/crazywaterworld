@@ -18,7 +18,12 @@ if (names.length < 100) {
 }
 
 fs.mkdirSync(path.dirname(CONFIG_PACK_PATH), { recursive: true });
-fs.copyFileSync(source, CONFIG_PACK_PATH);
+if (path.resolve(source) !== CONFIG_PACK_PATH) {
+  const stat = fs.statSync(source);
+  fs.copyFileSync(source, CONFIG_PACK_PATH);
+  // 保留资源日期，避免重复同步把旧内容标成最新、遮蔽之后下载的缓存。
+  fs.utimesSync(CONFIG_PACK_PATH, stat.atime, stat.mtime);
+}
 const size = (fs.statSync(CONFIG_PACK_PATH).size / 1024 / 1024).toFixed(1);
 console.log(`已同步 ${names.length} 张表 (${size} MB)`);
 console.log(`  来源 ${source}`);

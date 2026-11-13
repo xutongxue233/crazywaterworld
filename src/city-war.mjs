@@ -78,9 +78,13 @@ export async function readCityWar(client, protocol, config, player, preferences,
     if (!integer(war.startTime, 1) || !integer(war.endTime, war.startTime + 1)) throw new Error('服务器未返回有效城战时间');
     snapshot.inWindow = now >= war.startTime && now < war.endTime;
     if ((merge.matchMaking || (merge.worldIds.length && merge.executeTs > 0)) && (now >= (merge.executeTs ?? 0) - 3600 || day(now) === day(merge.executeTs))) throw new Error('合服匹配或执行期间暂停城战接续');
-    const cities = rows(config, scenarioId + '_CityCfg'), costs = rows(config, scenarioId + '_AttackCityConsumeCfg');
+    const cityTable = scenarioId + '_CityCfg', costTable = scenarioId + '_AttackCityConsumeCfg';
+    const cities = rows(config, cityTable), costs = rows(config, costTable);
+    const refresh = '请先在游戏中进入当前地图，再运行 npm run sync-config 并重启控制台';
+    if (!Array.isArray(cities) || !cities.length) throw new Error('缺少场景 ' + scenarioId + ' 的城市配置 ' + cityTable + '；' + refresh);
+    if (!Array.isArray(costs) || !costs.length) throw new Error('缺少场景 ' + scenarioId + ' 的行军费用配置 ' + costTable + '；' + refresh);
     const home = cities.find(row => row.guildIndex === snapshot.guildIdx);
-    if (!home || !costs.length) throw new Error('缺少当前场景主城或行军费用配置');
+    if (!home) throw new Error('场景 ' + scenarioId + ' 的 ' + cityTable + ' 中未找到联盟编号 ' + snapshot.guildIdx + ' 的主城；' + refresh + '，仍有异常时请核对角色场景与联盟');
     snapshot.homeCityId = home.id;
     const map = await mapLoader(scenarioId);
     for (const declaration of war.declarations) {

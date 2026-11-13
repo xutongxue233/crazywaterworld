@@ -26,6 +26,50 @@ const forgeRead = f => readEquipmentForge(f.client, f.protocol, f.config, f.play
 const forgePlan = async (f, s, usage = ledger()) => planEquipmentForge(await forgeRead(f), f.config, s, { usage: usage.snapshot(), keys: usage.keyRecords() });
 const forgeRun = (f, s, usage = ledger(), options = {}) => runEquipmentForge(f.client, f.protocol, f.config, f.player, { getSettings: () => s, ledger: usage, ...options });
 
+await check('场景2独立读取主城和费用，不回退场景1或通用表', async () => {
+  const f=warForgeFixture(),s=warForgeSettings();f.player.scenarioId=2;
+  f.config.tables['2_CityCfg']=structuredClone(f.config.tables['1_CityCfg']);
+  f.config.tables['2_AttackCityConsumeCfg']={data:[{dist:1,cost:0.7}]};
+  f.mapLoader=async scenario=>{assert.equal(scenario,2);return f.map;};
+  const snapshot=await warRead(f,s),plan=await warPlan(f,s);
+  assert.equal(snapshot.reason,'');assert.equal(snapshot.homeCityId,1);
+  assert.equal(snapshot.targets[0].ref,'2:2');assert.equal(snapshot.targets[0].petrol,70);
+  assert.equal(plan.actions.length,2);assert.equal(f.client.writes.length,0);
+});
+await check('缺少场景表时指出表名和同步办法，预览与执行均不派遣', async () => {
+  for(const table of ['1_CityCfg','1_AttackCityConsumeCfg']) {
+    const f=warForgeFixture(),s=warForgeSettings();
+    f.config.tables[table.replace('1_','')]=f.config.tables[table];
+    delete f.config.tables[table];
+    const snapshot=await warRead(f,s);
+    assert(snapshot.reason.includes(table),snapshot.reason);
+    assert.match(snapshot.reason,/npm run sync-config/);
+    assert.equal((await warPlan(f,s)).actions.length,0);
+    await warRun(f,s);assert.equal(f.client.writes.length,0);
+  }
+});
+await check('主城缺失明确区分场景和联盟编号，不冒用其他联盟主城', async () => {
+  const f=warForgeFixture(),s=warForgeSettings();
+  f.config.tables['1_CityCfg'].data[0].guildIndex=1;
+  const snapshot=await warRead(f,s);
+  assert.match(snapshot.reason,/场景 1.*联盟编号 7/);
+  assert.match(snapshot.reason,/1_CityCfg/);
+  assert.equal((await warPlan(f,s)).actions.length,0);
+  await warRun(f,s);assert.equal(f.client.writes.length,0);
+});
+await check('补齐场景2配置后恢复计划和派遣，费用与结果仍回读确认', async () => {
+  const f=warForgeFixture(),s=warForgeSettings();f.player.scenarioId=2;s.cityWar.fleetIds=['1远征船'];
+  await warRun(f,s);assert.equal(f.client.writes.length,0);
+  assert.match((await warRead(f,s)).reason,/2_CityCfg/);
+  f.config.tables['2_CityCfg']=structuredClone(f.config.tables['1_CityCfg']);
+  f.config.tables['2_AttackCityConsumeCfg']=structuredClone(f.config.tables['1_AttackCityConsumeCfg']);
+  const usage=ledger(),result=await warRun(f,s,usage);
+  assert.equal(result.results[0]?.status,'confirmed');
+  assert.equal(f.client.writes.length,1);assert.equal(f.client.writes[0].name,'MoveFleetsToCityRequest');
+  assert.equal(usage.snapshot().counters.cityWarDispatches,1);
+  assert.equal(usage.snapshot().counters.cityWarPetrol,40);
+});
+
 await check('默认关闭、旧设置和版本1导入兼容且不写旧文件', () => {
   const original = defaultSettings(); delete original.cityWar; delete original.forge;
   const file = path.join(directory, 'old.json'); fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { a: { revision: 9, settings: original } } }));
@@ -383,6 +427,20 @@ try {
     const war=await api('settings/preview','a',{category:'cityWar'}),forge=await api('settings/preview','a',{category:'forge'});
     assert.equal(war.status,200,JSON.stringify(war.data));assert.equal(forge.status,200,JSON.stringify(forge.data));assert.equal(war.data.cityWar.nativeLimit,4);
     assert.equal(war.data.actions.length,2,'真实场景配置下也应生成两项有效城战计划');assert(forge.data.actions.length);assert(forge.data.forge.factories.length);assert.equal(f.client.writes.length,0);assert.deepEqual(fs.readFileSync(path.join(directory,'accounts.json')),before);
+  });
+  await check('真实场景2配置与地图可通过HTTP预览，且遵守真实行军费用预算',async()=>{
+    const f=warForgeFixture(),session=app.sessions.get('a');f.player.scenarioId=2;
+    f.state.cities=[{id:277,state:1,guildIdx:7},{id:285,state:2,guildIdx:8}];
+    f.state.war.declarations=[{attackGuildIdx:7,defenceGuildIdx:8,cityId:285}];
+    f.state.war.assembleCityId=285;f.state.fleets.forEach(fleet=>{fleet.cityId=277;});
+    session.client=f.client;session.player=f.player;session.paused=false;
+    const war=await api('settings/preview','a',{category:'cityWar'});
+    assert.equal(war.status,200,JSON.stringify(war.data));
+    assert(!war.data.notes.some(note=>note.startsWith('城战状态未确认')),JSON.stringify(war.data));
+    assert.equal(war.data.actions.length,1,JSON.stringify(war.data));
+    assert(war.data.notes.some(note=>note.includes('城战汽油预算')),JSON.stringify(war.data));
+    assert(war.data.cityWar.targets.every(target=>target.ref==='2:285'&&target.petrol>0));
+    assert.equal(f.client.writes.length,0);
   });
 } finally {app.server.closeAllConnections();await app.close();}
 const report=path.join(parent,'result-'+Date.now()+'.json');fs.writeFileSync(report,JSON.stringify({time:new Date().toISOString(),results},null,2));
