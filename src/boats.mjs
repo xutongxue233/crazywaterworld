@@ -94,19 +94,32 @@ async function gather(client, config, boat, cfg, enabled, options = {}) {
 }
 
 export async function serviceBoats(client, config, enabled, report, options = {}) {
-  const water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
+  let water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
   const resolve = makeTypeResolver(config);
+  const types = new Map((config.tables.BuildingUnlockCfg?.data ?? []).map(row => [row.buildingId, row.buildingType]));
+  const boatCount = (state, boat) => (state?.building ?? []).filter(b => b.level > 0 && (types.get(b.buildingId) ?? resolve(b.buildingId)) === boat.type).length;
+  const validLevel = info => Number.isSafeInteger(info?.level) && info.level > 0;
+  // 等级或建筑状态未同步时只补读一次，不能把角色等级当作玩法等级。
+  if (boats.some(boat => (enabled(boat.enhance) || enabled(boat.collect))
+    && (!validLevel(water?.[boat.level]) || (water[boat.level].level >= 2 && !boatCount(water, boat))))) {
+    water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
+  }
   const buildings = (water.building ?? []).filter(b => b.level > 0);
   for (const boat of boats) {
     const info = water[boat.level];
-    const levels = config.tables[boat.table].data;
-    const count = buildings.filter(b => resolve(b.buildingId) === boat.type).length;
+    const levels = config.tables[boat.table]?.data ?? [];
+    const count = boatCount(water, boat);
     for (const key of [boat.enhance, boat.collect]) {
       if (!enabled(key)) continue;
       const label = boat.name + (key === boat.enhance ? '养成' : '采集');
       try {
         const cfg = levels.find(r => r.level === info?.level);
-        const result = !count || !cfg ? { reason: '建筑或玩法尚未解锁' } : key === boat.enhance
+        const reason = !Array.isArray(water.building) ? '建筑列表未同步，等待下轮重新读取'
+          : !count ? '未检测到已建成的' + boat.name + '（已同步建筑 ' + buildings.length + ' 座）'
+          : !validLevel(info) ? boat.name + '已建成 ' + count + ' 座，但服务器未返回有效的' + boat.level + '玩法等级，等待下轮重新读取'
+          : !cfg ? boat.name + '玩法等级 ' + info.level + ' 在 ' + boat.table + ' 中没有对应配置，请更新游戏配置'
+          : null;
+        const result = reason ? { reason } : key === boat.enhance
           ? await enhance(client, boat, info, cfg, levels.find(r => r.level === info.level + 1), count, enabled, options)
           : await gather(client, config, boat, cfg, enabled, options);
         if (result?.reason) report({ key, label, skipped: true, reason: result.reason });

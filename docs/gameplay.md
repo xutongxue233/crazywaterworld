@@ -261,11 +261,13 @@ PirateSweepRequest          TrialRaidBuySweepRequest
 DrawDailyRewardRequest{index}        领取每日活跃宝箱，无响应类型
 DrawDailyTaskRewardRequest{id}       领取每日任务奖励
 GotAchievementRewardRequest{id}      领取成就奖励，无响应类型
-QuickGotReadEmailRequest{all}        一键领取已读邮件附件，无响应类型
+QuickGotReadEmailRequest{all}        一键处理未读邮件与附件，无专属响应类型
 MonthCardDailyRewardRequest          领取月卡每日奖励，无响应类型
 ```
 
 ### 4.5 采集侧与发放侧的对应关系
+
+邮件入口先按 `EmailBoxResponse.total` 遍历所有分页，处理未读邮件及未领取附件；发送一键领取后再次完整读取邮箱，按精确 `emailId` 核对已读/已领状态。分页不完整时不提交，领取结果未确认时不报告成功，也不在同一轮重发。
 
 采集用 `AfkInfoRequest` / `OnWaterRequest` / `DailyTaskInfoRequest` 判断"有没有可领的"，发放用 4.1 到 4.4 的请求执行。判定与执行完全解耦，这正是挂机客户端需要的形状：轮询采集，条件满足才发发放请求。
 

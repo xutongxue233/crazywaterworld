@@ -5,6 +5,8 @@
 // from guessing. Requests whose response type does not exist in the protocol table are
 // answered by a push or a generic OkResponse instead, so they are sent fire-and-forget.
 
+import { claimMail } from './mail.mjs';
+
 // SpeedUpCost.SPEED_UP_ITEM=2（1=钻石 2=加速器 3=广告）。本工具只允许 2。
 export const SPEED_UP_ITEM_TYPE = 2;
 
@@ -106,7 +108,7 @@ export const ACTIONS = {
     request: 'QuickGotReadEmailRequest',
     response: null,
     mutate: true,
-    desc: '一键领取已读邮件附件',
+    desc: '一键处理未读邮件与附件，分页检查并回读确认',
     body: () => ({ all: true }),
   },
   // index 是 repeated int32，传单个数字会被编码成空数组，所以这里统一收成数组，
@@ -282,6 +284,12 @@ export async function runAction(client, protocol, id, params = {}, { allowMutate
   const action = assertAllowed(id, { allowMutate });
   const body = buildBody(action, params);
   if (!protocol[action.request]) throw new Error(`protocol has no type ${action.request}`);
+
+  if (id === 'emailQuickGet') {
+    const result = await claimMail(client);
+    if (result.ok === false) throw Error(result.error);
+    return { id, sent: result.sent ? action.request : null, response: null, body: result };
+  }
 
   if (action.response && protocol[action.response]) {
     const response = await client.request(action.request, body, action.response, timeout);

@@ -2,6 +2,7 @@ import { runAction } from './actions.mjs';
 import { claimDailies } from './dailies.mjs';
 import { claimHeroShowRewards } from './hero-show-rewards.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
+import { claimMail } from './mail.mjs';
 
 export async function claimRewards(client, protocol, config, onResult, enabled = () => true, onAfkDeadline, scheduler, player, { settings = null } = {}) {
   const results = [];
@@ -37,9 +38,11 @@ export async function claimRewards(client, protocol, config, onResult, enabled =
   if (['dailyRewards', 'chests', 'gift'].some(ready)) await group('日常与赠礼', () => claimDailies(client, protocol, { config, enabled, scheduler, settings,
     onStep: (entry) => report(entry.note || entry.title, entry.ok, entry.error) }));
   if (ready('mail')) await group('邮件', async () => {
-    const inbox = await client.request('EmailBoxRequest', { pageNo: 0 }, 'EmailBoxResponse');
-    if (inbox.email?.some((mail) => !mail.got)) await draw('mail', '已读邮件附件', 'emailQuickGet');
-    else if (scheduler) {scheduler.observe?.('mail','当前没有未领邮件附件');scheduler.defer('mail', scheduler.now() + 180);}
+    const entry = await claimMail(client, { enabled: () => enabled('mail') });
+    if (entry.status === 'empty') {
+      scheduler?.observe?.('mail', entry.reason);
+      if (scheduler) scheduler.defer('mail', scheduler.now() + 180);
+    } else { results.push(entry); onResult?.(entry); }
   });
   if (ready('afk')) await group('挂机收益', async () => {
     const { afkInfo } = await client.request('AfkInfoRequest', {}, 'AfkInfoResponse');

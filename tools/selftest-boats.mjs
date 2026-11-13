@@ -247,5 +247,27 @@ try {
     assert.equal(f.writes.length, 3); assert.equal(events.filter(e => e.ok).length, 2);
     assert.equal(settings.gather.diving, true); assert.equal(settings.gather.salvage, true);
   });
+  await check('玩法状态短暂缺失时补读一次并继续采集', async () => {
+    const f = fixture(), request = f.client.request; let waterReads = 0;
+    f.client.request = async (...args) => {
+      const result = await request(...args);
+      if (args[0] === 'OnWaterRequest' && ++waterReads === 1) { delete result.divingLevel; delete result.salvageLevel; }
+      return result;
+    };
+    assert.ok((await f.run()).every(e => e.ok)); assert.equal(waterReads, 2); assert.equal(f.writes.length, 3);
+  });
+  await check('持续缺失玩法状态与缺少等级配置给出不同原因', async () => {
+    const f = fixture(); delete f.water.divingLevel; delete f.water.salvageLevel;
+    assert.ok((await f.run()).every(e => e.skipped && /服务器未返回有效/.test(e.reason)));
+    assert.equal(f.calls.filter(n => n === 'OnWaterRequest').length, 2); assert.equal(f.writes.length, 0);
+    const g = fixture(); g.water.divingLevel = g.water.salvageLevel = { level: 99 };
+    assert.ok((await g.run()).every(e => e.skipped && /没有对应配置/.test(e.reason))); assert.equal(g.writes.length, 0);
+  });
+  await check('优先按建筑解锁表识别类型，不依赖名称后缀', async () => {
+    const f = fixture(), cfg = { ...config, tables: structuredClone(config.tables) };
+    cfg.tables.BuildingUnlockCfg = table([{ buildingId: 'dock-a', buildingType: '潜水船' }, { buildingId: 'boat-b', buildingType: '探险船' }]);
+    f.water.building = [{ buildingId: 'dock-a', level: 1 }, { buildingId: 'boat-b', level: 1 }];
+    assert.ok((await f.run({}, collectKeys, cfg)).every(e => e.ok));
+  });
   console.log(`boats ok: ${passed} checks, real protocol encoding, capacity, gates, preview and loop`);
 } finally { fs.rmSync(directory, { recursive: true, force: true }); }

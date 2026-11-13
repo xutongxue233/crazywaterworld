@@ -633,7 +633,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     async request(name) {
       calls.push(name);
       if (name === 'DailyTaskInfoRequest') throw new Error('timeout waiting for DailyTaskInfoResponse (sent DailyTaskInfoRequest)');
-      if (name === 'EmailBoxRequest') return { email: [{ got: false }] };
+      if (name === 'EmailBoxRequest') return { total: 1, email: [{ emailId: '1', attachment: {}, status: calls.includes('QuickGotReadEmailRequest') ? 1 : 2, got: calls.includes('QuickGotReadEmailRequest') }] };
       if (name === 'AfkInfoRequest') return { afkInfo: { afkFinishTime: 1 } };
       if (name === 'DailyGiftPackRequest') return { drawnPack: ['赠礼'] };
       return {};
@@ -1164,7 +1164,14 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   ]);
   const sent = [];
   const client = {
-    request: async (name) => { sent.push({ via: 'request', name }); return {}; },
+    request: async (name) => {
+      sent.push({ via: 'request', name });
+      if (name === 'EmailBoxRequest') {
+        const got = sent.some(row => row.name === 'QuickGotReadEmailRequest');
+        return { total: 1, email: [{ emailId: '1', attachment: {}, status: got ? 1 : 2, got }] };
+      }
+      return {};
+    },
     sendWatch: async (name) => { sent.push({ via: 'watch', name }); },
   };
   for (const [id, action] of Object.entries(ACTIONS)) {
@@ -1178,8 +1185,10 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     if (!action.mutate) continue;
     sent.length = 0;
     await runAction(client, protocol, id, { buildingId: 'x', productId: 'y', taskId: 1, index: 1, gridIdx: 1, useNum: 1, level: 1, isOn: true, id: 1 }, { allowMutate: true });
-    assert.equal(sent.length, 1, `${id} sends exactly one message`);
-    assert.equal(sent[0].via, action.response ? 'request' : 'watch', `${id} must go through ${action.response ? 'request' : 'watch'}`);
+    const writes = sent.filter(row => row.name === action.request);
+    assert.equal(writes.length, 1, `${id} sends exactly one action message`);
+    assert.equal(writes[0].via, action.response ? 'request' : 'watch', `${id} must go through ${action.response ? 'request' : 'watch'}`);
+    assert.equal(sent.length, id === 'emailQuickGet' ? 3 : 1, `${id} only adds required confirmation reads`);
   }
   checked += 1;
 }
