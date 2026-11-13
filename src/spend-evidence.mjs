@@ -22,8 +22,16 @@ const orderSignature = order => order && JSON.stringify([order.workerId ?? 0, or
 const jobKey = job => JSON.stringify([job.idx, job.petId, job.startTime]);
 const factoryQueue = building => {
   const jobs = building?.factory?.factoryQ;
-  return unique(jobs, row => integer(row.idx ?? 0) ? (row.idx ?? 0) : null)
-    && jobs.every(row => typeof row.productId === 'string' && row.productId && integer(row.finishTime) && row.finishTime > 0) ? jobs : null;
+  if (!Array.isArray(jobs) || !jobs.every(row => typeof row?.productId === 'string' && row.productId)) return null;
+  // The server omits finishTime for queued slots that are not the currently
+  // active job. Those rows are still valid evidence when they carry a stable
+  // idx. An unkeyed row without finishTime remains invalid because it cannot
+  // be distinguished from the pre-action queue.
+  const keyed = jobs.filter(row => Number.isSafeInteger(row.idx) && row.idx >= 0);
+  if (!unique(keyed, row => row.idx)) return null;
+  if (jobs.some(row => row.finishTime == null && !(Number.isSafeInteger(row.idx) && row.idx >= 0))) return null;
+  if (jobs.some(row => row.finishTime != null && (!integer(row.finishTime) || row.finishTime <= 0))) return null;
+  return jobs;
 };
 const cargoAsset = asset => typeof asset?.id === 'string' && asset.id && integer(asset.num) && asset.num > 0;
 export const petSpendSnapshot = buildings => {
@@ -151,7 +159,19 @@ export async function captureSpendOperation(client, step, { waterSnapshot } = {}
     if (request === 'StartFactoryProduceRequest') {
       const beforeQ = factoryQueue(old), nextQ = factoryQueue(current);
       return !!beforeQ && !!nextQ && nextQ.some(job => job.productId === body.productId
-        && !beforeQ.some(prior => (prior.idx ?? 0) === (job.idx ?? 0) && prior.productId === job.productId && prior.finishTime >= job.finishTime));
+        && integer(job.finishTime) && job.finishTime > 0
+        && !beforeQ.some(prior => {
+          if (prior.idx != null && job.idx != null && prior.idx === job.idx) {
+            if (prior.productId !== job.productId) return false;
+            // A stable queue slot can be present without finishTime until the
+            // server starts it. Filling that field is the business evidence
+            // for the just-sent production request.
+            return integer(prior.finishTime) ? prior.finishTime >= job.finishTime : false;
+          }
+          // An unkeyed pre-existing row cannot be replaced by another unkeyed
+          // row and still prove a new production request.
+          return prior.idx == null && job.idx == null && prior.productId === job.productId;
+        }));
     }
     if (request === 'SpeedUpUpgradeBuildingRequest') return integer(old?.buildFinishTime) && integer(current?.buildFinishTime)
       && current.buildFinishTime > 0 && current.buildFinishTime < old.buildFinishTime && current.level === old.level;

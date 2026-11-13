@@ -39,6 +39,12 @@ await test('原有工厂队列缺少完成时间，后来补全字段不能冒�
     '有效的新排产仍允许协议省略零号idx');
   assert.equal(await proves(step,'OnWater',building([{productId:'fish',finishTime:100}]),
     building([{productId:'fish',finishTime:100},{idx:1,productId:'fish',finishTime:200}])),true);
+  assert.equal(await proves(step,'OnWater',building([{idx:2,productId:'fish',finishTime:100},{idx:3,productId:'fish'}]),
+    building([{idx:2,productId:'fish',finishTime:100},{idx:3,productId:'fish'},{idx:4,productId:'fish',finishTime:200}])),true,
+    '服务端省略其他排队槽位的完成时间时，新增带编号任务仍可确认');
+  assert.equal(await proves(step,'OnWater',building([{idx:2,productId:'fish'},{idx:3,productId:'fish'}]),
+    building([{idx:2,productId:'fish',finishTime:200},{idx:3,productId:'fish'}])),true,
+    '服务端为稳定队列槽位补齐完成时间时可确认本次排产');
 });
 
 await test('工厂加速前后缺少productId，时间缩短不能确认未知加速',async()=>{
