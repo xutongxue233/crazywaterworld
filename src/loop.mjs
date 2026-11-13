@@ -2,6 +2,7 @@ import {checkFleetSettlement} from './fleet-settlement.mjs';
 import { militaryRewards, riverActivity, edictPassActivity, compassActivity, beautyActivity } from './seasonal-activities.mjs';
 import { claimComicDrama, claimTournamentDaily, openSeasonChests } from './side-rewards.mjs';
 import { merchantActivity } from './merchant-activity.mjs';
+import { merchantMonitorSeconds, watchMerchant } from './merchant-monitor.mjs';
 import {runPirateSweeps} from './pirate-sweeps.mjs';
 import {claimGuildTitleReward} from './guild-title-rewards.mjs';
 import {runWorldBoss,claimWorldBossDamage} from './world-boss.mjs';
@@ -116,6 +117,7 @@ export async function runLoop(client, protocol, {
   let lastFishWait;
   let lastFishUpgradeWait;
   let lastGuildWait;
+  let merchantRoundSeconds = 0;
   const antiqueWait = new Map();
   let residentWait = new Map();
   let treasureAt = 0;
@@ -126,6 +128,16 @@ export async function runLoop(client, protocol, {
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
   const total = rounds > 0 ? rounds : Infinity;
   const travel=watchTreasureTravel(client);
+  const merchantMonitor = watchMerchant(client);
+  const merchantIdentity = JSON.stringify([player?.playerId, player?.worldId, player?.guildId]);
+  const merchantActive = () => Boolean(isEnabled && !stop.aborted && client.connected !== false
+    && JSON.stringify([player?.playerId, player?.worldId, player?.guildId]) === merchantIdentity
+    && isActivityTaskAvailable('merchantTrade', client) && nativePreferenceEnabled(getSettings(), 'merchantTrade')
+    && isEnabled('merchantTrade'));
+  const merchantNow = () => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
+  let merchantPending = false, merchantRunAfter = 0;
+  const merchantNext = () => merchantActive()
+    ? Math.max(merchantRunAfter, merchantMonitor.nextCheckAt * 1000 - (client.serverClockOffsetMs || 0)) : Infinity;
   let followWake=null,followPending=false,followVersion=0;
   let maintenanceAt=0,maintenancePending=false,maintenanceVersion=0;
   const unsubscribeFollow=travel.subscribe(fleet=>{
@@ -137,9 +149,14 @@ export async function runLoop(client, protocol, {
     if(stop.aborted||!client.connected||!fleetMaintenanceEnabled(getSettings()))return;
     maintenanceAt=0;maintenancePending=true;maintenanceVersion++;followWake?.();
   });
+  const unsubscribeMerchant = merchantMonitor.subscribe(() => {
+    if (!merchantActive()) return;
+    merchantPending = true;
+    followWake?.();
+  });
   // 出发推送只唤醒现有调度，不在消息回调中并发发协议或绕过舰队优先级。
   async function waitWithFollow(ms,signal){
-    if(followPending||maintenancePending){followPending=false;maintenancePending=false;return true;}
+    if(followPending||maintenancePending||merchantPending){followPending=false;maintenancePending=false;merchantPending=false;return true;}
     const controller=new AbortController(),abort=()=>controller.abort(signal?.reason);
     if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
     let wake;const changed=new Promise(resolve=>{wake=()=>resolve(true);followWake=wake;});
@@ -149,6 +166,8 @@ export async function runLoop(client, protocol, {
   try{
   for (let round = 1; round <= total; round += 1) {
     if (stop.aborted) break;
+    const roundStartedMs = Date.now();
+    let mainRoundFinished = false;
     const empty = () => ({ planned: 0, results: [] });
     const summary = { round, startedAt: Math.floor(Date.now() / 1000), tasks: empty(), dailies: empty(), world: empty() };
     const settings = getSettings();
@@ -212,6 +231,38 @@ export async function runLoop(client, protocol, {
       const entry = { title,taskKey:({'万吨巨轮检查':'万吨巨轮','城战接续检查':'城战接续','装备锻造检查':'装备锻造','联盟情报':'联盟情报','世界Boss首战':'worldBoss','钓具养成':'fishEnhance','自动钓鱼':'autoFish','贸易港':'cargo'})[title], ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true, reason: error.message } : {}), error: error.message };
       summary[phase].results.push(entry);
       stepLog(phase)(entry);
+    }
+    async function checkMerchant() {
+      if (!merchantActive() || !merchantMonitor.due() || Date.now() < merchantRunAfter) return;
+      merchantPending = false;
+      // 先推进下次检查，读取失败也不能在同一毫秒不断重新排队。
+      merchantMonitor.defer(merchantNow() + merchantMonitorSeconds(getSettings()));
+      const label = automationTasks.find(task => task.key === 'merchantTrade').label;
+      const workSeconds = Math.max(merchantRoundSeconds,
+        mainRoundFinished ? 0 : Math.ceil((Date.now() - roundStartedMs) / 1000));
+      let reported = false;
+      const report = entry => {
+        reported = true;
+        const result = { ...entry, taskKey: 'merchantTrade' };
+        summary.tasks.results.push(result);
+        if (!entry.skipped) summary.tasks.planned++;
+        logReward(result, '活动');
+      };
+      try {
+        await merchantActivity(client, config, { ...adChannel, player, key: 'merchantTrade', label,
+          ledger: usageLedger, scheduler: rewards, settings: getSettings,
+          get everyMs() { return getEveryMs() + workSeconds * 1000; },
+          get merchantCadenceSeconds() {
+            return Math.min(Math.ceil(getEveryMs() / 1000), merchantMonitorSeconds(getSettings())) + workSeconds;
+          },
+          enabled: merchantActive, report });
+        if (!reported) report({ label, skipped: true, reason: '已检查，等待下一次海商王状态变化' });
+      } catch (error) { report({ label, ok: false, error: error.message }); }
+      finally {
+        merchantRunAfter = Date.now() + 10_000;
+        if (merchantMonitor.nextCheckAt <= merchantNow()) merchantMonitor.defer(merchantNow() + 10);
+        rewards?.expect('merchantTrade', merchantMonitor.nextCheckAt);
+      }
     }
     const serviceReport = (phase, category) => entry => {
       summary[phase].results.push(entry);
@@ -451,6 +502,7 @@ export async function runLoop(client, protocol, {
           merchantTrade:merchantActivity, merchantRewards:merchantActivity, beautyVotes:beautyActivity, beautyGift:beautyActivity };
         for (const [key,service] of Object.entries(activityServices)) {
           if (!settings && (key === 'compassSpin' || key === 'seasonChest')) continue;
+          if (key === 'merchantTrade') { await checkMerchant(); continue; }
           if (!serviceEnabled(key)) continue;
           const label=automationTasks.find(task=>task.key===key).label;
           let reported=false;
@@ -462,7 +514,11 @@ export async function runLoop(client, protocol, {
             logReward(result,'活动');
           };
           try {
-            await service(client,config,{...adChannel,player,key,label,ledger:usageLedger,scheduler:rewards,settings:getSettings,freeOnly:key==='riverHelp'&&!active(key),enabled:()=>serviceActive(key),report});
+            // 海商王每轮仅一步，截止余量计入轮间等待和已观察的整轮耗时。
+            const workSeconds = Math.max(merchantRoundSeconds, Math.ceil((Date.now() - roundStartedMs) / 1000));
+            await service(client,config,{...adChannel,player,key,label,ledger:usageLedger,scheduler:rewards,settings:getSettings,
+              get everyMs() { return getEveryMs() + workSeconds * 1000; },
+              freeOnly:key==='riverHelp'&&!active(key),enabled:()=>serviceActive(key),report});
             if (!reported) report({label,skipped:true,reason:'已检查，当前没有可领取的新增奖励'});
           } catch(error) {report({label,ok:false,error:error.message});}
         }
@@ -801,8 +857,10 @@ export async function runLoop(client, protocol, {
       await checkAntique();
       await checkDispatch();
     });
+    mainRoundFinished = true;
     if (stop.aborted) break;
 
+    merchantRoundSeconds = Math.max(merchantRoundSeconds, Math.ceil((Date.now() - roundStartedMs) / 1000));
     history.push(summary);
     if (!Number.isFinite(total) && history.length > 50) history.shift();
     onRound?.(summary);
@@ -820,10 +878,12 @@ export async function runLoop(client, protocol, {
           const antiqueNext = antiqueEnabled(getSettings()) ? antiqueAt : Infinity;
           const radarNext=getSettings()?.radar.enabled?radarAt:Infinity;
           const maintenanceNext=fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity;
-          const wakeAt = Math.min(maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext, antiqueNext);
+          const merchantAt = merchantNext();
+          const wakeAt = Math.min(merchantAt,maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext, antiqueNext);
           if (wakeAt >= nextRound) break;
           await waitWithFollow(Math.max(0, wakeAt - Date.now()), signal);
           if (Date.now() >= nextRound) break;
+          if (merchantNext() <= Date.now()) await schedule(checkMerchant);
           if (Math.min(maintenanceNext,fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity,radarNext,cityNext,treasureNext,treasureAutomationEnabled(getSettings())?treasureAt:Infinity)<=Date.now()) await schedule(checkDispatch);
           if (forgeNext <= Date.now() && forgeEnabled(getSettings())) await schedule(checkForge);
           if (antiqueNext <= Date.now() && antiqueEnabled(getSettings())) await schedule(checkAntique);
@@ -869,12 +929,18 @@ export async function runLoop(client, protocol, {
             if (checkUpgrade) upgradeAt = Date.now() + 30_000;
           }
         }
-        while(!stop.aborted&&Date.now()<nextRound){const changed=await waitWithFollow(Math.max(0,nextRound-Date.now()),signal);if(changed)await schedule(checkDispatch);else break;}
+        while(!stop.aborted&&Date.now()<nextRound){
+          const merchantAt = merchantNext();
+          const changed=await waitWithFollow(Math.max(0,Math.min(nextRound,merchantAt)-Date.now()),signal);
+          if (merchantNext() <= Date.now()) await schedule(checkMerchant);
+          if(changed)await schedule(checkDispatch);
+          else if (Date.now() >= nextRound) break;
+        }
       }
       catch (error) { if (!stop.aborted) throw error; }
     }
   }
-  }finally{unsubscribeFollow();unsubscribeMaintenance();watchFleetMaintenance(client).hold([]);followWake=null;}
+  }finally{unsubscribeFollow();unsubscribeMaintenance();unsubscribeMerchant();watchFleetMaintenance(client).hold([]);followWake=null;}
 
   return { history, rejected };
 }

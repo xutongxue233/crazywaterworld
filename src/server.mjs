@@ -5,6 +5,7 @@ import {readGuildTech,upgradeGuildTech} from './guild-tech.mjs';
 import {resourceFieldRows,resourceFieldTotals} from './resource-fields.mjs';
 import {activityRankCatalog,readActivityRanking} from './activity-rankings.mjs';
 import {readActivityStatistics} from './activity-statistics.mjs';
+import { merchantActivity, readMerchantStatus, readMerchantJournal, merchantJournalSummary } from './merchant-activity.mjs';
 import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
 import {runtimeProgress} from './runtime-progress.mjs';
 import {watchTreasureTravel} from './treasure-follow.mjs';
@@ -24,6 +25,7 @@ import { createPirateAdvanceTask } from './pirate-advance.mjs';
 import { automationControlView, setAutomationControl } from './automation-controls.mjs';
 import { activityAvailability, isActivityTaskAvailable } from './activity-availability.mjs';
 import http from 'node:http';
+import { setTimeout as recoveryWait } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -111,7 +113,8 @@ const pageAsset = {
   etag: '"' + createHash('sha1').update(pageRaw).digest('hex').slice(0, 16) + '"',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) {
+export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
+  recoveryDelayMs = attempt => Math.min(60000, 3000 * 2 ** Math.min(attempt - 1, 5)) } = {}) {
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
@@ -233,6 +236,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         fishingGoldReserve: preferences?.gather.fishingGoldReserve ?? saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
         compassSpinCount: validSpinCount(saved?.compassSpinCount) ? saved.compassSpinCount : defaultCompassSpinCount,
         controller: null, job: null,
+        attemptController: null, connectionFailure: null, recovery: null,
         history: [],
         error: null,
       },
@@ -447,14 +451,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
     if (instance.lostHandled || instance.stopping || session.client !== instance) return;
     instance.lostHandled = true;
     const kicked = instance.fatalReason === 'SCChannelExpired';
-    const reason = kicked ? '账号在别处登录，连接被顶掉' : '连接已断开';
+    const reason = kicked ? '账号在别处登录，连接被顶掉' : instance.closeReason === 'heartbeat-timeout' ? '服务器心跳连续超时' : '连接已断开';
     session.stages.stop(reason);
     session.pirateAdvance.stop(reason);
     session.mutualAid.stop(reason);
     for (const task of session.trials.values()) task.stop(reason);
     const loop = session.loop;
     if (!loop.running || loop.controller?.signal.aborted) return;
-    stopLoop(session, reason + '，已停止挂机');
+    session.generation++;
+    const recoverable = !kicked && instance.closeReason !== 'protocol' && instance.closeReason !== 'login-rejected';
+    loop.connectionFailure = { reason, recoverable };
+    if (recoverable) loop.attemptController?.abort();
+    else stopLoop(session, reason + '，已停止挂机');
   }
 
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
@@ -501,8 +509,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
     return { url: account.url, result: response.result, initSeqNo: response.initSeqNo, playerInfo: session.player };
   }
 
-  async function connect(session, account) {
+  async function connect(session, account, { backgroundRecovery = false } = {}) {
     if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+    if (session.loop.running && (session.loop.recovery || session.loop.connectionFailure) && !backgroundRecovery) throw new Error('后台正在恢复连接，请稍后重试');
     if (session.connecting) return session.connecting;
     const connecting = loginSession(session, account);
     session.connecting = connecting;
@@ -513,9 +522,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
     }
   }
 
-  async function ensureConnected(session, account) {
+  async function ensureConnected(session, account, options) {
     if (session.paused) throw new Error('账号已暂停，请先恢复托管');
-    if (session.connecting || !session.client?.connected || !session.player) await connect(session, account);
+    if (session.connecting || !session.client?.connected || !session.player) await connect(session, account, options);
     bridgeFleetReservations(session.client, () => session.preferences, usageFor(session), exactAutomationId(session.player?.worldId));
     return session.client;
   }
@@ -1359,12 +1368,39 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         if(started.length>1)Promise.allSettled(started.map(result=>result.done)).then(()=>emit(null,'info','批量礼包兑换结束：共 '+started.length+' 个账号，请查看兑换记录'));
         json({accepted:started.length,results:results.map(({id,title,accepted,error})=>({id,title,accepted,error}))});return;
       }
+      if(route==='GET /api/merchant/history'){
+        const { session } = scoped_(parsed), ledger = usageFor(session);
+        json({ summary: merchantJournalSummary(ledger), entries: readMerchantJournal(ledger) }); return;
+      }
+      if(route==='GET /api/merchant'){
+        const { account, session } = scoped_(parsed);
+        const value = await progressionJob(session, account, route, null, client =>
+          readMerchantStatus(client, loadConfigSafe(), { player: session.player, ledger: usageFor(session), settings: settingsView(session).settings }), { read: true });
+        json(value); return;
+      }
+      if(route==='POST /api/merchant/step'){
+        needConfirm(jsonBody());
+        const { account, session } = scoped_(parsed);
+        const value = await progressionJob(session, account, route, '海商王单步验证', async (client, enabled) => {
+          const results = [], preferences = () => settingsView(session).settings;
+          const allowed = () => enabled() && preferences().schedule.merchantTrade && nativePreferenceEnabled(preferences(), 'merchantTrade');
+          if (!allowed()) throw Error('请先开启海商王走商及所属分组开关');
+          await merchantActivity(client, loadConfigSafe(), { player: session.player, key: 'merchantTrade', label: '海商王单步验证',
+            settings: preferences, ledger: usageFor(session), enabled: allowed,
+            get everyMs() { return preferences().loop.everySeconds * 1000; },
+            report: entry => { results.push(entry); emit(session, entry.ok ? 'info' : entry.skipped ? 'info' : 'error',
+              '海商王单步验证 · ' + (entry.reason || entry.error || entry.label || entry.status)); } });
+          session.activityStatistics = null;
+          return { results, state: await readMerchantStatus(client, loadConfigSafe(), { player: session.player, ledger: usageFor(session), settings: preferences() }) };
+        });
+        json(value); return;
+      }
       if(route==='GET /api/activity-statistics'){
         const {account,session}=scoped_(parsed);
         const result=await progressionJob(session,account,route,null,async client=>{
           const cached=session.activityStatistics;
           if(parsed.searchParams.get('refresh')!=='1'&&cached?.client===client&&Date.now()-cached.at<60000)return cached.value;
-          const value=await readActivityStatistics(client,loadConfigSafe(),session.player,usageFor(session));
+          const value=await readActivityStatistics(client,loadConfigSafe(),session.player,usageFor(session),session.preferences);
           session.activityStatistics={client,at:Date.now(),value};return value;
         },{read:true});json(result);return;
       }
@@ -2068,18 +2104,40 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
     // Persist only continuous runs for restart. Reserve this account before login awaits.
     saveAutomation(account.id, { enabled: rounds === 0, everySeconds });
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
-      history: [], error: null, controller: new AbortController() });
+      history: [], error: null, recovery: null, connectionFailure: null, controller: new AbortController() });
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，${rounds === 0 ? '持续运行' : '共 ' + rounds + ' 轮'}，每 ${everySeconds} 秒检查一次；关闭网页后继续运行，请保留启动窗口`);
-    let credentialFailed = false;
+    let credentialFailed = false, recoveryAttempts = 0;
     loop.job = (async () => {
       try {
-        const client = await ensureConnected(session, account);
+        while (!signal.aborted && (rounds === 0 || loop.completed < rounds)) {
+        const attemptController = new AbortController();
+        loop.attemptController = attemptController;
+        loop.connectionFailure = null;
+        let attemptClient;
+        const cancelAttempt = () => {
+          attemptController.abort();
+          if (attemptClient && session.client === attemptClient && (loop.recovery || !session.player)) attemptClient.stop();
+        };
+        signal.addEventListener('abort', cancelAttempt, { once: true });
+        try {
+        // 旧轮次及已取消的排队操作必须全部退出，不能跨连接并发重放消费。
+        await session.queueTail?.catch(() => {});
+        if (signal.aborted) break;
+        const currentAccount = loadStore().accounts.find(row => row.id === account.id);
+        if (!currentAccount || session.paused) break;
+        const connecting = ensureConnected(session, currentAccount, { backgroundRecovery: true });
+        attemptClient = session.client;
+        const client = await connecting;
         if (signal.aborted) return;
-        const { appId, channelId, originVersion } = account.login?.eworldClientInfo ?? {};
+        if (attemptController.signal.aborted || !client.connected) throw Object.assign(new Error('连接尚未恢复'), { recoverable: true });
+        if (loop.recovery) emit(session, 'info', '游戏连接已恢复，继续挂机；未确认操作仍按原记录核对');
+        loop.recovery = null;
+        const completedBefore = loop.completed;
+        const { appId, channelId, originVersion } = currentAccount.login?.eworldClientInfo ?? {};
         await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
-          adChannel: { clientInfo: { appId, channelId, originVersion }, language: account.login?.language },
-          rounds, everyMs: loop.everyMs, allowMutate: true, stop: signal,
+          adChannel: { clientInfo: { appId, channelId, originVersion }, language: currentAccount.login?.language },
+          rounds: rounds === 0 ? 0 : rounds - completedBefore, everyMs: loop.everyMs, allowMutate: true, stop: attemptController.signal,
           schedule: work => enqueue(session, work),
           isEnabled: key => loop.tasks[key] === true,
           getFishingGoldReserve: () => loop.fishingGoldReserve,
@@ -2097,6 +2155,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
           getEveryMs: () => loop.everyMs,
           onMaintenance:view=>{loop.fleetMaintenance=view;},
           onRound(summary) {
+            summary = { ...summary, round: completedBefore + summary.round };
+            recoveryAttempts = 0;
             if (summary.world.factories?.length) {
               try {
                 fs.writeFileSync(factoryReportFile(session.id), JSON.stringify({ time: new Date().toLocaleString('zh-CN'), lines: summary.world.factories }));
@@ -2108,6 +2168,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
             emit(session, 'info', formatLoopRound(summary), summary.world.population ? { worldUpdated: true } : undefined);
           },
           onStep(entry) {
+            entry = { ...entry, round: completedBefore + entry.round };
             const statusKey = (entry.step?.request==='SetFactoryAutoProduceRequest'?'nativeProduce':null) || entry.taskKey || (['万吨巨轮','城战接续','装备锻造','藏品养成','联盟情报'].includes(entry.category)?entry.category:null) || (entry.step?.kind ? worldTaskKey(entry.step.kind) : null) || entry.category || entry.title || entry.label;
             loop.controlStatus ??= new Map();
             const previous=loop.controlStatus.get(statusKey);
@@ -2121,6 +2182,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
                 : entry.request && entry.ok === false ? { request: entry.request, way: entry.way } : undefined);
           },
         });
+        if (loop.connectionFailure) throw new Error(loop.connectionFailure.reason);
+        break;
+        } catch (error) {
+          if (signal.aborted) break;
+          const failedClient = attemptClient ?? session.client;
+          const failure = loop.connectionFailure;
+          const recoverable = !error.loginResponse && error.recoverable !== false && failedClient?.fatalReason !== 'SCChannelExpired'
+            && !['protocol', 'kicked', 'login-rejected'].includes(failedClient?.closeReason)
+            && (failure ? failure.recoverable : !failedClient?.connected &&
+              (error.recoverable === true || ['network', 'heartbeat-timeout', 'sequence-gap'].includes(failedClient?.closeReason)
+                || /login timeout|socket error during login|socket closed during login|^not connected$/i.test(error.message)));
+          if (!recoverable) throw error;
+          failedClient?.stop();
+          const delay = Math.max(1, Number(recoveryDelayMs(++recoveryAttempts)) || 3000);
+          loop.recovery = { attempt: recoveryAttempts, nextAttemptAt: Date.now() + delay, reason: failure?.reason ?? error.message };
+          emit(session, 'warn', `${loop.recovery.reason}；${Math.ceil(delay / 1000)} 秒后自动重连（第 ${recoveryAttempts} 次），保留挂机进度`);
+          await recoveryWait(delay, undefined, { signal });
+        } finally {
+          signal.removeEventListener('abort', cancelAttempt);
+          if (loop.attemptController === attemptController) loop.attemptController = null;
+        }
+        }
       } catch (error) {
         if (!signal.aborted) {
           loop.error = error.message;
@@ -2131,6 +2214,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
       } finally {
         loop.running = false;
         loop.controller = null;
+        loop.attemptController = null;
+        loop.recovery = null;
         loop.job = null;
         emit(session, 'info', '自动挂机结束');
         if (credentialFailed) {
@@ -2197,6 +2282,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog } = {}) 
         return {...control,observation:state,...runtimeProgress(control,state,displayUsage,{running:loop.running,connected:!!session.client?.connected,treasureReward,freeTimes:session.client?.freeRecruitTimes,now:Date.now()+(session.client?.serverClockOffsetMs||0)}),nextCheck:loop.running&&session.client?.connected&&control.enabled&&!control.blockedBy.length?rewards?.nextCheck(key)??null:null,stale:!loop.running||!session.client?.connected};
       }),
       running: loop.running,
+      recovery: loop.recovery,
       stopping: !!loop.controller?.signal.aborted,
       tasks: automationTasks.filter(task => isActivityTaskAvailable(task.key, session.client)).map(({ key, label, group }) => ({
         key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(session.preferences, key),

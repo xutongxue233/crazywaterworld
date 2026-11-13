@@ -18,7 +18,9 @@ import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { runStages, stageFailureLimit } from './stages.mjs';
 import { createPhoneLogin } from './phone-login.mjs';
 import { worldName } from './world-name.mjs';
-import { formatConsoleLog } from './console-log.mjs';
+import { createConsoleOutput } from './console-output.mjs';
+
+let consoleOutput = null;
 
 const READ_ONLY_PROBES = [
   'AllResourceRequest',
@@ -1001,22 +1003,37 @@ async function main() {
   }
 
   const port = Number(process.env.CW_PORT ?? 17321);
-  const console_ = createConsole({ port, onLog: entry => console.log(formatConsoleLog(entry)) });
+  const output = consoleOutput = createConsoleOutput();
+  const restoreOutput = () => output.restore();
+  process.once('exit', restoreOutput);
+  const console_ = createConsole({ port, onLog: entry => output.log(entry) });
   const url = await console_.listen();
+  output.start(url);
+  let shuttingDown = false;
+  const shutdown = async signal => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try { await console_.close(); }
+    catch (error) { output.write('关闭控制台失败：' + error.message); }
+    finally { await output.close(); process.exit(signal === 'SIGINT' ? 130 : 0); }
+  };
+  process.once('SIGINT', () => { void shutdown('SIGINT'); });
+  process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+  if (process.platform === 'win32') process.once('SIGBREAK', () => { void shutdown('SIGBREAK'); });
   const browser = process.env.CW_NO_BROWSER ? null : openBrowser(url);
   if (!process.env.CW_QUIET_START) {
-    console.log(`console: ${url}${browser ? ` (via ${browser})` : ''}`);
+    if (browser) output.write('已打开浏览器：' + browser);
     const store = loadStore();
     if (!store.accounts.length) {
-      console.log(`还没有账号：打开 ${url}，在「账号」页选择「从电脑微信添加」或「从电脑抖音添加」，再从对应客户端重新进入游戏。`);
+      output.write(`还没有账号：打开 ${url}，在「账号」页选择「从电脑微信添加」或「从电脑抖音添加」，再从对应客户端重新进入游戏。`);
     } else {
-      console.log(`账号 ${store.accounts.length} 个，当前: ${describeAccount(pickAccount(store, null)).title}`);
+      output.write(`账号 ${store.accounts.length} 个，当前: ${describeAccount(pickAccount(store, null)).title}`);
     }
   }
-  console.log('关闭网页后挂机会继续，运行日志显示在此窗口。请保持此窗口打开；Ctrl+C 或关闭此窗口会结束后台进程。');
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  await consoleOutput?.close();
   console.error(process.env.CW_DEBUG ? error : error.message);
   process.exitCode = 1;
 });

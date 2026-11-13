@@ -20,6 +20,10 @@ export const DEMAND_SOURCES = [
 export const DEFAULT_SETTINGS = {
   schedule: taskSettings(),
   eventActions: { compassThreshold: 10, compassDrawCount: 10 },
+  merchant: { quoteMaxAgeSeconds: 300, estimateDiscountPercent: 10, refreshWaitSeconds: 120, liquidationMinutes: 120,
+    maxLossPercent: 0, minExpectedProfit: 1, autoSpeedUp: false, speedUpMinProfit: 1000, keepPointers: 0,
+    speedUpMode: 'profit', speedUpMaxPerLeg: 4, monitorSeconds: 60,
+    autoUpgrade: false, upgradeCoinValuePerDiamond: 100, upgradeMinReturnPercent: 150, upgradeMaxLevel: 2, upgradeDailyDiamondLimit: 300 },
   loop: { rounds: 0, everySeconds: 60, tasks: true, dailies: true, world: true, heroes: false },
   building: { enabled: true, collect: true, build: true, upgrade: true, finish: true, supply: false, disabledTypes: [], speedUp: true, keepBlueprints: 0, maxBuilds: 5, maxUpgrades: 2 },
   factory: { enabled: true, gain: true, produce: true, cooperateNative: false, disabledTypes: [], keepStock: 50, demandFirst: true, demandPriority: DEMAND_SOURCES.map(([id]) => id), speedUpSources: [], speedUp: true, speedUpItems: [] },
@@ -60,6 +64,12 @@ const int = (max = 1_000_000_000, min = 0) => ({ kind: 'number', min, max });
 const strings = (max = 300) => ({ kind: 'list', max });
 const constraints = {
   'eventActions.compassThreshold':int(999999,1), 'eventActions.compassDrawCount':int(50,1),
+  'merchant.quoteMaxAgeSeconds': int(86400, 1), 'merchant.estimateDiscountPercent': int(100),
+  'merchant.refreshWaitSeconds': int(3600), 'merchant.liquidationMinutes': int(1440), 'merchant.maxLossPercent': int(100),
+  'merchant.minExpectedProfit': int(1000000000, 1), 'merchant.speedUpMinProfit': int(1000000000, 1), 'merchant.keepPointers': int(1000000),
+  'merchant.speedUpMode': { kind: 'choice', values: ['deadline', 'profit'] }, 'merchant.speedUpMaxPerLeg': int(100, 1),
+  'merchant.monitorSeconds': int(300, 10), 'merchant.upgradeCoinValuePerDiamond': int(1000000, 1),
+  'merchant.upgradeMinReturnPercent': int(10000, 100), 'merchant.upgradeMaxLevel': int(5, 1), 'merchant.upgradeDailyDiamondLimit': int(100000),
   'ads.waitSeconds':int(120,5),
   'fleetDispatch.priority': {...strings(6),values:['cityWar','pirateHunt','worldBoss','follow','treasure','radar']},
   'worldBoss.fleetIds': strings(10), 'worldBoss.minDurabilityPercent': int(100), 'worldBoss.petrolReserve': int(),
@@ -329,7 +339,8 @@ export function importAutomationSettings(document, options) {
   if (!plain(document) || ![SETTINGS_FORMAT, LEGACY_SETTINGS_FORMAT].includes(document.format) || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
   // 原版本1导出没有巨轮分组，只补新增默认值；既有分组仍严格校验。
   const input = plain(document.settings) ? { ...document.settings } : document.settings;
-  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','merchant','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input?.merchant)) input.merchant = { ...DEFAULT_SETTINGS.merchant, ...input.merchant };
   if (plain(input?.antique)) input.antique = { ...DEFAULT_SETTINGS.antique, ...input.antique };
   if (plain(input?.treasure)) {
     input.treasure = { ...input.treasure };

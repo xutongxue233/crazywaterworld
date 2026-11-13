@@ -12,10 +12,11 @@ const MEMBER_REQUESTS = new Set([
 ]);
 
 export const TICK_INTERVAL_MS = 1000;
-export const PING_TIMEOUT_MS = 1000;
+export const PING_TIMEOUT_MS = 10000;
+export const MAX_MISSED_PINGS = 3;
 export const LOGIN_TIMEOUT_MS = 15000;
 export const ACK_DELAY_MS = 1000;
-export const HEARTBEAT_DEADLINE_MS = 604800000 + TICK_INTERVAL_MS;
+export const HEARTBEAT_DEADLINE_MS = PING_TIMEOUT_MS * MAX_MISSED_PINGS;
 
 // 一次页面读取最多拦住普通请求这么久；各请求自身也有超时，这里只防读取卡死拖住挂机。
 const READ_GATE_LIMIT_MS = 20000;
@@ -63,6 +64,8 @@ export class GameClient extends EventEmitter {
     this.gapTimer = null;
     this.tickTimer = null;
     this.lastPingTimestamp = 0;
+    this.pingAttempts = new Map();
+    this.heartbeatNow = () => performance.now();
     this.lastResponseAt = 0;
     this.latencyMs = 0;
     this.serverClockOffsetMs = 0;
@@ -70,6 +73,9 @@ export class GameClient extends EventEmitter {
     this.watchers = [];
     this.sendOrder = 0;
     this.stopping = false;
+    this.closeReason = null;
+    this.loginAbort = null;
+    this.connectionEpoch = 0;
     this.readGate = null;
     this.readTail = null;
   }
@@ -84,8 +90,12 @@ export class GameClient extends EventEmitter {
   }
 
   async connect(loginBody = this.login, { timeout = LOGIN_TIMEOUT_MS } = {}) {
-    if (this.connected) throw new Error('already connected');
+    if (this.connected || this.loginAbort) throw new Error('already connected or connecting');
+    this.releaseRequests('旧连接已替换');
+    this.discardSocket('replaced');
     this.stopping = false;
+    this.closeReason = null;
+    const epoch = ++this.connectionEpoch;
     this.setState('CONNECTING', this.url);
 
     const socket = new WebSocket(this.url);
@@ -101,14 +111,19 @@ export class GameClient extends EventEmitter {
       }, timeout);
       const cleanup = () => {
         clearTimeout(timer);
+        if (this.loginAbort === abort) this.loginAbort = null;
         socket.onopen = null;
         socket.onerror = null;
         socket.onclose = null;
         socket.onmessage = null;
       };
+      const abort = () => { cleanup(); reject(new Error('client stopped')); };
+      this.loginAbort = abort;
       socket.onopen = () => {
-        this.emit('frame', { dir: 'out', name: 'LoginRequest', seq: this.sendSeqNo, bytes: frame });
-        socket.send(frame);
+        try {
+          this.emit('frame', { dir: 'out', name: 'LoginRequest', seq: this.sendSeqNo, bytes: frame });
+          socket.send(frame);
+        } catch (error) { cleanup(); reject(error); }
       };
       socket.onerror = () => {
         cleanup();
@@ -124,27 +139,38 @@ export class GameClient extends EventEmitter {
           decoded = this.codec.decode(event.data);
         } catch (error) {
           cleanup();
+          error.recoverable = false;
           reject(error);
           return;
         }
         cleanup();
         if (decoded.name !== 'LoginResponse') {
-          reject(new Error(`unexpected auth reply: ${decoded.name}`));
+          reject(Object.assign(new Error(`unexpected auth reply: ${decoded.name}`), { recoverable: false }));
           return;
         }
         resolve(decoded.body);
       };
     }).catch((error) => {
-      this.socket = null;
-      this.setState('FAILED', error.message);
+      const cause = this.stopping || epoch !== this.connectionEpoch ? 'stopped' : error.recoverable === false ? 'protocol' : 'network';
+      error.recoverable = cause === 'network';
+      // 旧登录的 Promise 可能在 stop 后、下一次 connect 已开始时才拒绝。
+      if (epoch === this.connectionEpoch) {
+        if (this.socket === socket) this.discardSocket('loginFailed');
+        this.closeReason = cause;
+        if (!this.stopping) this.setState('FAILED', error.message);
+      }
       throw error;
     });
 
+    if (this.stopping || this.socket !== socket) throw Object.assign(new Error('client stopped'), { recoverable: false });
+
     if (body.result !== 0) {
-      this.socket = null;
+      this.discardSocket('loginRejected');
+      this.closeReason = 'login-rejected';
       this.setState('REJECTED', `result=${body.result} ${body.errorMessage || ''}`);
       const error = new Error(`login rejected: result=${body.result} ${body.errorMessage || ''}`);
       error.loginResponse = body;
+      error.recoverable = false;
       throw error;
     }
 
@@ -152,14 +178,16 @@ export class GameClient extends EventEmitter {
     this.recvSeqNo = null;
     this.nextAckSeqNo = null;
 
-    socket.onmessage = (event) => this.onMessage(event.data);
-    socket.onclose = (event) => this.onClose(event);
-    socket.onerror = () => this.emit('error', new Error('socket error'));
+    socket.onmessage = (event) => { if (this.socket === socket) this.onMessage(event.data); };
+    socket.onclose = (event) => { if (this.socket === socket) this.onClose(event); };
+    socket.onerror = () => { if (this.socket === socket) this.failConnection('游戏连接网络异常', 'network'); };
 
     this.setState('READY', `player=${body.playerInfo?.nickname ?? ''} initSeqNo=${body.initSeqNo}`);
+    if (this.stopping || this.socket !== socket) throw Object.assign(new Error('client stopped'), { recoverable: false });
     this.lastPingTimestamp = 0;
-    this.sendPing(Date.now());
-    this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS);
+    try { this.sendPing(Date.now()); }
+    catch (error) { this.failConnection('发送心跳失败：' + error.message, 'network'); throw error; }
+    this.tickTimer = setInterval(() => { if (this.socket === socket) this.tick(); }, TICK_INTERVAL_MS);
     this.emit('login', body);
     return body;
   }
@@ -280,8 +308,14 @@ export class GameClient extends EventEmitter {
   }
 
   sendPing(timestamp) {
+    // 重试保留旧 nonce，迟到的有效应答仍能确认连接；连续失败最多保留三项。
+    while (this.pingAttempts.has(timestamp)) timestamp++;
     this.lastPingTimestamp = timestamp;
-    this.sendNoSeq('PingRequest', { clientTimestamp: timestamp });
+    this.pingAttempts.set(timestamp, this.heartbeatNow());
+    if (!this.sendNoSeq('PingRequest', { clientTimestamp: timestamp })) {
+      this.pingAttempts.delete(timestamp);
+      this.lastPingTimestamp = 0;
+    }
   }
 
   tryHandlePong(body) {
@@ -289,10 +323,12 @@ export class GameClient extends EventEmitter {
     // The server echoes our timestamp back as an int64, which decodes to the
     // long-form { low, high } object when no Long library is installed.
     const echoed = toNumber(body?.clientTimestamp);
-    if (echoed !== this.lastPingTimestamp) return false;
+    const sentAt = this.pingAttempts.get(echoed);
+    if (sentAt === undefined) return false;
     const now = Date.now();
     this.lastPingTimestamp = 0;
-    const sample = 0.4 * (now - echoed) + 0.6 * this.latencyMs;
+    const sample = 0.4 * (this.heartbeatNow() - sentAt) + 0.6 * this.latencyMs;
+    this.pingAttempts.clear();
     this.latencyMs = Math.round(Math.max(sample, 0));
     this.serverClockOffsetMs = Math.round(toNumber(body.serverTimestamp) - now + sample / 2);
     this.emit('pong', { latencyMs: this.latencyMs, offsetMs: this.serverClockOffsetMs });
@@ -304,18 +340,18 @@ export class GameClient extends EventEmitter {
     try {
       decoded = this.codec.decode(data);
     } catch (error) {
-      this.failConnection(`服务器消息解码失败：${error.message}`);
+      this.failConnection(`服务器消息解码失败：${error.message}`, 'protocol');
       return;
     }
     this.lastResponseAt = Date.now();
     const { seq, name, body } = decoded;
-    if (name === 'PingResponse' && this.tryHandlePong(body)) return;
+    if (name === 'PingResponse') { this.tryHandlePong(body); return; }
 
     // The server can report a terminal failure precisely because a sequence is
     // missing. Handle it before rejecting out-of-order business responses.
     if (name === 'ResendFailed' || name === 'SCChannelExpired') {
       this.emit('fatal', { reason: name, seqNo: body.seqNo, detail: body.reason });
-      this.failConnection(name === 'ResendFailed' ? '服务器无法重传缺失消息，请重新连接' : '游戏会话已失效，请重新连接');
+      this.failConnection(name === 'ResendFailed' ? '服务器无法重传缺失消息，请重新连接' : '游戏会话已失效，请重新连接', name === 'ResendFailed' ? 'sequence-gap' : 'kicked');
       return;
     }
     if (!this.handleSeqNo(seq, name)) return;
@@ -359,7 +395,7 @@ export class GameClient extends EventEmitter {
             let retries = 0;
             this.gapTimer = setInterval(() => {
               if (++retries < 3) this.sendNack(this.recvSeqNo);
-              else this.failConnection(`缺少服务器消息序号 ${nextSeqNo(this.recvSeqNo)}，重传未恢复，请重新连接`);
+              else this.failConnection(`缺少服务器消息序号 ${nextSeqNo(this.recvSeqNo)}，重传未恢复，请重新连接`, 'sequence-gap');
             }, 1000);
           }
         }
@@ -396,19 +432,20 @@ export class GameClient extends EventEmitter {
   }
 
   tick() {
-    if (!this.stopping) {
-      const now = Date.now();
-      if (this.connected) {
+    if (!this.stopping && this.connected) {
+      try {
         if (this.lastPingTimestamp > 0) {
-          if (now - this.lastPingTimestamp > PING_TIMEOUT_MS) {
-            this.emit('warn', 'ping timeout');
-            this.lastPingTimestamp = 0;
-            this.failConnection('心跳超时，连接已断开');
+          if (this.heartbeatNow() - this.pingAttempts.get(this.lastPingTimestamp) >= PING_TIMEOUT_MS) {
+            if (this.pingAttempts.size >= MAX_MISSED_PINGS) this.failConnection('连续心跳无应答，连接已断开', 'heartbeat-timeout');
+            else {
+              this.emit('warn', '心跳应答延迟，正在重新探测（' + this.pingAttempts.size + '/' + MAX_MISSED_PINGS + '）');
+              this.sendPing(Date.now());
+            }
           }
         } else {
-          this.sendPing(now);
+          this.sendPing(Date.now());
         }
-      }
+      } catch (error) { this.failConnection('发送心跳失败：' + error.message, 'network'); }
     }
     this.emit('tick', this.snapshot());
   }
@@ -442,9 +479,10 @@ export class GameClient extends EventEmitter {
   }
 
   onClose(event) {
+    this.closeReason ??= 'network';
     this.releaseRequests(`游戏连接已断开（${event?.code ?? ''}）`);
     this.socket = null;
-    this.emit('close', { code: event?.code, reason: event?.reason });
+    this.emit('close', { code: event?.code, reason: event?.reason, cause: this.closeReason });
     if (!this.stopping) this.setState('CLOSED', `code=${event?.code ?? ''}`);
   }
 
@@ -455,6 +493,9 @@ export class GameClient extends EventEmitter {
     if (this.ackTimer !== null) clearTimeout(this.ackTimer);
     this.tickTimer = null;
     this.ackTimer = null;
+    this.lastPingTimestamp = 0;
+    this.pingAttempts.clear();
+    this.nextAckSeqNo = null;
     for (const entry of this.pending.splice(0)) {
       clearTimeout(entry.timer);
       entry.reject(new Error(reason));
@@ -465,16 +506,20 @@ export class GameClient extends EventEmitter {
     }
   }
 
-  failConnection(reason) {
+  failConnection(reason, cause = 'network') {
+    if (this.stopping || (!this.socket && this.closeReason)) return;
+    this.closeReason = cause;
     this.emit('warn', reason);
     this.releaseRequests(reason);
     this.discardSocket('connectionLost');
-    this.emit('close', { reason });
+    this.emit('close', { reason, cause });
     this.setState('CLOSED', reason);
   }
 
   stop() {
     this.stopping = true;
+    this.closeReason = 'stopped';
+    this.loginAbort?.();
     this.releaseRequests('client stopped');
     this.discardSocket('stop');
     this.setState('STOPPED');

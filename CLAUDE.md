@@ -60,7 +60,8 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - 挂机一轮是一个 `enqueue` 任务，可持续一分钟以上。新增只读路由用 `readJob` 或 `progressionJob(..., { read: true })`，队列忙时经 `GameClient.interleaveRead` 插在两次请求之间。`PromptResponse` 没有请求编号，不能让读取与其他请求同时在途；这条通道只能用于确实不改变游戏状态的读取。
 - 网页仅控制和订阅日志，关闭网页不停止后台 `loop.job`。业务日志经 `createConsole({ onLog })` 输出到 CLI；日志回调和 SSE 异常不能影响游戏任务，显式关闭控制台时再关闭 SSE。验证使用 `selftest-console-background.mjs` 的隔离账号与假客户端。
 - `activity-availability.mjs` 集中记录已确认结束活动的配置下线规则，依据见 `docs/activity-availability.md`。只过滤配置视图和有效调度，不删除 `automationTasks`、设置 schema 或历史值。服务器当前开放的对应子活动可覆盖旧下线记录；配置静态字段、动态补全、旧控制 API 和 loop 别名门控须一起检查，不能按“限时活动”整个分组停用。
-- 连接断开或被顶号时，`connectionLost` 停止挂机并清除持久开关，不自动重连。自动重连和 Webhook 通知已暂时移除，需要时从 git 历史恢复 `reconnect.mjs`、`notify.mjs`。
+- 挂机使用外层运行 controller 和每连接独立 attemptController。普通网络、心跳连续超时和重传失败会中断旧轮次，待其退出后退避重连（3 秒起、最高 60 秒），保留进度、账本与预留；被顶号、拒绝登录、协议错误及用户停止不重试。`GameClient.closeReason` 和登录错误 `recoverable` 决定分类，不能靠所有异常一律重登。重连期间网页读取不得另起登录绕过退避。旧可配置重连界面和 Webhook 仍未恢复。
+- CLI 的 `console-output.mjs` 在支持 VT 的 TTY 使用滚动区固定地址/提示，日志分批且有界，非 TTY 保留纯文本；关闭恢复滚动区。不要绕过此输出器打印普通控制台日志或全局替换 console；`CW_PIN_HEADER=0` 可关闭顶部固定。
 - `reward-schedule.mjs` 记录奖励下次检查时间，相关推送提前唤醒。推送只触发串行检查，不能另开并行派遣绕过预算。
 - `accounts.mjs`、`capture.mjs`、`tools/mitm-*.mjs` 管理账号与采集；采集会临时改系统代理和用户证书。
 

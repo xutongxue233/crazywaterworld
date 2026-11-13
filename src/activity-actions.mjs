@@ -65,8 +65,20 @@ export async function itemBalance(client, id) {
 // 同一期同玩法的未知结果必须通过游戏状态核实，重新连接也不能换个目标绕过。
 export async function checkedAction(
   ctx,
-  { scope, before, expected, label, allowed, send, inspect, matches, accept }
+  { scope, before, expected, label, allowed, send, inspect, matches, accept, retainEvidence = false, attemptedAt, onOutcome,
+    now = () => Math.floor(Date.now() / 1000) }
 ) {
+  const outcome = async data => {
+    if (!onOutcome) return;
+    try {
+      await onOutcome(data);
+      if (retainEvidence && data.status === 'confirmed') {
+        const record = ctx.ledger.keyRecords()[data.actionKey];
+        if (record?.confirmed) ctx.ledger.resolveKey(data.actionKey, true, { ...record.details, journalRecorded: true });
+      }
+    }
+    catch (error) { ctx.report({ label, skipped: true, reason: '动作结果已保留，统计记录待修复：' + error.message }); }
+  };
   if (!ctx.enabled() || !allowed()) return waiting(ctx, '开关或活动时间已变化');
   if (!ctx.ledger) return waiting(ctx, '账号执行记录不可用');
   const records = Object.entries(ctx.ledger.keyRecords());
@@ -74,7 +86,9 @@ export async function checkedAction(
     if (record.confirmed || record.details?.scope !== scope) continue;
     if (!matches(record.details.expected, before))
       return waiting(ctx, '前次操作结果待确认，等待游戏状态更新');
-    ctx.ledger.resolveKey(key, true);
+    ctx.ledger.resolveKey(key, true, retainEvidence ? { ...record.details, after: before, confirmedAt: now() } : undefined);
+    await outcome({ actionKey: key, expected: record.details.expected, before: record.details.before, after: before,
+      attemptedAt: record.details.attemptedAt, status: 'confirmed' });
     ctx.report({ label, ok: true, status: 'confirmed', reason: '已回读确认前次操作' });
     return;
   }
@@ -84,15 +98,20 @@ export async function checkedAction(
   delete identity.start; // 发送时刻用于回读核对，不改变动作的防重标识。
   const key = 'event-action:' + digest([scope, identity, before]);
   if (ctx.ledger.hasKey(key)) return waiting(ctx, '本次状态已处理，等待下一次更新');
-  const ticket = ctx.ledger.reserve({}, {}, {}, { uniqueKey: key, details: { scope, expected } });
+  const ticket = ctx.ledger.reserve({}, {}, {}, { uniqueKey: key, details: {
+    scope, expected, ...(retainEvidence ? { before, attemptedAt } : {})
+  } });
   if (!ctx.enabled() || !allowed()) {
     ctx.ledger.cancel(ticket);
     return;
   }
   try {
     const reply = await send();
-    if (!accept(reply) || !matches(expected, await inspect())) throw Error('服务端结果待确认');
-    ctx.ledger.confirm(ticket);
+    const after = await inspect();
+    if (!accept(reply) || !matches(expected, after)) throw Error('服务端结果待确认');
+    if (retainEvidence) ctx.ledger.resolveKey(key, true, { scope, expected, before, after, attemptedAt, confirmedAt: now() });
+    else ctx.ledger.confirm(ticket);
+    await outcome({ actionKey: key, expected, before, after, attemptedAt, status: 'confirmed' });
     ctx.report({ label, ok: true, status: 'confirmed' });
   } catch (error) {
     if (error.released) {
@@ -100,6 +119,8 @@ export async function checkedAction(
       return waiting(ctx, error.message);
     }
     if (error.prompt && error.request === expected.request) ctx.ledger.cancel(ticket);
+    await outcome({ actionKey: key, expected, before, attemptedAt,
+      status: error.prompt && error.request === expected.request ? 'rejected' : 'unknown', reason: error.message });
     ctx.report({
       label,
       ok: false,

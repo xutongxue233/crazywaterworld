@@ -2,7 +2,7 @@
 import {rewardData,weekActivityNames} from './missing-rewards.mjs';
 import {openRankWindows} from './activity-rankings.mjs';
 import {exactAutomationId,automationWireId} from './automation-policy.mjs';
-import {merchantProgress} from './merchant-activity.mjs';
+import {merchantProgress, merchantJournalSummary} from './merchant-activity.mjs';
 import {fishView,newbieView} from './collections.mjs';
 
 const rows=(c,n)=>c?.tables?.[n]?.data??[];
@@ -25,7 +25,7 @@ export function activityPeriodName(config,event){
  return cfg?.activeName||cfg?.activityName||weekActivityNames[event.type]||'周活动 '+event.type;
 }
 
-export async function readActivityStatistics(client,config,player,ledger){
+export async function readActivityStatistics(client,config,player,ledger,settings){
  const checkedAt=Math.floor((Date.now()+(client.serverClockOffsetMs||0))/1000),items=[],notes=[],cache=new Map();
  const season=Math.floor(Number(exactAutomationId(player.worldId))/1e6)%1000;
  const ask=(name,body={})=>{
@@ -168,7 +168,9 @@ export async function readActivityStatistics(client,config,player,ledger){
  if(trade?.period&&trade.endTime>checkedAt&&unlocked('海商王')){
   const row=add('merchant','海商王',trade.startTime,trade.endTime);
   if(row.status==='进行中')await capture(row,async()=>{const st=await ask('TradeInfo');if(st.period!==trade.period||!st.player||!st.cargo)throw Error('本期商船数据未同步');
-   row.progress='商会币 '+text(st.player.coins)+' · 累计利润 '+text(st.player.profit)+' · '+await merchantProgress(config,trade,st,player,checkedAt,ask,ledger);
+   row.progress='商会币 '+text(st.player.coins)+' · 累计利润 '+text(st.player.profit)+' · '+await merchantProgress(config,trade,st,player,checkedAt,ask,ledger,settings);
+   row.merchantJournal=merchantJournalSummary(ledger,trade,{time:checkedAt});
+   if(row.merchantJournal?.confirmedTrades) row.progress+=' · 工具已核实 '+row.merchantJournal.confirmedTrades+' 笔成交 · 实际净利 '+text(row.merchantJournal.realizedProfit);
    row.rewards=activityRewardState(rows(config,'TradeAchieveRewardCfg').filter(t=>t.id===st.period),t=>t.target<=st.player.profit,t=>t.rewardId<=st.gotAchieveRwdId);
    const pass=await ask('BattlePass',{type:3});row.welfare='战令 '+text(pass.score)+' 分';});
  }

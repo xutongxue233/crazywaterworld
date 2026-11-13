@@ -805,7 +805,7 @@ function renderLoop(data) {
   $('loop-every').disabled = $('loop-rounds').disabled = data.running;
   $('loop-start').disabled = data.running;
   $('loop-stop').disabled = !data.running || data.stopping;
-  $('loop-hint').textContent = (data.running ? '后台挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
+  $('loop-hint').textContent = (data.recovery ? '网络恢复中（第 ' + data.recovery.attempt + ' 次），已完成 ' : data.running ? '后台挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
 
 }

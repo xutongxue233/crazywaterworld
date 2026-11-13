@@ -1,5 +1,6 @@
 // Operation names shared by the server journal and the browser's network errors.
 export const operationLabels = {
+  '/api/merchant': '查看海商王实况', '/api/merchant/history': '查看海商王成交记录', '/api/merchant/step': '海商王单步验证',
   '/api/activities/run': '单次执行活动',
   '/api/gift-codes': '读取礼包兑换记录',
   '/api/gift-codes/accounts': '读取礼包兑换账号',

@@ -1,4 +1,4 @@
-// 掉线、被顶号和登录失败时停止挂机且不重连。经真实控制台路由驱动，全程离线。
+// 普通网络恢复；顶号、凭证拒绝和用户停止仍不得重连。真实HTTP路由，全程离线。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,7 +38,7 @@ const kick = client => { live.delete(client); client.emit('fatal', { reason: 'SC
 const legacyReconnect = { enabled: true, baseSeconds: 1, maxSeconds: 1, maxAttempts: 0, kicked: 'retry', kickedMinutes: 1 };
 saveStore({ activeId: 'a', accounts: [{ id: 'a', url: 'ws://invalid.invalid', login: {}, automation: {
   enabled: false, everySeconds: 3600, reconnect: legacyReconnect, tasks: Object.fromEntries((await import('../src/automation.mjs')).automationTasks.map(t => [t.key, t.key === 'mail'])) } }] });
-const app = createConsole({ port: 0 });
+const app = createConsole({ port: 0, recoveryDelayMs: () => 50 });
 const waitFor = async (check, label) => {
   for (let i = 0; i < 100; i++) {
     if (check()) return;
@@ -71,7 +71,11 @@ try {
   assert.equal(logins, 1);
   let before = logins;
   dropConnection(session().client);
-  await assertStayedStopped(before, '掉线后停止挂机');
+  await waitFor(() => logins === before + 1 && session().client?.connected, '掉线后恢复挂机');
+  assert.equal(session().loop.running, true);
+  assert.equal(automation().enabled, true);
+  assert.equal((await post('/api/loop/stop?account=a', { confirm: true })).status, 200);
+  await assertStayedStopped(before + 1, '恢复后手动停止不再重连');
 
   // 被顶号，旧账号设置为“等待后重连”也不再生效
   await startAndConnect('重新开始');
@@ -79,15 +83,16 @@ try {
   kick(session().client);
   await assertStayedStopped(before, '被顶号后停止挂机');
 
-  // 持续挂机的登录网络错误不再重试
+  // 登录网络错误可以重试，停止按钮必须取消退避等待
   session().client?.stop();
   session().client = null;
   loginError = new Error('socket error during login');
   before = logins;
   assert.equal((await startLoop()).status, 200);
-  await waitFor(() => !session().loop.running, '登录失败后结束');
-  assert.equal(logins, before + 1);
-  await assertStayedStopped(before + 1, '登录失败后停止挂机');
+  await waitFor(() => logins >= before + 2, '登录网络失败后自动重试');
+  assert.equal(session().loop.running, true);
+  assert.equal((await post('/api/loop/stop?account=a', { confirm: true })).status, 200);
+  await assertStayedStopped(logins, '手动取消网络恢复');
 
   // 服务器拒绝登录
   loginError = Object.assign(new Error('login rejected'), { loginResponse: { result: 1 } });
@@ -111,7 +116,7 @@ try {
   assert.equal((await fetch(url('/api/income?account=a'))).status, 404);
   const view = await (await fetch(url('/api/loop?account=a'))).json();
   assert.equal('reconnect' in view, false);
-  assert.equal('recovery' in view, false);
+  assert.equal(view.recovery, null);
   assert.deepEqual(automation().reconnect, legacyReconnect, '恢复功能时旧设置还能用');
   for (const id of ['reconnect-form', 'notify-form', 'reconnect-enabled', 'notify-webhook']) assert.ok(!PAGE.includes('id="' + id + '"'), id);
   assert.ok(!PAGE.includes('连接与通知'));
@@ -123,4 +128,4 @@ try {
   await app.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }
-console.log('connection loss ok: stops without reconnect on drop, kick and login failure');
+console.log('connection loss ok: retries network loss, stops on kick, login rejection and manual stop');

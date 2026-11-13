@@ -30,7 +30,10 @@ const { GameClient } = await import('../src/client.mjs');
 const { createConsole } = await import('../src/server.mjs');
 let logins = 0;
 let finishedLogins = 0;
-GameClient.prototype.connect = async () => { logins++; return { playerInfo: {} }; };
+const live = new Set();
+Object.defineProperty(GameClient.prototype, 'connected', { get() { return live.has(this); } });
+GameClient.prototype.connect = async function () { logins++; this.stopping = false; live.add(this); return { playerInfo: {} }; };
+GameClient.prototype.stop = function () { this.stopping = true; live.delete(this); };
 GameClient.prototype.send = function (name) {
   assert.equal(name, 'LoginFinishRequest');
   finishedLogins++;

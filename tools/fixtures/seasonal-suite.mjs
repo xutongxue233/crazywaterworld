@@ -91,6 +91,7 @@ export function seasonalFixture() {
       gotReportRwdId: 0,
       guildReportNum: 6
     },
+    nextTradePid: 100,
     markets: { 10: city(40), 20: city(65) },
     radar: {
       radar: [
@@ -180,8 +181,10 @@ export function seasonalFixture() {
       const t = state.trade,
         quote = state.markets[b.cityId].goods.find((r) => r.goodsId === b.goodsId);
       t.player.coins -= b.buyNum * quote.price;
+      quote.stock += b.buyNum;
+      state.nextTradePid = Math.max(state.nextTradePid, ...t.player.goods.map(g => g.pid + 1));
       t.player.goods.push({
-        pid: 100,
+        pid: state.nextTradePid++,
         goodsId: b.goodsId,
         cityId: b.cityId,
         buyPrice: quote.price,
@@ -192,17 +195,21 @@ export function seasonalFixture() {
     TradeMove: (b) => {
       const c = state.trade.cargo;
       c.moveToCityId = b.mvToCityId;
-      c.moveEndTime = now + 7200;
+      c.moveStartTime = Math.floor((Date.now() + client.serverClockOffsetMs) / 1000);
+      c.moveEndTime = c.moveStartTime + 7200;
       return { cargo: c };
     },
     TradeSell: (b) => {
       const t = state.trade.player,
         item = t.goods.find((g) => g.pid === b.pid),
         price = state.markets[b.cityId].goods.find((g) => g.goodsId === item.goodsId).price;
-      const gain = Math.ceil((price - item.buyPrice) * b.sellNum * 1.03);
+      const difference = (price - item.buyPrice) * b.sellNum;
+      const margin = config.tables.TradeShipCfg.data.find(row => row.lv === state.trade.cargo.cargoLv).profitMargin;
+      const gain = difference > 0 ? Math.ceil(difference * (1 + margin / 10000)) : difference;
       t.coins += gain + item.buyPrice * b.sellNum;
-      t.profit += gain;
-      t.goods = t.goods.filter((g) => g.pid !== item.pid);
+      t.profit += Math.max(0, gain);
+      item.num -= b.sellNum;
+      t.goods = t.goods.filter((g) => g.num > 0);
       return { player: t };
     },
     GotTradeAchievement: () => {

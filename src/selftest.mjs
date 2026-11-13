@@ -356,13 +356,14 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   const { GameClient, toNumber, nextSeqNo, isSeqNoInRange, MAX_SEQ } = await import('./client.mjs');
   const client = new GameClient({ protocol });
   const sent = 1791350000123;
+  client.sendNoSeq = () => true;
   const high = Math.floor(sent / 4294967296);
   const low = sent - high * 4294967296;
 
   assert.equal(toNumber({ low, high, unsigned: false }), sent, 'toNumber: long form');
   assert.equal(toNumber(sent), sent, 'toNumber: plain number');
 
-  client.lastPingTimestamp = sent;
+  client.sendPing(sent);
   assert.equal(
     client.tryHandlePong({ clientTimestamp: { low, high, unsigned: false }, serverTimestamp: { low, high, unsigned: false } }),
     true,
@@ -371,7 +372,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(client.lastPingTimestamp, 0, 'pong clears the outstanding ping');
   assert.ok(Number.isFinite(client.latencyMs) && client.latencyMs >= 0, 'pong yields a latency sample');
 
-  client.lastPingTimestamp = sent;
+  client.sendPing(sent);
   assert.equal(client.tryHandlePong({ clientTimestamp: sent + 1 }), false, 'mismatched echo is ignored');
   assert.equal(client.lastPingTimestamp, sent, 'mismatched echo leaves the ping outstanding');
   client.lastPingTimestamp = 0;
