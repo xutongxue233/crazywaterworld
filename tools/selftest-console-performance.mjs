@@ -280,12 +280,12 @@ await test('样式按 shadcn/ui 分层：组件默认值低于页面布局，工
   assert.ok(!/--(ink|teal|line|surface)\b/.test(console_), '不再使用旧配色变量');
 });
 
-await test('首屏不依赖图集，导航七项带手机短名，脚本可解析', () => {
+await test('首屏不依赖图集，导航八项带手机短名，脚本可解析', () => {
   for (const script of PAGE.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) new vm.Script(script[1]);
   const body = PAGE.slice(PAGE.indexOf('<body>'), PAGE.indexOf('<script>'));
   assert.ok(!body.includes('/api/art/atlas/'), '静态标记不能引用整张图集');
-  assert.equal((body.match(/class="nav-tab"/g) ?? []).length, 7);
-  assert.equal((body.match(/class="nav-short"/g) ?? []).length, 7);
+  assert.equal((body.match(/class="nav-tab"/g) ?? []).length, 8);
+  assert.equal((body.match(/class="nav-short"/g) ?? []).length, 8);
   assert.ok(PAGE.includes('viewport-fit=cover'));
   assert.ok(PAGE.includes('table-stack'));
   assert.ok(PAGE.includes('id="world-map-pan"'));

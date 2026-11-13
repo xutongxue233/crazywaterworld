@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { automationControls } from './automation-controls.mjs';
 import { operationLabels } from './operation-labels.mjs';
-import { chrome, journal, dialogs, templates, giftCodesPage, overviewPage, manualPage, inventoryPage, heroesPage, dailiesPage, guildPage, activitiesPage, accountPage, idlePanel, stagePanel, settingsPage } from './ui/dist/console.mjs';
+import { chrome, journal, dialogs, templates, giftCodesPage, overviewPage, manualPage, inventoryPage, heroesPage, dailiesPage, guildPage, activitiesPage, accountPage, loginSettingsPage, idlePanel, stagePanel, settingsPage } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
@@ -75,6 +75,9 @@ ${chrome()}
   </section>
   <section id="tab-account" class="hidden">
     ${accountPage()}
+  </section>
+  <section id="tab-login-settings" class="hidden">
+    ${loginSettingsPage()}
   </section>
 </main></div>
 ${journal()}
@@ -482,7 +485,7 @@ async function loadAccounts(reload) {
   renderAccountSelect();
   if (previous !== current || reload) refreshProgression();
   if (previous !== current) refreshManualWorld();
-  if (previous !== current) {configAccountChanged();giftAccountChanged();}
+  if (previous !== current) {configAccountChanged();giftAccountChanged();loginSettingsAccountChanged();}
   if (reload) {
     subscribe();
     refreshOverview();
@@ -494,6 +497,7 @@ $('account').onchange = async () => {
   current = $('account').value;
   giftAccountChanged();
   configAccountChanged();
+  loginSettingsAccountChanged();
   snapshot = accounts.find(a => a.id === current)?.status ?? {};
   renderAccountSelect();
   refreshProgression();
@@ -1778,6 +1782,101 @@ ${rankingScript}
 ${activityStatisticsScript}
 ${inventoryScript}
 ${settingsScript}
+// ---- 登录设置 --------------------------------------------------------------
+let loginSettingsOwner = null;
+let loginSettingsData = null;
+let loginSettingsBusy = false;
+function loginSettingState(text, kind = '') {
+  const node = $('login-settings-state');
+  if (!node) return;
+  node.textContent = text;
+  node.dataset.kind = kind;
+}
+function loginSetSwitch(id, value) {
+  const node = $(id);
+  if (!node) return;
+  const state = value ? 'checked' : 'unchecked';
+  node.setAttribute('aria-checked', String(Boolean(value)));
+  node.setAttribute('data-state', state);
+  node.querySelector('[data-slot=switch-thumb]')?.setAttribute('data-state', state);
+  node.dataset.checked = value ? 'true' : 'false';
+}
+function loginGetSwitch(id) { return $(id)?.getAttribute('aria-checked') === 'true'; }
+function loginRender(data) {
+  const settings = data?.settings;
+  if (!settings) return;
+  loginSettingsOwner = current;
+  loginSettingsData = data;
+  loginSetSwitch('login-reconnect-enabled', settings.reconnectEnabled);
+  $('login-reconnect-delay').value = settings.baseDelaySeconds;
+  $('login-reconnect-jitter').value = settings.jitterSeconds;
+  $('login-reconnect-max-retries').value = settings.maxRetries;
+  loginSetSwitch('login-deep-enabled', settings.deep.enabled);
+  $('login-deep-start').value = settings.deep.start;
+  $('login-deep-end').value = settings.deep.end;
+  $('login-deep-delay').value = settings.deep.delaySeconds;
+  $('login-reconnect-log').textContent = settings.reconnectEnabled
+    ? '达到 ' + settings.maxRetries + ' 次失败后自动停止重试，并记录错误日志。'
+    : '自动重连当前关闭；开启后达到最大重试次数会自动停止并记录日志。';
+  $('login-settings-save').disabled = false;
+  $('login-settings-reset').disabled = false;
+  loginSettingState(data.savedAt ? '设置已保存' : '使用默认设置', 'success');
+}
+async function loginSettingsLoad(force = false) {
+  if (!current || loginSettingsBusy || (!force && loginSettingsOwner === current && loginSettingsData)) return;
+  const account = current;
+  loginSettingsBusy = true;
+  loginSettingState('正在载入…');
+  try {
+    const data = await call('/api/login-settings');
+    if (account === current) loginRender(data);
+  } catch (error) {
+    if (account === current) loginSettingState(error.message, 'error');
+  } finally { loginSettingsBusy = false; }
+}
+function loginSettingsAccountChanged() {
+  loginSettingsOwner = null;
+  loginSettingsData = null;
+  $('login-settings-save').disabled = true;
+  $('login-settings-reset').disabled = true;
+  loginSettingState(current ? '尚未载入' : '请先选择账号');
+  if (current && !$('tab-login-settings').classList.contains('hidden')) void loginSettingsLoad(true);
+}
+function loginSettingsRead() {
+  return {
+    reconnectEnabled: loginGetSwitch('login-reconnect-enabled'),
+    baseDelaySeconds: Number($('login-reconnect-delay').value),
+    jitterSeconds: Number($('login-reconnect-jitter').value),
+    maxRetries: Number($('login-reconnect-max-retries').value),
+    deep: {
+      enabled: loginGetSwitch('login-deep-enabled'),
+      start: $('login-deep-start').value,
+      end: $('login-deep-end').value,
+      delaySeconds: Number($('login-deep-delay').value),
+    },
+  };
+}
+for (const id of ['login-reconnect-enabled', 'login-deep-enabled']) {
+  $(id).onclick = () => loginSetSwitch(id, !loginGetSwitch(id));
+}
+$('login-settings-reset').onclick = () => { if (loginSettingsData) loginRender(loginSettingsData); };
+$('login-settings-form').onsubmit = async event => {
+  event.preventDefault();
+  if (!current || !loginSettingsData || loginSettingsBusy) return;
+  const account = current;
+  loginSettingsBusy = true;
+  $('login-settings-save').disabled = true;
+  loginSettingState('正在保存…');
+  try {
+    const data = await call('/api/login-settings', { method: 'POST', body: JSON.stringify({ settings: loginSettingsRead(), revision: loginSettingsData.revision }) });
+    if (account === current) loginRender(data);
+  } catch (error) {
+    if (account === current) loginSettingState(error.message, 'error');
+  } finally {
+    loginSettingsBusy = false;
+    $('login-settings-save').disabled = false;
+  }
+};
 for(const button of document.querySelectorAll('[data-panel-toggle]'))button.onclick=()=>{const panel=$(button.dataset.panelToggle),open=panel.hidden;panel.hidden=!open;button.setAttribute('aria-expanded',String(open));button.textContent=open?'收起':'展开';};
 ${giftCodeScript}
 let selectedResource = 'dailies';
@@ -1809,6 +1908,7 @@ function activateConsolePage(button, resource = selectedResource) {
     if (button.dataset.tab === 'manual') refreshManualWorld();
     if (button.dataset.tab === 'idle') refreshLoop();
     if (button.dataset.tab === 'settings') { void configLoad(); void refreshLoop(); }
+    if (button.dataset.tab === 'login-settings') void loginSettingsLoad();
     if(target==='giftcodes')void refreshGiftCodes();
     if (target === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();

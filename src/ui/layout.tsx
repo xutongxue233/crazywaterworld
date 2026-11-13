@@ -1,6 +1,6 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { Boxes, Building2, CircleUserRound, LayoutDashboard, ScrollText, Settings2, Ship, Swords, Timer, X } from "lucide-react"
+import { Boxes, Building2, CircleUserRound, LayoutDashboard, LogIn, ScrollText, Settings2, Ship, Swords, Timer, X } from "lucide-react"
 import { Button } from "./button"
 import { Badge } from "./badge"
 import { DialogFooter, DialogHeader, DialogTitle } from "./dialog"
@@ -14,7 +14,7 @@ const tabs = [
   ["overview", "总览", "总览", LayoutDashboard], ["idle", "挂机", "挂机", Timer],
   ["settings", "游戏配置", "配置", Settings2], ["manual", "建筑一览", "建筑", Building2],
   ["stages", "挑战", "挑战", Swords], ["resources", "资源与玩法", "资源", Boxes],
-  ["account", "账号", "账号", CircleUserRound],
+  ["account", "账号", "账号", CircleUserRound], ["login-settings", "登录设置", "登录", LogIn],
 ] as const
 
 export function chrome() {

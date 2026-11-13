@@ -114,8 +114,9 @@ const pageAsset = {
   etag: '"' + createHash('sha1').update(pageRaw).digest('hex').slice(0, 16) + '"',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
-  recoveryDelayMs = attempt => Math.min(60000, 3000 * 2 ** Math.min(attempt - 1, 5)) } = {}) {
+export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs } = {}) {
+  // 保留测试/嵌入调用方注入延迟的能力；正常运行时由当前账号的登录设置决定。
+  const injectedRecoveryDelay = typeof recoveryDelayMs === 'function' ? recoveryDelayMs : null;
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
@@ -448,10 +449,95 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
     });
   }
 
+  function reconnectPolicy(session) {
+    try {
+      const configured = settingsView(session).settings.login;
+      return { autoReconnect: configured?.autoReconnect === true, intervalSeconds: Number(configured?.intervalSeconds) || 900,
+        jitterSeconds: Number(configured?.jitterSeconds) || 0, quietHours: configured?.quietHours === true,
+        quietStart: configured?.quietStart ?? '02:00', quietEnd: configured?.quietEnd ?? '07:00',
+        quietIntervalSeconds: Number(configured?.quietIntervalSeconds) || 60, maxRetries: Number(configured?.maxRetries) || 10 };
+    } catch {
+      return { autoReconnect: false, intervalSeconds: 900, jitterSeconds: 0, quietHours: false, quietStart: '02:00', quietEnd: '07:00', quietIntervalSeconds: 60, maxRetries: 10 };
+    }
+  }
+
+  // 登录设置页使用秒与嵌套的深夜窗口，内部挂机配置同样保持秒级字段。
+  function loginSettingsView(session) {
+    const current = settingsView(session);
+    const login = current.settings.login;
+    return {
+      settings: {
+        reconnectEnabled: login.autoReconnect === true,
+        baseDelaySeconds: Number(login.intervalSeconds) || 900,
+        jitterSeconds: Number(login.jitterSeconds) || 0,
+        maxRetries: Number(login.maxRetries) || 5,
+        deep: {
+          enabled: login.quietHours === true,
+          start: login.quietStart || '02:00',
+          end: login.quietEnd || '07:00',
+          delaySeconds: Number(login.quietIntervalSeconds) || 60,
+        },
+      },
+      revision: current.revision,
+      savedAt: current.savedAt,
+    };
+  }
+
+  function loginSettingsInput(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new SettingsError({ settings: '登录设置必须是对象' });
+    const deep = value.deep;
+    if (!deep || typeof deep !== 'object' || Array.isArray(deep)) throw new SettingsError({ 'deep': '深夜空窗期设置必须是对象' });
+    const integer = (name, raw, min, max) => {
+      const number = Number(raw);
+      if (!Number.isSafeInteger(number) || number < min || number > max) throw new SettingsError({ [name]: `请输入 ${min}–${max} 之间的整数` });
+      return number;
+    };
+    const time = (name, raw) => {
+      if (typeof raw !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(raw)) throw new SettingsError({ [name]: '请输入有效时间（HH:mm）' });
+      return raw;
+    };
+    if (typeof value.reconnectEnabled !== 'boolean') throw new SettingsError({ reconnectEnabled: '自动重连必须是开关值' });
+    if (typeof deep.enabled !== 'boolean') throw new SettingsError({ 'deep.enabled': '深夜空窗期必须是开关值' });
+    return {
+      autoReconnect: value.reconnectEnabled,
+      intervalSeconds: integer('baseDelaySeconds', value.baseDelaySeconds ?? (value.baseDelayMinutes == null ? undefined : Number(value.baseDelayMinutes) * 60), 1, 86400),
+      jitterSeconds: integer('jitterSeconds', value.jitterSeconds ?? (value.jitterMinutes == null ? undefined : Number(value.jitterMinutes) * 60), 0, 86400),
+      quietHours: deep.enabled,
+      quietStart: time('deep.start', deep.start),
+      quietEnd: time('deep.end', deep.end),
+      quietIntervalSeconds: integer('deep.delaySeconds', deep.delaySeconds ?? (deep.delayMinutes == null ? undefined : Number(deep.delayMinutes) * 60), 1, 86400),
+      maxRetries: integer('maxRetries', value.maxRetries, 1, 1000),
+    };
+  }
+
+  function inReconnectQuietHours(policy, now = Date.now()) {
+    if (!policy.quietHours) return false;
+    const parse = value => { const [hour, minute] = String(value).split(':').map(Number); return hour * 60 + minute; };
+    const start = parse(policy.quietStart), end = parse(policy.quietEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    const minutes = Math.floor(((now + 8 * 3600_000) % 86_400_000) / 60_000);
+    return start === end ? true : start < end ? minutes >= start && minutes < end : minutes >= start || minutes < end;
+  }
+
+  function reconnectDelayMs(session, attempt, kicked = false) {
+    if (!kicked) {
+      if (injectedRecoveryDelay) return Math.max(1, Number(injectedRecoveryDelay(attempt)) || 1);
+      return Math.min(60000, 3000 * 2 ** Math.min(attempt - 1, 5));
+    }
+    if (injectedRecoveryDelay) return Math.max(1, Number(injectedRecoveryDelay(attempt)) || 1);
+    const policy = reconnectPolicy(session);
+    const base = inReconnectQuietHours(policy) ? policy.quietIntervalSeconds : policy.intervalSeconds;
+    const jitter = Math.max(0, Math.min(policy.jitterSeconds, 86400));
+    const offset = jitter ? Math.floor(Math.random() * (jitter * 2 + 1)) - jitter : 0;
+    // 页面单位是秒；抖动即使把结果推到基准值以下，也至少保留一秒。
+    return Math.max(1000, (base + offset) * 1000);
+  }
+
   function connectionLost(session, instance) {
     if (instance.lostHandled || instance.stopping || session.client !== instance) return;
     instance.lostHandled = true;
     const kicked = instance.fatalReason === 'SCChannelExpired';
+    const policy = reconnectPolicy(session);
     const reason = kicked ? '账号在别处登录，连接被顶掉' : instance.closeReason === 'heartbeat-timeout' ? '服务器心跳连续超时' : '连接已断开';
     session.stages.stop(reason);
     session.pirateAdvance.stop(reason);
@@ -460,7 +546,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
     const loop = session.loop;
     if (!loop.running || loop.controller?.signal.aborted) return;
     session.generation++;
-    const recoverable = !kicked && instance.closeReason !== 'protocol' && instance.closeReason !== 'login-rejected';
+    const recoverable = (kicked ? policy.autoReconnect : instance.closeReason !== 'protocol' && instance.closeReason !== 'login-rejected');
     loop.connectionFailure = { reason, recoverable };
     if (recoverable) loop.attemptController?.abort();
     else stopLoop(session, reason + '，已停止挂机');
@@ -822,6 +908,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
       if (route === 'GET /api/settings') {
         const { session } = scoped_(parsed);
         json(settingsView(session));
+        return;
+      }
+      if (route === 'GET /api/login-settings') {
+        const { session } = scoped_(parsed);
+        json(loginSettingsView(session));
+        return;
+      }
+      if (route === 'POST /api/login-settings') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const current = settingsView(session);
+        if (!Number.isSafeInteger(payload.revision) || payload.revision !== current.revision) {
+          throw new SettingsError({ revision: '登录设置已在其他页面更新，请重新载入后再保存' });
+        }
+        const login = loginSettingsInput(payload.settings);
+        const next = structuredClone(current.settings);
+        next.login = login;
+        // 登录策略不依赖本地游戏配置表；避免配置表暂时不可用时无法保存连接设置。
+        const entry = saveAutomationSettings(session.id, next, { revision: current.revision });
+        adoptPreferences(session, entry);
+        emit(session, 'info', '登录设置已保存，后续连接恢复将使用新策略');
+        json(loginSettingsView(session));
         return;
       }
       if (route === 'GET /api/settings/players') {
@@ -2125,7 +2233,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
       history: [], error: null, recovery: null, connectionFailure: null, controller: new AbortController() });
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，${rounds === 0 ? '持续运行' : '共 ' + rounds + ' 轮'}，每 ${everySeconds} 秒检查一次；关闭网页后继续运行，请保留启动窗口`);
-    let credentialFailed = false, recoveryAttempts = 0;
+    let credentialFailed = false, recoveryAttempts = 0, kickedRecovery = false;
     loop.job = (async () => {
       try {
         while (!signal.aborted && (rounds === 0 || loop.completed < rounds)) {
@@ -2175,6 +2283,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
           onRound(summary) {
             summary = { ...summary, round: completedBefore + summary.round };
             recoveryAttempts = 0;
+            kickedRecovery = false;
             if (summary.world.factories?.length) {
               try {
                 fs.writeFileSync(factoryReportFile(session.id), JSON.stringify({ time: new Date().toLocaleString('zh-CN'), lines: summary.world.factories }));
@@ -2206,16 +2315,34 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
           if (signal.aborted) break;
           const failedClient = attemptClient ?? session.client;
           const failure = loop.connectionFailure;
-          const recoverable = !error.loginResponse && error.recoverable !== false && failedClient?.fatalReason !== 'SCChannelExpired'
-            && !['protocol', 'kicked', 'login-rejected'].includes(failedClient?.closeReason)
+          const reconnectPolicyForAttempt = reconnectPolicy(session);
+          const kicked = failedClient?.fatalReason === 'SCChannelExpired' || failure?.reason === '账号在别处登录，连接被顶掉';
+          kickedRecovery ||= kicked;
+          // 顶号通常同时带 fatalReason=SCChannelExpired 与 closeReason=kicked；
+          // closeReason 不能再次把已开启自动重连的顶号排除掉。
+          const recoverable = !error.loginResponse && error.recoverable !== false && (!kicked || reconnectPolicyForAttempt.autoReconnect)
+            && (!kicked ? !['protocol', 'kicked', 'login-rejected'].includes(failedClient?.closeReason)
+              : !['protocol', 'login-rejected'].includes(failedClient?.closeReason))
             && (failure ? failure.recoverable : !failedClient?.connected &&
               (error.recoverable === true || ['network', 'heartbeat-timeout', 'sequence-gap'].includes(failedClient?.closeReason)
                 || /login timeout|socket error during login|socket closed during login|^not connected$/i.test(error.message)));
           if (!recoverable) throw error;
           failedClient?.stop();
-          const delay = Math.max(1, Number(recoveryDelayMs(++recoveryAttempts)) || 3000);
+          const attempt = ++recoveryAttempts;
+          const maxRetries = reconnectPolicyForAttempt.maxRetries;
+          if (kickedRecovery && attempt > maxRetries) {
+            const message = `自动重连已达到最大重试次数（${maxRetries} 次），已停止重试`;
+            loop.recovery = null;
+            loop.error = message;
+            emit(session, 'error', message, { reconnect: { attempt, maxRetries, reason: failure?.reason ?? error.message } });
+            throw new Error(message);
+          }
+          const delay = reconnectDelayMs(session, attempt, kickedRecovery);
           loop.recovery = { attempt: recoveryAttempts, nextAttemptAt: Date.now() + delay, reason: failure?.reason ?? error.message };
-          emit(session, 'warn', `${loop.recovery.reason}；${Math.ceil(delay / 1000)} 秒后自动重连（第 ${recoveryAttempts} 次），保留挂机进度`);
+          const timing = inReconnectQuietHours(reconnectPolicyForAttempt) ? '深夜窗口' : '常规窗口';
+          const retryText = kickedRecovery ? `第 ${recoveryAttempts}/${maxRetries} 次，${timing}` : `第 ${recoveryAttempts} 次`;
+          emit(session, 'warn', `${loop.recovery.reason}；${Math.ceil(delay / 1000)} 秒后自动重连（${retryText}），保留挂机进度`,
+            { reconnect: { attempt, maxRetries: kickedRecovery ? maxRetries : null, delayMs: delay, quietHours: kickedRecovery && timing === '深夜窗口' } });
           await recoveryWait(delay, undefined, { signal });
         } finally {
           signal.removeEventListener('abort', cancelAttempt);

@@ -106,3 +106,33 @@
 @media (pointer:coarse) {
   .config-row { min-height:52px }
 }
+
+/* Login recovery settings: layout only; controls use the shared shadcn/ui styles. */
+.login-settings-page { max-width: 980px; margin: 0 auto; padding: 8px 0 36px; }
+.login-settings-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; padding: 8px 0 24px; border-bottom:1px solid var(--border); margin-bottom:20px; }
+.login-settings-heading-copy { display:flex; align-items:center; gap:14px; min-width:0; }
+.login-settings-state { flex:none; }
+.login-settings-card { margin-bottom:16px; }
+.login-settings-card .dim { line-height:1.5; }
+.login-settings-toggle-row { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:4px 0; }
+.login-settings-toggle-row > div { display:grid; gap:4px; min-width:0; }
+.login-settings-toggle-row strong { font-size:15px; }
+.login-settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 22px; margin-top:18px; }
+.login-settings-grid label { display:grid; gap:8px; color:var(--muted-foreground); font-weight:400; }
+.login-settings-grid label > span:first-child { font-size:13px; }
+.login-settings-field { display:flex; align-items:center; gap:8px; color:var(--muted-foreground); }
+.login-settings-field input { flex:1; min-width:0; width:100%; }
+.login-settings-note { margin-top:12px; font-size:12px; }
+.login-settings-time-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.login-settings-time-grid input { width:100%; }
+.login-settings-retry-grid { grid-template-columns:minmax(0,330px); }
+.login-settings-log { margin-top:12px; font-size:12px; }
+.login-settings-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
+@media (max-width:700px) {
+  .login-settings-page { padding-inline:0; }
+  .login-settings-heading { align-items:flex-start; flex-direction:column; }
+  .login-settings-state { align-self:flex-start; }
+  .login-settings-grid,.login-settings-time-grid { grid-template-columns:1fr; }
+  .login-settings-actions { justify-content:stretch; }
+  .login-settings-actions button { flex:1; }
+}

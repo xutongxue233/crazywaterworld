@@ -360,8 +360,8 @@ label:is([for=source-query],[for=gift-code-input]) { display:block; margin-botto
   #connect,#disconnect { grid-column:2; grid-row:2 }
   #account-pause { grid-column:3; grid-row:2 }
   #hint { grid-column:1 / -1; grid-row:3; white-space:normal }
-  /* 导航固定到底部，七个入口一屏放下。 */
-  #tabs { position:fixed; inset:auto 0 0; z-index:40; display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:0; width:100%; margin:0; padding:4px calc(4px + env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-left)); overflow:visible; background:var(--background); border-top:1px solid var(--border) }
+  /* 导航固定到底部，八个入口一屏放下。 */
+  #tabs { position:fixed; inset:auto 0 0; z-index:40; display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:0; width:100%; margin:0; padding:4px calc(4px + env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) calc(4px + env(safe-area-inset-left)); overflow:visible; background:var(--background); border-top:1px solid var(--border) }
   .nav-tab { flex-direction:column; justify-content:center; gap:2px; height:48px; padding:0; font-size:11px; min-width:0 }
   .nav-tab svg { width:20px; height:20px }
   .nav-full { display:none }

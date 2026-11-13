@@ -18,6 +18,9 @@ export const DEMAND_SOURCES = [
 ];
 
 export const DEFAULT_SETTINGS = {
+  // 连接被顶号后，挂机可按当前账号的策略自动恢复连接。
+  // 时间使用北京时间（HH:mm）；深夜窗口支持跨午夜配置。
+  login: { autoReconnect: false, intervalSeconds: 900, jitterSeconds: 0, quietHours: true, quietStart: '02:00', quietEnd: '07:00', quietIntervalSeconds: 60, maxRetries: 5 },
   schedule: taskSettings(),
   eventActions: { compassThreshold: 10, compassDrawCount: 10 },
   merchant: { quoteMaxAgeSeconds: 300, estimateDiscountPercent: 10, refreshWaitSeconds: 120, liquidationMinutes: 120,
@@ -63,6 +66,9 @@ export const DEFAULT_SETTINGS = {
 const int = (max = 1_000_000_000, min = 0) => ({ kind: 'number', min, max });
 const strings = (max = 300) => ({ kind: 'list', max });
 const constraints = {
+  'login.intervalSeconds': int(86400, 1), 'login.jitterSeconds': int(86400),
+  'login.quietIntervalSeconds': int(86400, 1), 'login.maxRetries': int(10000, 1),
+  'login.quietStart': { kind: 'time' }, 'login.quietEnd': { kind: 'time' },
   'eventActions.compassThreshold':int(999999,1), 'eventActions.compassDrawCount':int(50,1),
   'merchant.quoteMaxAgeSeconds': int(86400, 1), 'merchant.estimateDiscountPercent': int(100),
   'merchant.refreshWaitSeconds': int(3600), 'merchant.liquidationMinutes': int(1440), 'merchant.maxLossPercent': int(100),
@@ -196,6 +202,9 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
         else output[group][key] = value;
       } else if (rule?.kind === 'choice') {
         if (!rule.values.includes(value)) errors[name] = '请选择有效选项';
+        else output[group][key] = value;
+      } else if (rule?.kind === 'time') {
+        if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) errors[name] = '请输入有效时间（HH:mm）';
         else output[group][key] = value;
       } else if (rule?.kind === 'list') {
         if (!Array.isArray(value) || value.length > rule.max || value.some(v => typeof v !== 'string' || !v.trim() || v.length > 120) || new Set(value).size !== value.length) errors[name] = '选项必须为不重复的有效列表';
@@ -339,7 +348,8 @@ export function importAutomationSettings(document, options) {
   if (!plain(document) || ![SETTINGS_FORMAT, LEGACY_SETTINGS_FORMAT].includes(document.format) || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
   // 原版本1导出没有巨轮分组，只补新增默认值；既有分组仍严格校验。
   const input = plain(document.settings) ? { ...document.settings } : document.settings;
-  if (plain(input)) for (const group of ['treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','merchant','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input)) for (const group of ['login', 'treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','merchant','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+  if (plain(input?.login)) input.login = { ...DEFAULT_SETTINGS.login, ...input.login };
   if (plain(input?.merchant)) input.merchant = { ...DEFAULT_SETTINGS.merchant, ...input.merchant };
   if (plain(input?.antique)) input.antique = { ...DEFAULT_SETTINGS.antique, ...input.antique };
   if (plain(input?.treasure)) {
