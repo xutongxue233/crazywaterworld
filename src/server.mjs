@@ -70,7 +70,7 @@ import { budgetPreview, exactAutomationId, createActionGuard, nativePreferenceEn
 import { readTreasureLoot, planTreasureLoot, treasureAutomationEnabled } from './treasure-loot.mjs';
 import { readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets } from './city-war.mjs';
 import { readWorldOnlineReward, worldOnlineRewardKey } from './world-online-rewards.mjs';
-import { readEquipmentForge, planEquipmentForge, forgeEnabled } from './equipment-forge.mjs';
+import { readEquipmentForge, planEquipmentForge, releaseStaleEquipmentForge, forgeEnabled } from './equipment-forge.mjs';
 import { readAntiqueUpgrade, planAntiqueUpgrade, antiqueEnabled } from './antique-upgrade.mjs';
 import { watchBasePushes, surveyBaseAutomation, planBaseAutomation, baseDemands, previewNativeAutomation } from './base-automation.mjs';
 import { createStageTask } from './stages.mjs';
@@ -1439,6 +1439,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
       if (route === 'GET /api/equipment/crafting') {
         const { account, session } = scoped_(parsed);
         json(await progressionJob(session, account, route, null, client => readEquipmentCrafting(client, loadConfigSafe(), session.player), { read: true }));
+        return;
+      }
+      if (route === 'POST /api/equipment/forge/recover') {
+        const { account, session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (typeof payload.buildingId !== 'string' || !/^([1-9]\d*)装备厂$/.test(payload.buildingId)) throw new Error('工厂标识无法识别');
+        const key = JSON.stringify([route, payload.buildingId]);
+        json(await progressionJob(session, account, key, '解除装备锻造阻塞', async (client, enabled) => {
+          const snapshot = await readEquipmentForge(client, protocol, loadConfigSafe(), session.player, { enabled });
+          const result = releaseStaleEquipmentForge(snapshot, usageFor(session), payload.buildingId);
+          if (result.status === 'released') emit(session, 'warn', payload.buildingId + '：已按用户确认解除旧锻造记录，未退回已确认消耗');
+          return { ...result, buildingId: payload.buildingId };
+        }));
         return;
       }
       if (route === 'POST /api/equipment/crafting/start' || route === 'POST /api/equipment/crafting/collect') {

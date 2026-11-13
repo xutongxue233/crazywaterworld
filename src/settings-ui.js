@@ -1008,7 +1008,23 @@ async function configPreview() {
     if (data.forge) {
       const state = data.forge;
       root.append(el('p', 'config-help', '当前赛季 ' + (state.season ?? '未确认') + ' · 锻造等级 ' + (state.forgeLevel ?? '未确认') + ' · 金币 ' + (state.gold ?? '未确认')));
-      if (state.factories?.length) root.append(table(['工厂', '当前状态', '原生自动锻造', '工具检查'], state.factories.map(f => [f.buildingId, f.state, f.nativeAuto ? '开启' : '关闭', f.reason || '满足'])));
+      if (state.factories?.length) root.append(table(['工厂', '当前状态', '原生自动锻造', '工具检查', '操作'], state.factories.map(f => {
+        let action = '—';
+        if (f.recoverable) {
+          const button = smallButton('确认已处理并解除');
+          button.title = '仅在你已在游戏内领取、分解或穿戴上一件装备后使用；不会退回已确认消耗。';
+          button.onclick = async () => {
+            if (account !== current || !window.confirm('请确认上一件装备已在游戏内领取或处理完毕，解除后工具可能继续下一件锻造。')) return;
+            button.disabled = true;
+            try {
+              await call('/api/equipment/forge/recover', { method: 'POST', body: JSON.stringify({ buildingId: f.buildingId, confirm: true }) });
+              await configPreview();
+            } catch { button.disabled = false; }
+          };
+          action = button;
+        }
+        return [f.buildingId, f.state, f.nativeAuto ? '开启' : '关闭', f.reason || '满足', action];
+      })));
     }
     if (data.antique) {
       const state = data.antique;

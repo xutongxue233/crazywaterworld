@@ -63,13 +63,40 @@ export async function readEquipmentForge(client, protocol, config, player, { ena
 }
 
 function observedProduct(d, snapshot) {
-  if (!integer(d?.finishTime, 1) || d.finishTime > snapshot.now || typeof d.equipId !== 'string' || !d.equipId || !Array.isArray(d.beforeUids)) return null;
+  if (!integer(d?.finishTime, 1) || d.finishTime > snapshot.now || !Array.isArray(d.beforeUids)) return null;
+  if (d.equipId != null && typeof d.equipId !== 'string') return null;
   const making = snapshot.buildings.find(row => row.buildingId === d.buildingId)?.equipMaking;
   if (making?.makeId === d.makeId && making.finishTime === d.finishTime) return null;
   const before = new Set(d.beforeUids);
-  return snapshot.equipment.find(row => !before.has(row.uid) && row.equipId === d.equipId && (!integer(d.star) || row.star === d.star)) ?? null;
+  const equipId = d.equipId || null;
+  const candidates = snapshot.equipment.filter(row => !before.has(row.uid)
+    && (!equipId || row.equipId === equipId)
+    && (!integer(d.star) || row.star === d.star));
+  // With a known product type, the type/UID pair is sufficient. If the server
+  // never exposed the random product type, only a single new matching UID is
+  // safe evidence; unrelated concurrent rewards must not clear the lock.
+  return equipId ? candidates[0] ?? null : candidates.length === 1 ? candidates[0] : null;
 }
 const completedProduct = (record, snapshot) => record?.confirmed ? observedProduct(record.details, snapshot) : null;
+
+// Explicit recovery for a confirmed start whose product was handled outside
+// this tool. It is intentionally never automatic: clearing a record without
+// user confirmation could permit a genuinely unknown MakeEquipRequest to be
+// sent a second time. The caller must first show the idle, freshly-read state.
+export function releaseStaleEquipmentForge(snapshot, ledger, buildingId) {
+  if (!snapshot || snapshot.reason) throw new Error(snapshot?.reason || '锻造状态未确认，不能解除记录');
+  if (typeof buildingId !== 'string' || !/^([1-9]\d*)装备厂$/.test(buildingId)) throw new Error('工厂标识无法识别');
+  const building = snapshot.buildings.find(row => row.buildingId === buildingId);
+  if (!building) throw new Error('装备工厂尚未建成或未解锁');
+  if (building.equipMaking) throw new Error('工厂仍有锻造批次，不能解除记录');
+  const key = keyOf(snapshot.worldId, buildingId), record = ledger.keyRecords()[key];
+  if (!record) return { status: 'absent', key };
+  if (record.details?.kind !== 'forgeStart' || !record.confirmed) throw new Error('该记录尚未确认，不能手动解除');
+  if (ledger.hasKey(claimKeyOf(snapshot.worldId, buildingId))) throw new Error('领取结果仍待确认，不能解除开工记录');
+  if (completedProduct(record, snapshot)) throw new Error('已观察到新装备，请刷新后由系统自动核销');
+  ledger.releaseCompletedKey(key);
+  return { status: 'released', key, details: record.details };
+}
 
 export function planEquipmentForge(snapshot, config, settings, { usage = { counters: {} }, keys = {} } = {}) {
   const p = settings?.forge;
@@ -94,7 +121,7 @@ export function planEquipmentForge(snapshot, config, settings, { usage = { count
     const record = keys[keyOf(snapshot.worldId, id)];
     const claim = keys[claimKeyOf(snapshot.worldId, id)];
     const view = { buildingId: id, state: !building ? '未建成或未解锁' : making?.finishTime > snapshot.now ? '锻造中' : making ? '待领取' : '空闲',
-      makeId: making?.makeId ?? null, finishTime: making?.finishTime ?? null, nativeAuto: building?.auto === true, reason: '' };
+      makeId: making?.makeId ?? null, finishTime: making?.finishTime ?? null, nativeAuto: building?.auto === true, recoverable: false, reason: '' };
     plan.factories.push(view);
     let reason = snapshot.reason || (!building ? '装备工厂尚未建成或未解锁' : !/^([1-9]\d*)装备厂$/.test(id) ? '工厂标识无法识别'
       : building.auto ? '游戏原生自动锻造已开启，工具不另操作' : making?.finishTime > snapshot.now ? '等待当前锻造完成'
@@ -113,7 +140,10 @@ export function planEquipmentForge(snapshot, config, settings, { usage = { count
         costs: [], label: id + '领取已完成装备' });
       view.reason = '制作已完成，可领取'; continue;
     }
-    if (record && !completedProduct(record, snapshot)) reason = record.confirmed ? '等待确认上一件装备产出入库' : '上次下单结果待确认，暂不重复';
+    if (record && !completedProduct(record, snapshot)) {
+      reason = record.confirmed ? '等待确认上一件装备产出入库' : '上次下单结果待确认，暂不重复';
+      view.recoverable = record.confirmed && !claim;
+    }
     if (!reason && count >= p.dailyLimit) reason = '已达今日锻造次数上限';
     if (reason) { view.reason = reason; plan.notes.push(id + '：' + reason); continue; }
     if (!p.enabled || snapshot.reason) continue;
@@ -164,8 +194,12 @@ function reconcile(snapshot, ledger, onStep) {
     let data = record.details;
     if (data?.kind !== 'forgeStart' || !integer(data.makeId, 1) || !integer(data.beforeFinishTime) || !Array.isArray(data.beforeUids)) continue;
     const building = snapshot.buildings.find(row => row.buildingId === data.buildingId), making = building?.equipMaking;
-    if (making?.makeId === data.makeId && making.finishTime > data.beforeFinishTime && making.finishTime >= data.sentAt && (!record.confirmed || !data.equipId)) {
-      data = { ...data, finishTime: making.finishTime, ...(making.equipId && integer(making.star) ? { equipId: making.equipId, star: making.star } : {}) };
+    if (making?.makeId === data.makeId && making.finishTime > data.beforeFinishTime && making.finishTime >= data.sentAt
+      && (!record.confirmed || !data.equipId || !integer(data.star))) {
+      data = { ...data, finishTime: making.finishTime };
+      if (typeof making.equipId === 'string' && making.equipId) data.equipId = making.equipId;
+      if (integer(making.star)) data.star = making.star;
+      else if (!integer(data.star)) delete data.star;
       ledger.updateKeyDetails(key, data);
       if (!record.confirmed) ledger.resolveKey(key, true);
     }

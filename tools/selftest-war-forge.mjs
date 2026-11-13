@@ -6,7 +6,7 @@ import path from 'node:path';
 import { warForgeFixture, warForgeSettings } from './fixtures/war-forge.mjs';
 import { defaultSettings, validateSettings, importAutomationSettings, createUsageLedger, saveAutomationSettings, loadAutomationSettings } from '../src/automation-settings.mjs';
 import { cityPetrolCost, readCityWar, planCityWar, runCityWar } from '../src/city-war.mjs';
-import { readEquipmentForge, planEquipmentForge, runEquipmentForge } from '../src/equipment-forge.mjs';
+import { readEquipmentForge, planEquipmentForge, releaseStaleEquipmentForge, runEquipmentForge } from '../src/equipment-forge.mjs';
 import { readTreasureLoot, planTreasureLoot, runTreasureLoot } from '../src/treasure-loot.mjs';
 import { runLoop } from '../src/loop.mjs';
 
@@ -245,6 +245,62 @@ await check('开始时未揭示随机产出仍可确认任务，旧同款装备�
   assert.equal(u.snapshot().uncertain,1);
   f.deliverForge();await forgeRun(f,s,u);
   assert.deepEqual(f.client.writes.map(row=>row.name),['MakeEquipRequest','PickMadeEquipRequest','MakeEquipRequest']);
+});
+await check('开工回读缺少星级后由外部领取，仍能用新装备UID核销锻造记录', async () => {
+  const f=warForgeFixture(),s=warForgeSettings(),u=ledger();
+  const send=f.client.sendWatch;
+  f.client.sendWatch=async (name, body) => {
+    await send(name, body);
+    if (name === 'MakeEquipRequest') f.state.factory.equipMaking.star = -1;
+  };
+  await forgeRun(f,s,u);
+  const started=u.keyRecords()['forge:1001001:1'];
+  assert.equal(started.confirmed,true);
+  assert.equal(started.details.equipId,'测试武器','即使星级缺失也应保留已知产出类型');
+  assert.equal(Number.isSafeInteger(started.details.star),false);
+  f.finishForge();
+  f.state.equipment.push({uid:'9007199254743001',equipId:'测试武器',star:2,level:0});
+  f.state.factory.equipMaking=null;
+  await forgeRun(f,s,u);
+  const restarted=u.keyRecords()['forge:1001001:1'];
+  assert(restarted && restarted.id !== started.id,'外部领取后的新UID应先释放旧记录，再创建新的锻造记录');
+  assert(restarted.details.beforeUids.includes('9007199254743001'));
+  assert.equal(f.client.writes.filter(row=>row.name==='MakeEquipRequest').length,2,'核销后应能继续安排下一件');
+});
+await check('开工未返回产出字段时，唯一新装备UID仍可核销外部领取', async () => {
+  const f=warForgeFixture(),s=warForgeSettings(),u=ledger();
+  const send=f.client.sendWatch;
+  f.client.sendWatch=async (name, body) => {
+    await send(name, body);
+    if (name === 'MakeEquipRequest') {
+      f.state.factory.equipMaking.equipId = '';
+      f.state.factory.equipMaking.star = -1;
+    }
+  };
+  await forgeRun(f,s,u);
+  const started=u.keyRecords()['forge:1001001:1'];
+  assert.equal(started.confirmed,true);
+  assert.equal(started.details.equipId,undefined);
+  f.finishForge();
+  f.state.equipment.push({uid:'9007199254743002',equipId:'测试武器',star:2,level:0});
+  f.state.factory.equipMaking=null;
+  await forgeRun(f,s,u);
+  const restarted=u.keyRecords()['forge:1001001:1'];
+  assert(restarted && restarted.id !== started.id,'唯一新装备应核销旧记录后继续锻造');
+  assert(restarted.details.beforeUids.includes('9007199254743002'));
+});
+await check('空闲且产物已在工具外处理时，用户确认可解除旧锻造记录', async () => {
+  const f=warForgeFixture(),s=warForgeSettings(),u=ledger();
+  await forgeRun(f,s,u);
+  const active=await forgeRead(f);
+  assert.throws(() => releaseStaleEquipmentForge(active,u,'1装备厂'),/仍有锻造批次/);
+  f.finishForge();
+  f.state.factory.equipMaking=null;
+  const result=releaseStaleEquipmentForge(await forgeRead(f),u,'1装备厂');
+  assert.equal(result.status,'released');
+  assert.equal(u.keyRecords()['forge:1001001:1'],undefined);
+  assert.equal(u.snapshot().counters.forgeStarts,1);
+  assert.equal(u.snapshot().counters.forgeGold,2000);
 });
 await check('领取前已有完成批次也可收取，金币预算不足仍不阻断免费领取', async () => {
   const f=warForgeFixture(),s=warForgeSettings(),u=ledger();s.forge.dailyGoldLimit=1;
