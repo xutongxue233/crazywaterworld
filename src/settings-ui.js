@@ -229,7 +229,7 @@ const configGroups = [
     configField('progression.mainline','主线 / 闯关自动挑战','switch',{help:'主线推关与闯关是同一个玩法。随挂机每轮挑战当前关卡一次，胜利后下一轮继续推进。'}),
     configField('progression.trials','试炼自动推关','switch',{help:'每轮依次挑战所选副本的下一关，无需每轮手动开始。达到停止上限只暂停对应副本，其他玩法继续。'}),
     configField('progression.raidIds','自动推关副本','multi',{catalog:'trialRaids',empty:'请选择自动推关副本'}),
-    configField('progression.maxFailures','失败停止次数','number',{unit:'次',help:'主线与每个试炼分别累计同一关的连续战败，通关清零。跨挂机轮次和断线重连保留；达到上限后本次挂机不再重试，暂停后重新开始挂机可重试。不是挑战总次数，也不统计网络错误。手动连续挑战共用此设置。'}),
+    configField('progression.maxFailures','失败停止次数','number',{unit:'次',help:'主线与每个试炼分别累计同一关的连续战败，通关清零。跨挂机轮次和断线重连保留；达到上限后本次挂机不再重试，暂停后重新开始挂机可重试。不是挑战总次数，也不统计网络错误。仅用于挂机，挑战页手动参数独立。'}),
     configField('schedule.trialSweep','试炼首轮免费扫荡','switch',{help:'只使用免费档位，扫荡与自动推关分别控制，不计入失败停止次数。'}),
   ] },
   { id: 'pirate-hunt', title: '海盗讨伐', category: 'world', fields: [

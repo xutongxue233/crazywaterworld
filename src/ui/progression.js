@@ -10,6 +10,7 @@ const progressionViews = [
   { id: 'formation', tab: 'heroes', path: '/api/fleets/formation', render: renderFormations },
 ];
 const pendingProgression = new Set();
+const trialFailureOptions = new Map();
 const viewVersions = new Map();
 let trialTaskVersion = 0;
 async function refreshProgression(only) {
@@ -111,7 +112,7 @@ function renderTrialProgress(box, rows, account) {
     const item=previous||el('div','progression-row');
     const body = el('div');
     const heading=el('div','title-with-help');heading.append(el('strong','',row.name));
-    const help=['失败停止次数在“推关与试炼”统一配置，指同一关连续战败的停止上限。','首轮免费、钻石和免广告扫荡分别计数。',row.sweepRewards?'扫荡掉落：'+row.sweepRewards:'',row.next?.rewards?'下一关奖励：'+row.next.rewards:''].filter(Boolean).join('\n');
+    const help=['手动挑战的失败停止次数在本页设置，指同一关连续战败的停止上限，与挂机配置独立。','首轮免费、钻石和免广告扫荡分别计数。',row.sweepRewards?'扫荡掉落：'+row.sweepRewards:'',row.next?.rewards?'下一关奖励：'+row.next.rewards:''].filter(Boolean).join('\n');
     heading.append(makeHelpTip(row.name,help));body.append(heading);
     if (row.sweeps) {
       const state = row.sweeps, actions = el('div','bar');
@@ -141,19 +142,21 @@ function renderTrialProgress(box, rows, account) {
     }
     const content=el('div');content.append(body);
     const bar = el('div', 'bar trial-run-controls');
-    const label = el('span', '', '失败停止次数：');
-    const input = el('span', '', String(row.configuredMaxFailures ?? '未同步')); label.append(input);
-    const start = smallButton('自动挑战'), stop = smallButton('停止自动'), status = el('span', 'dim trial-task-status heading-status');
+    const label = el('label', '', '失败停止次数');
+    const input = el('input', 'config-input'); input.type = 'number'; input.min = '1'; input.step = '1'; input.value = trialFailureOptions.get(account + ':' + row.raidId) || '3';
+    input.setAttribute('aria-label', row.name + '手动挑战失败停止次数'); input.oninput = () => trialFailureOptions.set(account + ':' + row.raidId, input.value); label.append(input);
+    const start = smallButton('开始连续挑战'), stop = smallButton('停止挑战'), status = el('span', 'dim trial-task-status heading-status');
     status.setAttribute('role','status');heading.append(status);
-    start.setAttribute('aria-label', row.name+'自动挑战');stop.setAttribute('aria-label',row.name+'停止自动');
+    start.setAttribute('aria-label', row.name+'开始连续挑战');stop.setAttribute('aria-label',row.name+'停止挑战');
     start.disabled = !!row.reason || !row.next || row.task?.running; stop.disabled = !row.task?.running;
     const command=async(run)=>{
       const controls=item.trialControls;
       if(current!==account||snapshot.paused||disconnected.has(account)||controls.pending)return;
+      if(run&&(!input.reportValidity()||!Number.isSafeInteger(Number(input.value))||Number(input.value)<1))return;
       const wasRunning=!!controls.row.task?.running;let refreshProgress=false;
       ++trialTaskVersion;controls.pending=true;paintTrialTask(controls,controls.row.task??{});
       try{
-        const state=await call('/api/trials/'+(run?'start':'stop'),{method:'POST',body:JSON.stringify({confirm:true,raidId:row.raidId})});
+        const state=await call('/api/trials/'+(run?'start':'stop'),{method:'POST',body:JSON.stringify({confirm:true,raidId:row.raidId,...(run?{maxFailures:Number(input.value)}:{})})});
         if(account===current&&item.isConnected){refreshProgress=wasRunning&&!state.running;controls.row.task=state;paintTrialTask(controls,state);}
       }catch(error){if(account===current)reportError(error);}
       finally{controls.pending=false;if(account===current&&item.isConnected){paintTrialTask(controls,controls.row.task??{});await refreshTrialTasks();if(refreshProgress&&account===current)await refreshProgression('trial');}}
@@ -172,7 +175,8 @@ function paintTrialTask(controls,state){
   for(const button of [...controls.details.querySelectorAll('button:not([data-help-text])'),...controls.manual.querySelectorAll('button')]){button.trialRestDisabled??=button.disabled;button.disabled=button.trialRestDisabled||controls.pending||!!state.running;}
   controls.start.disabled=controls.pending||!!state.running||!controls.row.next||!!controls.row.reason;
   controls.stop.disabled=controls.pending||!state.running||!!state.stopping;
-  controls.input.textContent=String(state.running?state.maxFailures:controls.row.configuredMaxFailures??'未同步');
+  controls.input.disabled=controls.pending||!!state.running;
+  if(state.running&&Number.isSafeInteger(state.maxFailures))controls.input.value=String(state.maxFailures);
   controls.status.textContent=(controls.pending?'正在提交':state.running?state.stopping?'正在停止':'自动挑战中':state.reason&&state.reason!=='尚未开启'?state.reason:'未开启')+(state.running||state.wins||state.failures?' · 已过 '+(state.wins??0)+' 关 / 连败 '+(state.failures??0)+' 次':'');
 }
 

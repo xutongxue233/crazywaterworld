@@ -632,12 +632,13 @@ const HERO_STATUS = { ready: '可做', done: '已完成', blocked: '不可做' }
 let stageVersion = 0;
 let stageAccount = null;
 function stagePreferences() {
-  return {};
+  return { maxFailures: Number($('stage-failures').value) };
 }
 function renderStages(data) {
   $('stage-start').disabled = data.running || !current;
   $('stage-stop').disabled = !data.running || data.stopping;
-  $('stage-failures').textContent = String(data.running ? data.maxFailures : data.configuredMaxFailures ?? '未同步');
+  $('stage-failures').disabled = data.running;
+  if (data.running) $('stage-failures').value = data.maxFailures;
   const details = data.stage ? '第 ' + data.stage + ' 关 · 已过 ' + data.wins + ' 关 · 连续失败 ' + data.failures + ' 次' : '';
   $('stage-view').textContent = [data.stopping ? '正在停止，等待在途战报' : data.running ? '自动挑战中' : data.stage ? '已停止' : '未开启', details, data.reason==='尚未开启'?'':data.reason].filter(Boolean).join('　');
 }
@@ -648,7 +649,9 @@ async function refreshStages() {
   const account = current;
   if (stageAccount !== account) {
     stageAccount = account;
-    $('stage-failures').textContent = '未同步';
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('stages:' + account)) || {}; } catch {}
+    $('stage-failures').value = saved.maxFailures || 3;
     $('stage-start').disabled = $('stage-stop').disabled = true;
     $('stage-view').textContent = '正在读取状态';
   }
@@ -663,12 +666,17 @@ async function refreshStages() {
 async function stageCommand(start) {
   const account = current;
   const prefs = stagePreferences();
+  if (start && (!Number.isSafeInteger(prefs.maxFailures) || prefs.maxFailures < 1)) {
+    reportError(new Error('失败停止次数需要填写正整数'), '主线推关');
+    return;
+  }
   ++stageVersion;
   $('stage-start').disabled = $('stage-stop').disabled = true;
   try {
     const data = await call('/api/stages/' + (start ? 'start' : 'stop'), {
       method: 'POST', body: JSON.stringify({ confirm: true, ...prefs }),
     });
+    if (start) { try { localStorage.setItem('stages:' + account, JSON.stringify(prefs)); } catch {} }
     if (account === current) renderStages(data);
   } catch (error) {
     if (account === current) { reportError(error); }
@@ -702,18 +710,24 @@ function setTaskSwitch(input, enabled) {
   input.querySelector('[data-slot=switch-thumb]').dataset.state = input.dataset.state;
 }
 const pirateAdvanceErrors=new Map();
+const pirateFailureOptions=new Map();
 function renderPirateAdvance(data) {
   if(!data)return;
   $('pirate-advance-start').disabled=data.running || !current;
   $('pirate-advance-stop').disabled=!data.running || data.stopping;
+  $('pirate-manual-failures').disabled=!!data.running;
+  if(data.running)$('pirate-manual-failures').value=data.maxFailures;
   $('pirate-advance-state').textContent=[data.stopping?'正在停止':data.running?'推进中':'未运行',data.target,'本次已首杀 '+data.wins+' 级 · 已用汽油 '+data.spent,pirateAdvanceErrors.get(current)||data.reason].filter(Boolean).join(' · ');
 }
 async function pirateAdvanceCommand(start) {
   const account=current;
+  const maxFailures=Number($('pirate-manual-failures').value);
+  if(start&&(!$('pirate-manual-failures').reportValidity()||!Number.isSafeInteger(maxFailures)))return;
+  if(start)pirateFailureOptions.set(account,maxFailures);
   pirateAdvanceErrors.delete(account);
   if(start && configIsDirty()){reportError(new Error('请先保存海盗首杀参数，再开启推进'));return;}
   $('pirate-advance-start').disabled=$('pirate-advance-stop').disabled=true;
-  try{const data=await call('/api/pirates/advance/'+(start?'start':'stop'),{method:'POST',body:JSON.stringify({confirm:true})});if(account===current)renderPirateAdvance(data);}
+  try{const data=await call('/api/pirates/advance/'+(start?'start':'stop'),{method:'POST',body:JSON.stringify({confirm:true,...(start?{maxFailures}:{})})});if(account===current)renderPirateAdvance(data);}
   catch(error){if(account===current){pirateAdvanceErrors.set(account,error.message);$('pirate-advance-state').textContent='未启动：'+error.message;reportError(error);}}
   finally{if(account===current)refreshLoop();}
 }
@@ -825,6 +839,7 @@ async function refreshLoop() {
     loopSettingsRevision = null;
     $('pirate-advance-start').disabled=$('pirate-advance-stop').disabled=true;
     $('pirate-advance-state').textContent=account?'正在读取首杀状态':'请选择账号';
+    $('pirate-manual-failures').value=pirateFailureOptions.get(account)??1;
     $('loop-start').disabled = $('loop-stop').disabled = true;
   }
   if (!account) return;
@@ -1930,7 +1945,7 @@ async function boot() {
   if(location.hash.startsWith('#config-group-'))history.replaceState(null,'',location.pathname+location.search);
   activateConsolePage(document.querySelector('#tabs [data-tab="overview"]'));
   if (location.hash === '#journal') openJournal();
-  if (location.hash === '#pirate-first-kill') { activateConsolePage(document.querySelector('#tabs [data-tab="idle"]')); selectIdleGroup(1); }
+  if (location.hash === '#pirate-first-kill') activateConsolePage(document.querySelector('#tabs [data-tab="stages"]'));
   pollCapture();
 }
 boot();

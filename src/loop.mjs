@@ -280,6 +280,7 @@ export async function runLoop(client, protocol, {
     let pirateChecked = false;
     const challengeOptions = { player, getSettings, state: challengeRun, ledger: usageLedger,
       enabled: () => !stop.aborted && client.connected !== false, isStageBusy, isTrialBusy, isPirateBusy,
+      wait: (ms, _value, { signal } = {}) => sleep(ms, signal),
       signal: typeof stop.throwIfAborted === 'function' ? stop : undefined };
     async function checkDispatch() {
       if(stop.aborted)return;

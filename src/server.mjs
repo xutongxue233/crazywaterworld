@@ -1611,7 +1611,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           const rows = await trialProgress(client, config, player.level);
           for (const row of rows) {
             row.task = session.trials.get(row.raidId)?.view() ?? { running: false, reason: '尚未开启', wins: 0, failures: 0 };
-            row.configuredMaxFailures = settingsView(session).settings.progression.maxFailures;
           }
           const sweepSettings = settingsView(session).settings, ledger = usageFor(session);
           for (const row of rows) row.sweeps = await readTrialSweeps(client, protocol, config, player, sweepSettings, row.raidId, {
@@ -1836,7 +1835,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             enabled:()=>!session.paused && session.generation===generation && session.client===client && client.connected,
             prepareDispatch:()=>refreshFleetReservations(session,settingsView(session).settings),
             schedule:work=>enqueue(session,work)};
-        },state=>{if(state.reason!==lastReason){emit(session,'info','海盗首杀 · '+state.reason+'（已首杀'+state.wins+'级，本次汽油'+state.spent+'）');lastReason=state.reason;}}));return;
+        },state=>{if(state.reason!==lastReason){emit(session,'info','海盗首杀 · '+state.reason+'（已首杀'+state.wins+'级，本次汽油'+state.spent+'）');lastReason=state.reason;}},payload.maxFailures??1));return;
       }
       if (route === 'GET /api/guild/mutual') { json(mutualView(scoped_(parsed).session)); return; }
       if (route === 'GET /api/guild/mutual/options') {
@@ -1884,7 +1883,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const generation = session.generation;
         const progression = settingsView(session).settings.progression;
         if (session.loop.running && progression.enabled && progression.trials && progression.raidIds.includes(String(payload.raidId))) throw new Error('该试炼已随挂机推关，请先暂停挂机再手动开始');
-        json(task.start({ ...payload, maxFailures: payload.maxFailures ?? progression.maxFailures }, async () => {
+        json(task.start(payload, async () => {
           const client = await ensureConnected(session, account);
           return { client, player: session.player, config, schedule: work => enqueue(session, work),
             enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected };
@@ -2086,8 +2085,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         return;
       }
       if (route === 'GET /api/stages') {
-        const { session } = scoped_(parsed);
-        json({ ...session.stages.view(), configuredMaxFailures: settingsView(session).settings.progression.maxFailures });
+        json(scoped_(parsed).session.stages.view());
         return;
       }
       if (route === 'POST /api/stages/start') {
@@ -2097,7 +2095,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (session.paused) throw new Error('账号已暂停，请先恢复托管');
         const progression = settingsView(session).settings.progression;
         if (session.loop.running && progression.enabled && progression.mainline) throw new Error('主线已随挂机推关，请先暂停挂机再手动开始');
-        json(session.stages.start({ ...payload, maxFailures: payload.maxFailures ?? progression.maxFailures }, async () => {
+        json(session.stages.start(payload, async () => {
           const client = await ensureConnected(session, account);
           const config = loadConfigSafe();
           let nextCheck = 0;

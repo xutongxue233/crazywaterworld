@@ -7,7 +7,7 @@ export function createChallengeRun() { return { mainline: {}, trials: {}, pirate
 
 export async function runChallengeRound(client, config, { player, getSettings, state, ledger,
   enabled = () => true, isStageBusy = () => false, isTrialBusy = () => false, isPirateBusy = () => false,
-  report = () => {}, signal, prepareDispatch = async () => {}, mode = 'all' } = {}) {
+  report = () => {}, signal, wait, prepareDispatch = async () => {}, mode = 'all' } = {}) {
   const current = () => enabled() && !signal?.aborted && client.connected !== false;
   const prefs = getSettings()?.progression;
   const battle = async (key, label, progress, allowed, busy, run) => {
@@ -37,6 +37,11 @@ export async function runChallengeRound(client, config, { player, getSettings, s
       const result = await run({ beforeBattle, onBattle, enabled: live });
       if (!settled) { progress.reason = result.reason; finish({ skipped: true, reason: result.reason }); }
     } catch (error) {
+      const rejected = error.prompt && error.request === (key === 'stageAuto' ? 'ChallengeStageRequest' : 'TrialRaidChallengeRequest');
+      if (rejected) {
+        progress.reason = error.message + '；服务器明确拒绝，本次不计战败，下轮再检查';
+        return finish({ skipped: true, reason: progress.reason });
+      }
       // 超时和不匹配战报不能当作战败，也不能下一轮盲目重试。
       if (sent && !settled && !error.notSent) progress.halted = true;
       progress.reason = error.message + (progress.halted ? '；结果未确认，本次挂机停止该挑战' : '');
@@ -47,12 +52,12 @@ export async function runChallengeRound(client, config, { player, getSettings, s
     await battle('stageAuto', '主线 / 闯关', state.mainline,
       () => getSettings()?.progression?.enabled && getSettings().progression.mainline, isStageBusy,
       ({ beforeBattle, onBattle }) => runStages(client, player, config, { allowMutate: true, maxFailures: 1, maxWins: 1,
-        signal, beforeBattle, onBattle: event => { if (event.won) player.mainlineStage = event.stage + 1; onBattle(event); } }));
+        signal, wait, beforeBattle, onBattle: event => { if (event.won) player.mainlineStage = event.stage + 1; onBattle(event); } }));
     for (const id of prefs.raidIds) {
       const raidId = Number(id), name = config?.tables?.TrialRaidCfg?.data?.find(row => row.raidId === raidId)?.title ?? '试炼 ' + id;
       await battle('trialAuto:' + id, name, state.trials[id] ??= {},
         () => getSettings()?.progression?.enabled && getSettings().progression.trials && getSettings().progression.raidIds.includes(id),
-        () => isTrialBusy(raidId), options => runTrialStages(client, player, config, raidId, { ...options, signal, maxFailures: 1, maxWins: 1 }));
+        () => isTrialBusy(raidId), options => runTrialStages(client, player, config, raidId, { ...options, signal, wait, maxFailures: 1, maxWins: 1 }));
     }
   }
   if (mode !== 'progression' && current() && getSettings()?.pirateHunt?.enabled) {

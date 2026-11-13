@@ -58,14 +58,13 @@ export function selectPirateAdvance(snapshot,options,{spent=0,pendingFuel=0}={})
  if(options.fuelBudget>0&&spent+view.fuelPerFleet>options.fuelBudget)return{reason:'本次首杀汽油预算已不足'};
  return{target,fleet,cost:view.fuelPerFleet};
 }
-export async function runPirateAdvance({client,config,player,options,ledger,getSettings,enabled,schedule=fn=>fn(),signal,onState=()=>{},sleep=ms=>delay(ms,undefined,{signal}),now=Date.now,prepareDispatch=async()=>{},checkpoint={},oneCheck=false}) {
+export async function runPirateAdvance({client,config,player,options,ledger,getSettings,enabled,schedule=fn=>fn(),signal,onState=()=>{},sleep=ms=>delay(ms,undefined,{signal}),now=Date.now,prepareDispatch=async()=>{},checkpoint={},oneCheck=false,maxFailures=options.maxFailures??1}) {
  const world=String(normalize(player?.worldId));
  if(!/^[1-9]\d*$/.test(world) || !options.fleetIds.length)throw Error('请先设置参与海盗首杀的舰队');
  if(!ledger?.reserve)throw Error('未取得首杀出征确认记录');
  const prefix='pirate-first:'+world+':';
  const state=checkpoint.state??={wins:0,failures:0,spent:0,target:null,reason:'正在检查首杀目标'};
  let active=checkpoint.active??null, fuelCeiling=checkpoint.fuelCeiling??null;
- const maxFailures=options.maxFailures??1;
  if(!Number.isSafeInteger(maxFailures)||maxFailures<1||maxFailures>100)throw Error('海盗失败停止次数必须为1–100的整数');
  const live=()=>!signal?.aborted && enabled() && sameOptions(options,getSettings().pirateHunt);
  const publish=()=>onState({...state});
@@ -146,11 +145,12 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
 export function createPirateAdvanceTask() {
  let controller=null;let state={running:false,stopping:false,wins:0,spent:0,target:null,reason:'尚未开启'};
  const view=()=>({...state});
- return{view,start(options,open,report){
+ return{view,start(options,open,report,maxFailures=1){
   if(controller)throw Error('当前账号已在推进海盗首杀');
   if(!options.fleetIds.length)throw Error('请先在游戏配置中选择首杀舰队');
+  if(!Number.isSafeInteger(maxFailures)||maxFailures<1||maxFailures>100)throw Error('海盗失败停止次数必须为1–100的整数');
   controller=new AbortController();const signal=controller.signal;
-  state={running:true,stopping:false,wins:0,spent:0,target:null,reason:'正在检查首杀条件'};
-  (async()=>{try{const context=await open();await runPirateAdvance({...context,options:structuredClone(options),signal,onState:update=>{Object.assign(state,update);report?.(view());}});}catch(error){state.reason=signal.aborted?signal.reason.message:error.message;}finally{state.running=state.stopping=false;controller=null;report?.(view());}})();return view();
+  state={running:true,stopping:false,wins:0,spent:0,target:null,maxFailures,reason:'正在检查首杀条件'};
+  (async()=>{try{const context=await open();await runPirateAdvance({...context,options:structuredClone(options),maxFailures,signal,onState:update=>{Object.assign(state,update);report?.(view());}});}catch(error){state.reason=signal.aborted?signal.reason.message:error.message;}finally{state.running=state.stopping=false;controller=null;report?.(view());}})();return view();
  },stop(reason='已手动停止首杀推进'){if(controller){state.stopping=true;controller.abort(new Error(reason));}return view();}};
 }

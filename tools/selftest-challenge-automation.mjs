@@ -9,6 +9,8 @@ import { createChallengeRun, runChallengeRound } from '../src/challenge-automati
 import { runLoop } from '../src/loop.mjs';
 import { loadProtocol } from '../src/proto.mjs';
 import { pirateAdvanceFixture } from './fixtures/pirate-advance.mjs';
+import { createPirateAdvanceTask } from '../src/pirate-advance.mjs';
+import { waitForChallenge, CHALLENGE_INTERVAL_MS } from '../src/battle-pacing.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-challenge-auto-'));
 const oldData = process.env.CW_DATA_DIR;
@@ -52,7 +54,7 @@ function fixture() {
     }
     assert.fail('unexpected request ' + name);
   };
-  f.once = extra => runChallengeRound(client, config, { player, getSettings: () => settings, state, ledger: f.ledger ??= ledger(), ...extra });
+  f.once = extra => runChallengeRound(client, config, { player, getSettings: () => settings, state, wait: async () => {}, ledger: f.ledger ??= ledger(), ...extra });
   f.loop = (rounds, extra = {}) => runLoop(client, protocol, { config, player, rounds, getSettings: () => settings,
     challengeRun: state, isEnabled: () => false, allowMutate: true, everyMs: 1, sleep: async () => {}, usageLedger: f.ledger ??= ledger(),
     schedule: async work => { assert(!f.queued); f.queued = true; try { return await work(); } finally { f.queued = false; } }, ...extra });
@@ -75,6 +77,30 @@ try {
   });
   await test('关闭挑战不开网络请求，保存配置本身不启动任务', async () => {
     const f = fixture(); await f.loop(2); assert.equal(f.writes.length, 0);
+  });
+  await test('主线与不同试炼共用五秒间隔，等待期间暂停不会发送', async () => {
+    const f = fixture(), waits = [];
+    Object.assign(f.settings.progression, { mainline: true, trials: true, raidIds: ['1','2'] });
+    await f.once({ wait: async ms => { waits.push(ms); } });
+    assert.equal(f.writes.length, 3); assert.equal(waits.length, 2);
+    assert(waits.every(ms => ms > 0 && ms <= CHALLENGE_INTERVAL_MS));
+    const g = fixture(); Object.assign(g.settings.progression, { mainline: true, trials: true, raidIds: ['1'] });
+    await g.once({ wait: async () => { g.settings.progression.enabled = false; } });
+    assert.equal(g.writes.length, 1);
+    const controller = new AbortController(), dummy = {}; let time = 1000;
+    await waitForChallenge(dummy, { now: () => time, beforeSend: () => { time += 7000; } });
+    time += 1000;
+    await assert.rejects(waitForChallenge(dummy, { signal: controller.signal, now: () => time, wait: async ms => { assert.equal(ms, 4000); controller.abort(); } }), /abort/i);
+  });
+  await test('服务器明确拒绝不记战败或未知结果，只在下一轮重新检查', async () => {
+    for (const key of ['mainline', 'trials']) {
+      const f = fixture(); f.settings.progression[key] = true; f.settings.progression.raidIds = ['1'];
+      f.hook = name => { if (name.includes('Challenge') && f.writes.length === 1) throw Object.assign(new Error('server prompt: too frequent, retry later'), { prompt: { prompt: 1 }, request: name }); };
+      await f.once();
+      const state = key === 'mainline' ? f.state.mainline : f.state.trials[1];
+      assert.equal(state.failures ?? 0, 0); assert(!state.halted); assert.equal(f.writes.length, 1);
+      await f.once(); assert.equal(f.writes.length, 2); assert.equal(state.failures, 1);
+    }
   });
   await test('主线每轮执行，三次战败后后续轮次不再发送且始终在队列内', async () => {
     const f = fixture(); f.settings.progression.mainline = true; f.requireQueue = true;
@@ -163,7 +189,7 @@ try {
   });
   await test('隔离控制台按账号保存统一配置，未启动时无游戏连接', async () => {
     process.env.CW_CONFIG_PACK = path.join(root, 'config.json');
-    const tables = { ...pirateAdvanceFixture().config.tables, BuildingUnlockCfg: { data: [{ buildingType: '远征船', buildingId: '1远征船' }] } };
+    const tables = { ...pirateAdvanceFixture().config.tables, ...fixture().config.tables, BuildingUnlockCfg: { data: [{ buildingType: '远征船', buildingId: '1远征船' }] } };
     fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify(Object.entries(tables).map(([name, table], index) => [index, name, table])));
     fs.writeFileSync(path.join(process.env.CW_DATA_DIR, 'accounts.json'), JSON.stringify({ version: 1, activeId: 'a', accounts: ['a','b'].map(id => ({ id, label: '模拟账号' + id, url: 'ws://127.0.0.1:1', login: {}, automation: { paused: true } })) }));
     const { createConsole } = await import('../src/server.mjs'); const app = createConsole({ port: 0 });
@@ -173,8 +199,9 @@ try {
       a.settings.progression.maxFailures = 7;
       const saved = await fetch(url + '/api/settings?account=a', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: a.settings, revision: a.revision, baseRevision: a.baseRevision }) });
       assert.equal(saved.status, 200, await saved.text());
-      assert.equal((await (await fetch(url + '/api/stages?account=a')).json()).configuredMaxFailures, 7);
-      assert.equal((await (await fetch(url + '/api/stages?account=b')).json()).configuredMaxFailures, 3);
+      assert.equal((await (await fetch(url + '/api/settings?account=a')).json()).settings.progression.maxFailures, 7);
+      assert.equal((await (await fetch(url + '/api/settings?account=b')).json()).settings.progression.maxFailures, 3);
+      assert(!Object.hasOwn(await (await fetch(url + '/api/stages?account=a')).json(), 'configuredMaxFailures'));
       assert(!app.sessions.get('a').client); assert(!app.sessions.get('b').client);
       const session = app.sessions.get('a'), checkedAt = Math.floor(Date.now() / 1000);
       session.loop.controlStatus = new Map(['stageAuto', 'trialAuto:1', 'pirateAuto'].map(key => [key, { text: key + ' 已检查', state: 'waiting', checkedAt }]));
@@ -184,9 +211,55 @@ try {
       }
       const page = await (await fetch(url)).text();
       assert(page.includes('data-auto-task="progression.enabled"')); assert(page.includes('data-auto-task="pirateHunt.enabled"'));
-      assert(page.includes('失败停止次数')); assert(!page.includes('次数</label>'));
+      assert(page.includes('失败停止次数')); assert(!page.includes('>次数</label>'));
+      const stageHtml = page.slice(page.indexOf('id="tab-stages"'), page.indexOf('id="tab-stages"') + 18000);
+      assert.match(stageHtml, /<input[^>]*id="stage-failures"/);
+      assert(stageHtml.includes('id="pirate-advance-start"'));
+      const idleHtml = page.slice(page.indexOf('id="tab-idle"'), page.indexOf('id="tab-settings"'));
+      assert(!idleHtml.includes('id="pirate-advance-start"'));
       for (const [, script] of page.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new Function(script);
     } finally { app.server.closeAllConnections(); await app.close(); }
+  });
+  await test('手动主线和试炼使用本次参数，不继承或修改挂机失败上限', async () => {
+    const f = fixture(); f.client.stop = () => { f.client.connected = false; };
+    const { createConsole } = await import('../src/server.mjs'), app = createConsole({ port: 0 });
+    try {
+      const url = await app.listen(); await fetch(url + '/api/settings?account=a');
+      const session = app.sessions.get('a');
+      Object.assign(session, { client: f.client, player: f.player, paused: false });
+      session.loop.tasks.afk = false;
+      const post = async (route, payload) => {
+        const response = await fetch(url + route + '?account=a', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: true, ...payload }) });
+        const result = await response.json(); assert.equal(response.status, 200, result.error); return result;
+      };
+      for (const [route, payload] of [['/api/stages', {}], ['/api/trials', { raidId: 1 }]]) {
+        for (const maxFailures of [undefined, 1]) {
+          const started = await post(route + '/start', { ...payload, ...(maxFailures ? { maxFailures } : {}) });
+          assert.equal(started.maxFailures, maxFailures ?? 3);
+          await post(route + '/stop', payload);
+          const task = route.endsWith('stages') ? session.stages : session.trials.get(1);
+          for (let i = 0; task.view().running && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10));
+          assert.equal(task.view().running, false);
+        }
+      }
+      assert.equal(session.loop.running, false);
+      const settings = await (await fetch(url + '/api/settings?account=a')).json();
+      assert.equal(settings.settings.progression.maxFailures, 7);
+      assert.equal(settings.settings.progression.mainline, false);
+    } finally { app.server.closeAllConnections(); await app.close(); }
+  });
+  await test('手动海盗失败上限独立，默认一次战败停止，显式参数可覆盖', async () => {
+    for (const limit of [undefined, 2]) {
+      const f = pirateAdvanceFixture({ mode: 'lose' }), task = createPirateAdvanceTask();
+      f.settings.pirateHunt.maxFailures = 7;
+      let finish;
+      const done = new Promise(resolve => { finish = resolve; });
+      const state = task.start(f.settings.pirateHunt, async () => ({ client: f.client, config: f.config, player: f.player,
+        ledger: ledger(), getSettings: () => f.settings, enabled: () => true, sleep: async () => {} }), s => { if (!s.running) finish(s); }, limit);
+      assert.equal(state.maxFailures, limit ?? 1);
+      const result = await done; assert.equal(result.failures, limit ?? 1); assert.equal(f.client.writes.length, limit ?? 1);
+      assert.equal(f.settings.pirateHunt.maxFailures, 7);
+    }
   });
   await test('海盗预览沿用自动挂机预算与停止状态，读取不发送派遣', async () => {
     const f = pirateAdvanceFixture();

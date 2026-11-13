@@ -1,6 +1,7 @@
 import { displayMaterial } from './config.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { stageFailureLimit } from './stages.mjs';
+import { waitForChallenge } from './battle-pacing.mjs';
 
 async function readRaid(client, raidId) {
   const { raid } = await client.request('TrialRaidInfoRequest', { raidId });
@@ -69,6 +70,7 @@ export async function challengeTrial(client, config, level, raidId, expectedStag
   if (!next) return raid.title + '已全部通关';
   if (expectedStage != null && next.stageId !== expectedStage) throw new Error('试炼进度已变化，请刷新后再挑战');
   if (level < next.openLevel) throw new Error(raid.title + '第 ' + next.stageLevel + ' 关需要角色 ' + next.openLevel + ' 级');
+  await waitForChallenge(client);
   if (!enabled()) throw new Error('账号状态已变化，取消挑战试炼副本');
   await client.request('TrialRaidChallengeRequest', { raidId, stageId: next.stageId });
   const after = await readRaid(client, raidId);
@@ -111,7 +113,6 @@ export async function runTrialStages(client, player, config, raidId, { maxFailur
   for (;;) {
     signal?.throwIfAborted();
     if (!enabled() || !client.connected) throw new Error('账号状态已变化，试炼推关已停止');
-    if (lastStage != null) await wait(5000, undefined, { signal });
     const result = await schedule(async () => {
       signal?.throwIfAborted();
       if (!enabled() || !client.connected) throw new Error('账号状态已变化，试炼推关已停止');
@@ -120,9 +121,10 @@ export async function runTrialStages(client, player, config, raidId, { maxFailur
       const next = stages.find(r => r.stageId > before.passedStage);
       if (!next) return { done: true, reason: '该试炼已全部通关' };
       if (!(player?.level >= next.openLevel)) return { done: true, reason: `下一关需要角色 ${next.openLevel} 级` };
+      await waitForChallenge(client, { signal, wait });
       signal?.throwIfAborted();
       if (!enabled()) throw new Error('账号已暂停，未发送试炼挑战');
-      beforeBattle?.(next.stageId);
+      await beforeBattle?.(next.stageId);
       const reply = await client.request('TrialRaidChallengeRequest', { raidId, stageId: next.stageId }, 'TrialRaidChallengeResponse');
       if (reply?.raidId !== raidId || reply?.stageId !== next.stageId) throw new Error('试炼挑战回包不匹配，结果待核对，已停止');
       const after = await readRaid(client, raidId);

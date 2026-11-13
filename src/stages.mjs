@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { waitForChallenge } from './battle-pacing.mjs';
 
 export function stageFailureLimit(value = 3) {
   const count = Number(value);
@@ -26,11 +27,10 @@ export async function runStages(client, player, config, {
     if (!row || !Number.isInteger(row.playerLevel)) return { wins, reason: `配置表中没有第 ${stage} 关的等级要求` };
     if (player.level < row.playerLevel) return { wins, reason: `第 ${stage} 关需要角色等级 ${row.playerLevel}，本次登录等级 ${player.level}` };
     if (!allowMutate) return { wins, reason: `可从第 ${stage} 关开始，同一关连续失败 ${maxFailures} 次停止。预览结束` };
-    if (wins || failures) await wait(5000, undefined, { signal });
     signal?.throwIfAborted();
     const result = await schedule(async () => {
       signal?.throwIfAborted();
-      if (beforeBattle) await beforeBattle(signal);
+      await waitForChallenge(client, { signal, wait, beforeSend: beforeBattle ? () => beforeBattle(signal) : undefined });
       signal?.throwIfAborted();
       return client.request('ChallengeStageRequest', { stage }, 'ChallengeStageResponse');
     });

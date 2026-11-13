@@ -169,7 +169,8 @@ let checked = 0;
   assert.deepEqual(calls, []);
   assert.match((await runStages(client, player, config, execute)).reason, /等级 12/);
   assert.deepEqual(calls.splice(0), [41, 42]);
-  assert.deepEqual(delays.splice(0), [5000]);
+  assert.equal(delays.length, 1);
+  assert(delays.splice(0).every(ms => ms > 0 && ms <= 5000));
   const longRun = await runStages({ request: async (_, { stage }) => ({
     initialData: { mainlineStage: stage }, stats: { isLeftWin: stage <= 105 },
   }) }, { mainlineStage: 1, level: 1 }, { tables: { StageCfg: { data:
@@ -180,6 +181,8 @@ let checked = 0;
   loseAt = 41;
   assert.match((await runStages(client, player, config, { ...execute, maxFailures: 1 })).reason, /战败/);
   assert.deepEqual(calls.splice(0), [41]);
+  assert.equal(delays.length, 1, '同一连接新任务也遵守挑战间隔');
+  assert(delays.splice(0).every(ms => ms > 0 && ms <= 5000));
   const outcomes = [false, false, true, false, false, false];
   const retried = { request: async (name, { stage }) => {
     calls.push(stage);
@@ -191,7 +194,8 @@ let checked = 0;
   assert.equal(stopped.wins, 1);
   assert.deepEqual(calls.splice(0), [41, 41, 41, 42, 42, 42]);
   assert.deepEqual(battles.map((entry) => entry.failures), [1, 2, 0, 1, 2, 3]);
-  assert.deepEqual(delays.splice(0), Array(5).fill(5000));
+  assert.equal(delays.length, 5);
+  assert(delays.splice(0).every(ms => ms > 0 && ms <= 5000));
   for (const response of [{}, { initialData: { mainlineStage: 40 }, stats: { isLeftWin: true } }]) {
     await assert.rejects(runStages({ request: async () => response }, player, config, execute), /战报/);
   }
@@ -221,6 +225,7 @@ let checked = 0;
   assert.equal(player.mainlineStage, 42);
   assert.equal(task.view().wins, 1);
   assert(!task.view().running);
+  await new Promise(resolve => setTimeout(resolve, 5050));
   task.start({}, open);
   await flush();
   finish({ initialData: { mainlineStage: 42 }, stats: { isLeftWin: false } });
