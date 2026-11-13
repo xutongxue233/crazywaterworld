@@ -31,7 +31,8 @@ export const DEFAULT_SETTINGS = {
   building: { enabled: true, collect: true, build: true, upgrade: true, finish: true, supply: false, disabledTypes: [], speedUp: true, keepBlueprints: 0, maxBuilds: 5, maxUpgrades: 2 },
   factory: { enabled: true, gain: true, produce: true, cooperateNative: false, disabledTypes: [], keepStock: 50, demandFirst: true, demandPriority: DEMAND_SOURCES.map(([id]) => id), speedUpSources: [], speedUp: true, speedUpItems: [] },
   farm: { enabled: false, harvest: true, autoPlant: true, customPlant: false, crops: [], speedUp: false },
-  gather: { fishing: false, fishBook: false, floaters: false, antiqueFloaters: false, continueWhenFull: false, diving: false, keyOpen: false, salvage: false, upgradeFishing: false, upgradeDiving: false, upgradeSalvage: false, targetLevel: 2, fishingGoldReserve: 10000 },
+  // The new master gate preserves legacy selections; no individual task is enabled by it.
+  gather: { enabled: true, fishing: false, fishBook: false, floaters: false, antiqueFloaters: false, continueWhenFull: false, diving: false, keyOpen: false, salvage: false, upgradeFishing: false, upgradeDiving: false, upgradeSalvage: false, targetLevel: 2, fishingGoldReserve: 10000 },
   resident: { enabled: true, skipCrops: false, skipProduction: false, blockedMaterials: [], minExp: 0, minGold: 0, dailyCap: 0, rewards: true, reroll: false },
   cargo: { enabled: false, dailyLoadLimit: 0 },
   events: { enabled: false, otherOption: 1 },
@@ -174,7 +175,7 @@ export function nativeTaskValues(settings, current) {
 }
 
 export function hasExtraWork(settings) {
-  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled || settings.pet.enabled || (settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled));
+  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled || settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled));
 }
 export function settingsUiRules() {
   return { controlFields: idleControlFields, controlGroups: Object.fromEntries(automationControls.flatMap(c=>c.fields.map(path=>[path,c.idleGroup??c.group]))), mappedTasks: Object.keys(nativeFields), numbers: Object.fromEntries(Object.entries(constraints).filter(([, rule]) => rule.kind === 'number').map(([key, rule]) => [key, { min: rule.min, max: rule.max }])) };
@@ -365,7 +366,7 @@ export function importAutomationSettings(document, options) {
   if (plain(input?.events)) input.events = {otherOption:1,...input.events};
   if (plain(input?.pet)) input.pet={release:false,releaseQualities:[],...input.pet};
   if (plain(input?.forge)) input.forge={decompose:false,decomposeQualities:[],...input.forge};
-  if (plain(input?.gather)) input.gather = { fishBook:false, antiqueFloaters: false, ...input.gather };
+  if (plain(input?.gather)) input.gather = { enabled:true, fishBook:false, antiqueFloaters: false, ...input.gather };
   return validateSettings(input, options);
 }
 

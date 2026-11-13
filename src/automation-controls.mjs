@@ -1,6 +1,6 @@
 import { automationTasks } from './automation.mjs';
 
-// 这里只定义界面的唯一入口；保存时仍使用原字段，不迁移或重置既有值。
+// 模块总开关与细项分别保存，暂停模块不改动细项选择。
 const controls = [];
 const add = (key, label, group, options = {}) => controls.push({ key, label, group, fields: [key], ...options });
 add('loop.world', '基地执行总开关', '总控制');
@@ -20,7 +20,8 @@ for (const [key,label] of [
  if (['building','factory'].includes(base) && !key.endsWith('.enabled')) gates.push(base+'.enabled');
  add(key,label,'基地',{gates});
 }
-for (const [key,label] of [['fishing','自动钓鱼'],['floaters','拾取海面原料漂浮物'],['antiqueFloaters','打捞海面藏品宝箱'],['diving','潜水打捞原料'],['salvage','拾荒船自动拾荒'],['upgradeFishing','钓具强化与升级'],['upgradeDiving','潜水船坞强化与升级'],['upgradeSalvage','拾荒船强化与升级']]) add('gather.'+key,label,'采集',{gates:['loop.world']});
+add('gather.enabled','采集总开关','采集',{gates:['loop.world'],help:'在游戏配置 → 采集选择钓鱼、潜水、拾荒、漂浮物和工具养成。关闭总开关会暂停这些项目，保留已选细项。'});
+for (const [key,label] of [['fishing','自动钓鱼'],['floaters','拾取海面原料漂浮物'],['antiqueFloaters','打捞海面藏品宝箱'],['diving','潜水打捞原料'],['salvage','拾荒船自动拾荒'],['upgradeFishing','钓具强化与升级'],['upgradeDiving','潜水船坞强化与升级'],['upgradeSalvage','拾荒船强化与升级']]) add('gather.'+key,label,'采集',{gates:['loop.world','gather.enabled']});
 for (const [key,label] of [['claimTasks','领取每日任务奖励'],['claimDailyChest','领取每日活跃宝箱'],['claimWeeklyChest','领取每周活跃宝箱'],['claimGift','每日免费赠礼']]) add('dailies.'+key,label,'任务与领奖',{gates:['dailies.enabled']});
 add('worldBoss.enabled','世界Boss每日首战派遣','世界与挑战',{help:'每天仅在服务器计数为0时派出一支空闲舰队；消耗汽油，结果不明确时不重复派遣。'});
 add('radar.enabled','联盟情报自动处理','世界与挑战',{help:'逐条领取已完成奖励，并用所选空闲舰队处理新情报。不会开启游戏原生月卡自动功能；消耗遵守情报预算。'});
@@ -41,6 +42,7 @@ const idleModules = {
  'loop.world':['基地','building','基地运行'],
  'building.enabled':['基地','building','建筑'], 'factory.enabled':['基地','factory','工厂'],
  'farm.enabled':['基地','farm','农田'], 'resident.enabled':['基地','resident','居民需求'],
+ 'gather.enabled':['基地','gather','采集'],
  'cargo.enabled':['基地','cargo','贸易港口'], 'events.enabled':['基地','events','随机事件'],
  'pet.enabled':['基地','pet','海兽培育室'], 'museum.enabled':['基地','museum','博物馆探宝'],
  'forge.enabled':['基地','forge','装备锻造'], 'gold.enabled':['基地','gold','每日付费点金'],

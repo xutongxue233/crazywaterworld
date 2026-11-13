@@ -198,7 +198,7 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
         add({ kind: 'choiceEvent', setting: 'events.enabled', request: 'SelectChoiceRequest', response: 'GotRewardResponse', body: { uid: String(event.uid), optionIndex: option }, label: `${row?.title ?? '随机事件 '+event.eventId}：${row?.['option'+option] ?? '自动选择第'+option+'项'}` });
       }
     }
-    if (settings.gather.diving && settings.gather.keyOpen && diveCompleted && free('保险箱钥匙') >= 1) {
+    if (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen && diveCompleted && free('保险箱钥匙') >= 1) {
       add({ kind: 'diveKey', setting: 'gather.keyOpen', request: 'AntiqueRecruitRequest', response: 'AntiqueRecruitResponse', body: { type: 2, way: 2 },
         costs: [{ id: '保险箱钥匙', num: 1 }], label: '潜水后使用 1 把保险箱钥匙开箱' });
     }

@@ -25,8 +25,11 @@ export function automationWireId(value) {
   return { low: Number(BigInt.asIntN(32, number)), high: Number(number >> 32n), unsigned: false };
 }
 
+const gatherTasks = new Set(['autoFish', 'autoDive', 'autoSalvage', 'floaters', 'antiqueFloaters', 'fishEnhance', 'diveEnhance', 'salvageEnhance', 'diveKey']);
+
 export function worldPreferenceEnabled(settings, kind) {
   if (!settings) return true;
+  if (gatherTasks.has(kind) && (!settings.loop.world || settings.gather.enabled === false)) return false;
   if (['gainFactory', 'collectProduct', 'finishUpgrade', 'build', 'buildSupply', 'upgrade', 'weekFactory', 'finishOrder', 'denyOrder', 'startProduce', 'farm', 'speedUpUpgrade', 'speedUpProduce'].includes(kind) && !settings.loop.world) return false;
   const b = settings.building, f = settings.factory, r = settings.resident;
   switch (kind) {
@@ -53,6 +56,7 @@ export function needsCargoDemand(settings) {
 
 export function nativePreferenceEnabled(settings, key) {
   if (!settings) return true;
+  if (gatherTasks.has(key) && settings.gather.enabled === false) return false;
   const map = {
     trialPaidSweep: () => settings.trials?.paid === true,
     trialAdSweep: () => settings.trials?.ads === true,

@@ -2422,7 +2422,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const recorded=loop.controlStatus?.get(key),observed=rewards?.status(key);
         let state=(observed?.checkedAt??0)>(recorded?.checkedAt??0)?observed:recorded||observed;
         if(state?.checkedAt && beijingDay(state.checkedAt*1000)!==displayUsage.day)state=null;
-        state??={text:control.group==='总控制'?'控制项，不单独执行':control.key.endsWith('.enabled')&&['building','factory','heroes','pet'].includes(control.key.split('.')[0])?'分组控制，具体动作状态见下方子项':'本次连接尚无检查结果',state:'unseen',checkedAt:null};
+        state??={text:control.group==='总控制'?'控制项，不单独执行':control.key.endsWith('.enabled')&&['building','factory','heroes','pet','gather'].includes(control.key.split('.')[0])?'分组控制，具体动作状态见下方子项':'本次连接尚无检查结果',state:'unseen',checkedAt:null};
         if(control.key==='events.enabled'&&session.client){const events=watchBasePushes(session.client);state={text:events.choiceObserved?'已同步 '+events.choices.size+' 条事件（等待匹配可处理选项）':'未同步：本次连接尚未收到随机事件状态',state:events.choiceObserved?'waiting':'pending'};}
         return {...control,observation:state,...runtimeProgress(control,state,displayUsage,{running:loop.running,connected:!!session.client?.connected,treasureReward,freeTimes:session.client?.freeRecruitTimes,now:Date.now()+(session.client?.serverClockOffsetMs||0)}),nextCheck:loop.running&&session.client?.connected&&control.enabled&&!control.blockedBy.length?rewards?.nextCheck(key)??null:null,stale:!loop.running||!session.client?.connected};
       }),

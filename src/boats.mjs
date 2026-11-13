@@ -37,64 +37,78 @@ async function enhance(client, boat, info, cfg, next, buildingCount, enabled, op
     }
     throw error;
   }
-  const after = reply.levelInfo;
+  const after = normalize(reply.levelInfo);
   if (!(after?.level > info.level || (after?.level === info.level && after.enhance > (info.enhance ?? 0)))) {
     throw new Error('未确认强化进度增加');
   }
+  // The following gather in this round must use the confirmed new level, even
+  // if bookkeeping after the successful upgrade needs a later reconciliation.
+  Object.assign(info, after, { enhance: after.enhance ?? 0 });
   await options.afterAction?.(action, ticket, { ok: true, body: reply });
   return '已' + (promote ? '升级' : '强化') + '，等级 ' + after.level + '，强化 ' + (after.enhance ?? 0);
 }
 
-async function gather(client, config, boat, cfg, capacity, enabled, options = {}) {
+async function gather(client, config, boat, cfg, enabled, options = {}) {
   const threshold = config.tables[boat.param]?.data.find(row => row.paramName === boat.unlock)?.paramValue;
   if (!threshold || cfg.level < threshold) return { reason: boat.unlock + '需要玩法等级 ' + (threshold || '未知') };
+  // Match fishing and the game client: building effects alone omit warehouse
+  // bonuses. The server's RAW_MATERIAL_UPPER_BOUND is the per-material limit.
+  const effects = normalize(await client.request('GameEffectRequest', {}, 'GameEffectResponse'));
+  const capacity = effects.effects?.find(effect => effect.id === 16)?.value;
+  if (!Number.isSafeInteger(capacity) || capacity <= 0) return { reason: '未能确认原料仓储上限' };
   const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
   const stock = new Map((bag.items ?? []).map(row => [row.itemId, row.num]));
   const salvage = boat.collect === 'autoSalvage';
   let budget = salvage ? cfg.warehouse : cfg.reduceTime;
+  if (!Number.isSafeInteger(budget) || budget <= 0) return { reason: '未能确认当前等级的单次采集额度' };
   const targets = [];
-  for (const id of [...boat.materials].sort((a, b) => (stock.get(a) ?? 0) - (stock.get(b) ?? 0))) {
+  const ordered = [...boat.materials].sort((a, b) => (stock.get(a) ?? 0) - (stock.get(b) ?? 0));
+  for (const id of ordered) {
     const num = Math.min(budget, capacity - (stock.get(id) ?? 0));
     if (num > 0) { targets.push({ id, num }); budget -= num; }
   }
-  if (!targets.length) return { reason: '原料没有可补空间' };
+  // Fill available space first, then keep searching with the remaining quota.
+  // Overflow is settled by the server and must not disable future rounds.
+  if (budget > 0) {
+    const target = targets.find(row => row.id === ordered[0]);
+    if (target) target.num += budget;
+    else targets.push({ id: ordered[0], num: budget });
+  }
   if (!enabled(boat.collect)) return;
-  if (options.dryRun) return { action: { kind: boat.collect, label: boat.name + '采集一次（按当前库存空位安排）', costs: [] } };
-  let reward;
+  if (options.dryRun) return { action: { kind: boat.collect, label: boat.name + '搜索一次（优先补缺，满仓或溢出仍继续）', costs: [] } };
+  let reward, overflowedItems = [];
   if (salvage) {
     await client.sendWatch('BeginSalvageRequest', {});
     const pickedFloaters = enabled(boat.collect) ? targets.map(({ id, num }) => ({ floaterId: floaters[id], num })) : [];
     const reply = await client.request('EndSalvageRequest', { pickedFloaters }, 'EndSalvageResponse');
     reward = reply.rewards;
+    overflowedItems = reply.overflowedItems ?? [];
   } else {
     const asset = targets.map(row => ({ type: 0, ...row }));
     reward = (await client.request('DivingRequest', { reward: { asset } }, 'DivingResponse')).reward;
   }
   const items = normalize(reward)?.asset ?? [];
-  return items.length ? '收获 ' + items.map(r => displayMaterial(config, r.id) + ' ×' + r.num).join('、') : '本次结算没有获得材料';
+  const result = items.length ? '收获 ' + items.map(r => displayMaterial(config, r.id) + ' ×' + r.num).join('、') : '本次结算没有获得材料';
+  return result + (overflowedItems.length ? '；溢出：' + overflowedItems.map(id => displayMaterial(config, id)).join('、') : '') +
+    (enabled(boat.collect) ? '；下轮继续搜索' : '；已暂停搜索');
 }
 
 export async function serviceBoats(client, config, enabled, report, options = {}) {
   const water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
   const resolve = makeTypeResolver(config);
   const buildings = (water.building ?? []).filter(b => b.level > 0);
-  const upgrades = config.tables.BuildingUpgradeCfg.data;
-  const capacity = buildings.reduce((sum, b) => {
-    const row = upgrades.find(r => r.buildingType === resolve(b.buildingId) && r.level === b.level);
-    return sum + (row?.effect?.find(e => e[0] === '资源储量上限')?.[1] ?? 0);
-  }, 0);
   for (const boat of boats) {
     const info = water[boat.level];
     const levels = config.tables[boat.table].data;
-    const cfg = levels.find(r => r.level === info?.level);
     const count = buildings.filter(b => resolve(b.buildingId) === boat.type).length;
     for (const key of [boat.enhance, boat.collect]) {
       if (!enabled(key)) continue;
       const label = boat.name + (key === boat.enhance ? '养成' : '采集');
       try {
+        const cfg = levels.find(r => r.level === info?.level);
         const result = !count || !cfg ? { reason: '建筑或玩法尚未解锁' } : key === boat.enhance
           ? await enhance(client, boat, info, cfg, levels.find(r => r.level === info.level + 1), count, enabled, options)
-          : await gather(client, config, boat, cfg, capacity, enabled, options);
+          : await gather(client, config, boat, cfg, enabled, options);
         if (result?.reason) report({ key, label, skipped: true, reason: result.reason });
         else if (result?.action) report({ key, label, planned: true, action: result.action });
         else if (result) report({ key, label: label + ' · ' + result, ok: true });
