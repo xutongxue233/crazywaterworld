@@ -4,6 +4,7 @@ export const operationLabels = {
   '/api/activities/run': '单次执行活动',
   '/api/gift-codes': '读取礼包兑换记录',
   '/api/gift-codes/accounts': '读取礼包兑换账号',
+  '/api/gift-codes/initial': '读取初始礼包码',
   '/api/gift-codes/redeem': '兑换礼包码',
   '/api/pirates/board': '查看海盗首杀',
   '/api/equipment/crafting': '查看装备厂',
@@ -42,5 +43,6 @@ export const operationLabels = {
   '/api/tasks': '查看任务', '/api/tasks/run': '领取任务奖励',
   '/api/stages': '查看推关进度', '/api/stages/start': '开始推关', '/api/stages/stop': '停止推关',
   '/api/loop': '查看挂机设置', '/api/loop/start': '开始挂机', '/api/loop/stop': '暂停挂机',
+  '/api/login-settings': '保存登录设置',
   '/api/loop/task': '修改自动任务', '/api/loop/fishing-reserve': '设置钓具预留金币',
 };

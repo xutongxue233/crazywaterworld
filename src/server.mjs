@@ -7,6 +7,7 @@ import {activityRankCatalog,readActivityRanking} from './activity-rankings.mjs';
 import {readActivityStatistics} from './activity-statistics.mjs';
 import { merchantActivity, readMerchantStatus, readMerchantJournal, merchantJournalSummary } from './merchant-activity.mjs';
 import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
+import { initialGiftCodeCatalog } from './gift-code-catalog.mjs';
 import {runtimeProgress} from './runtime-progress.mjs';
 import {watchTreasureTravel} from './treasure-follow.mjs';
 import {watchFleetMaintenance,fleetMaintenanceEnabled} from './fleet-maintenance.mjs';
@@ -1334,6 +1335,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog,
       }
 
       // ---- 只读视图 ----
+      if(route==='GET /api/gift-codes/initial'){
+        json(initialGiftCodeCatalog());return;
+      }
       if(route==='GET /api/gift-codes'){
         const {session}=scoped_(parsed);
         json(giftCodeStatus(session.id));return;

@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import vm from 'node:vm';
 process.env.CW_DATA_DIR=fs.mkdtempSync(path.join(os.tmpdir(),'cw-gift-codes-'));
 const {startGiftCodes,startGiftCodeBatch,giftCodeStatus,giftCodeSummary}=await import('../src/gift-codes.mjs');
+const {initialGiftCodeCatalog}=await import('../src/gift-code-catalog.mjs');
 const {loadProtocol}=await import('../src/proto.mjs');
 const p=loadProtocol(), sent=[];
+const fixedInitial=initialGiftCodeCatalog(Date.parse('2026-11-13T00:00:00Z'));
+assert.deepEqual([fixedInitial.total,fixedInitial.unique,fixedInitial.expired,fixedInitial.tryCodes.length,fixedInitial.batches.map(batch=>batch.length)],[114,113,7,106,[100,6]]);
 const client={promptNames:p.Prompt,async request(name,body,response){
   assert.equal(name,'GotGiftCodeRequest');assert.equal(response,'GotRewardResponse');
   const {giftCode}=p[name].decode(p[name].encode(body).finish());sent.push(giftCode);
@@ -107,6 +110,11 @@ try {
   const root='http://127.0.0.1:'+app.server.address().port;
   const post=(route,body,headers={})=>fetch(root+route,{method:'POST',body:JSON.stringify(body),headers:{'content-type':'application/json',...headers}});
   const list=async()=>(await (await fetch(root+'/api/gift-codes/accounts')).json()).accounts;
+  const initial=await (await fetch(root+'/api/gift-codes/initial')).json();
+  assert.deepEqual([initial.total,initial.unique,initial.codes.length],[114,113,114]);
+  assert.equal(initial.codes.filter(code=>code.expiresAt).length,8);
+  assert.equal(initial.tryCodes.length,initial.batches.flat().length);
+  assert(initial.batches.every(batch=>batch.length<=100),'初始码批次不能超过兑换上限');
   const settled=async ids=>{for(let i=0;i<200;i++){const rows=await list();if(rows.filter(a=>ids.includes(a.id)).every(a=>!a.running))return rows;await wait(50);}throw Error('批次未结束');};
   const before=await list();
   assert.deepEqual(before.map(a=>[a.id,a.paused,a.connected,a.total]),[['h1',false,false,0],['h2',true,false,0],['h3',false,false,0],['h4',false,false,0],['h5',false,false,0],['h6',false,false,0]]);
@@ -172,6 +180,6 @@ try {
   assert.equal(resumedSession.client,null,'中途暂停再恢复后不重新登录');
 
   for(const script of PAGE.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))new vm.Script(script[1]);
-  for(const id of ['gift-account-list','gift-select-all','gift-select-none','gift-selected-count','gift-record-account','gift-code-start'])assert.equal((PAGE.match(new RegExp('id="'+id+'"','g'))??[]).length,1,id);
+  for(const id of ['gift-account-list','gift-select-all','gift-select-none','gift-selected-count','gift-record-account','gift-code-start','gift-load-initial','gift-code-initial-note'])assert.equal((PAGE.match(new RegExp('id="'+id+'"','g'))??[]).length,1,id);
 } finally { await app.close(); }
 console.log('礼包码测试通过：真实协议编解码、逐码核验、去重、限频、超时、重启、账号隔离、多账号批量、发送前复查。');

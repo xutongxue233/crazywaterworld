@@ -18,6 +18,7 @@ export function giftCodesPage() {
   return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="礼包兑换" help="每个账号独立排队，兑换请求逐个发送。账号登录失败或结果未知只停止该账号；任一账号遇到服务器限频时，同批尚未发送的账号全部停止，之后可重新提交。"><label htmlFor="gift-code-input">礼包码（换行或逗号分隔）</label>
       <textarea id="gift-code-input" rows={3} maxLength={12000} className="w-full" placeholder="每批最多100个" />
+      <div className="bar"><Button type="button" variant="outline" size="sm" id="gift-load-initial">载入初始码</Button><span id="gift-code-initial-note" className="dim" role="status" /></div>
       <fieldset className="gift-accounts"><legend>兑换账号</legend>
         <div className="bar"><Button variant="outline" size="sm" id="gift-select-all">全选</Button><Button variant="outline" size="sm" id="gift-select-none">清空</Button><span id="gift-selected-count" className="dim" /></div>
         <div id="gift-account-list" className="gift-account-list" />

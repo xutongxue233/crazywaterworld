@@ -1,6 +1,7 @@
 const giftLabels={queued:'待兑换',sending:'兑换中',success:'兑换成功',used:'已兑换',rejected:'服务器拒绝',unknown:'待确认',skipped:'未发送'};
 const giftBatchLabels={success:'成功',used:'已兑换',rejected:'拒绝',unknown:'待确认',skipped:'未发送'};
 let giftPage=1,giftRows=[],giftAccounts=[],giftSelected=new Set(),giftChosen=false,giftViewed='',giftStarting=false,giftNote='';
+let giftInitial=null,giftInitialBatch=0;
 function paintGiftPage(){
   const last=Math.max(1,Math.ceil(giftRows.length/10));
   giftPage=Math.min(last,Math.max(1,giftPage));
@@ -31,6 +32,30 @@ function paintGiftState(){
   const running=giftAccounts.filter(a=>a.running).length;
   $('gift-code-state').textContent=[running?'正在兑换，剩余 '+running+' 个账号':'',giftNote].filter(Boolean).join('；');
 }
+function paintGiftInitial(){
+  const button=$('gift-load-initial'),note=$('gift-code-initial-note');
+  if(!giftInitial){button.disabled=true;note.textContent='初始码读取中';return;}
+  const batches=giftInitial.batches??[];
+  button.disabled=!batches.length;
+  const batchCount=batches.length;
+  const current=batchCount?giftInitialBatch%batchCount:0;
+  button.textContent=batchCount>1?'载入初始码（第'+(current+1)+'/'+batchCount+'批）':'载入初始码';
+  const updated=giftInitial.updatedAt?.slice(0,10);
+  note.textContent='来源更新 '+(updated||'未知')+'；列表 '+giftInitial.total+' 条，去重 '+giftInitial.unique+' 条；已知过期 '+giftInitial.expired+' 条；单批最多100条';
+}
+async function refreshGiftInitial(){
+  if(giftInitial)return;
+  try{giftInitial=await call('/api/gift-codes/initial');paintGiftInitial();}
+  catch(error){$('gift-code-initial-note').textContent='初始码读取失败：'+error.message;$('gift-load-initial').disabled=true;}
+}
+$('gift-load-initial').onclick=()=>{
+  const batches=giftInitial?.batches??[];
+  if(!batches.length)return;
+  const batchIndex=giftInitialBatch%batches.length;
+  $('gift-code-input').value=batches[batchIndex].join('\n');
+  giftInitialBatch=(batchIndex+1)%batches.length;
+  paintGiftInitial();
+};
 function paintGiftAccounts(){
   const box=$('gift-account-list'),key=giftAccounts.map(a=>a.id+'\n'+a.title).join('\n');
   if(box.accountsKey!==key){
@@ -71,6 +96,7 @@ function giftAccountChanged(){
 async function refreshGiftCodes(){
   const version=++giftVersion;
   clearTimeout(giftTimer);
+  void refreshGiftInitial();
   if(!accounts.some(a=>a.id===giftViewed))giftViewed=current||'';
   if(!giftChosen)giftSelected=new Set(current?[current]:[]);
   const viewed=giftViewed;
