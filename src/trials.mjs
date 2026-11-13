@@ -101,7 +101,7 @@ export async function sweepTrials(client, config, level, enabled, log, scheduler
   }
 }
 
-export async function runTrialStages(client, player, config, raidId, { maxFailures = 3, signal, enabled = () => true,
+export async function runTrialStages(client, player, config, raidId, { maxFailures = 3, maxWins = Infinity, beforeBattle, signal, enabled = () => true,
   schedule = work => work(), wait = sleep, onBattle = () => {} } = {}) {
   maxFailures = stageFailureLimit(maxFailures);
   const definition = config?.tables?.TrialRaidCfg?.data?.find(r => r.raidId === raidId);
@@ -122,6 +122,7 @@ export async function runTrialStages(client, player, config, raidId, { maxFailur
       if (!(player?.level >= next.openLevel)) return { done: true, reason: `下一关需要角色 ${next.openLevel} 级` };
       signal?.throwIfAborted();
       if (!enabled()) throw new Error('账号已暂停，未发送试炼挑战');
+      beforeBattle?.(next.stageId);
       const reply = await client.request('TrialRaidChallengeRequest', { raidId, stageId: next.stageId }, 'TrialRaidChallengeResponse');
       if (reply?.raidId !== raidId || reply?.stageId !== next.stageId) throw new Error('试炼挑战回包不匹配，结果待核对，已停止');
       const after = await readRaid(client, raidId);
@@ -133,6 +134,7 @@ export async function runTrialStages(client, player, config, raidId, { maxFailur
     lastStage = result.stage;
     if (result.won) { wins++; failures = 0; } else failures++;
     onBattle({ ...result, wins, failures });
+    if (wins >= maxWins) return { wins, failures, reason: `本轮已通过 ${wins} 关，下轮继续` };
     if (failures >= maxFailures) return { wins, failures, reason: `第 ${result.level} 关连续失败 ${failures} 次，已停止` };
   }
 }

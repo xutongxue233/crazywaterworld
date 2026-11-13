@@ -58,6 +58,7 @@ export function nativePreferenceEnabled(settings, key) {
   if (!settings) return true;
   if (gatherTasks.has(key) && settings.gather.enabled === false) return false;
   const map = {
+    stageAuto: () => settings.progression?.enabled !== false && (settings.progression?.mainline ?? settings.schedule?.stageAuto) === true,
     trialPaidSweep: () => settings.trials?.paid === true,
     trialAdSweep: () => settings.trials?.ads === true,
     collect: () => settings.loop.world && ((settings.building.enabled && settings.building.collect) || (settings.factory.enabled && settings.factory.gain)),

@@ -52,6 +52,7 @@ import { serviceMuseum } from './museum.mjs';
 import { servicePetBreeding } from './pet-breeding.mjs';
 import { serviceGuildAid } from './guild-aid.mjs';
 import { serviceHeroGrowth, serviceStageAuto } from './progress-automation.mjs';
+import { createChallengeRun, runChallengeRound } from './challenge-automation.mjs';
 import { serviceTreasureLoot } from './treasure-loot.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily as claimLegacyVipDaily, festivalRewardKeys, weeklyRewardKeys } from './free-rewards.mjs';
 import { claimOpenRanks } from './pirate-board.mjs';
@@ -99,6 +100,8 @@ export async function runLoop(client, protocol, {
   getFishingGoldReserve = () => defaultFishingGoldReserve,
   getCompassSpinCount = () => defaultCompassSpinCount,
   isStageBusy = () => false,
+  isTrialBusy = () => false, isPirateBusy = () => false,
+  challengeRun = createChallengeRun(),
   getSettings = () => null, onFishBookComplete,
   usageLedger = null,
   getEveryMs = () => everyMs,
@@ -274,6 +277,10 @@ export async function runLoop(client, protocol, {
       if (!entry.skipped || serviceWait.get(key) !== entry.reason) stepLog(phase)({ ...entry, category, taskKey: key });
       if (entry.skipped) serviceWait.set(key, entry.reason); else serviceWait.delete(key);
     };
+    let pirateChecked = false;
+    const challengeOptions = { player, getSettings, state: challengeRun, ledger: usageLedger,
+      enabled: () => !stop.aborted && client.connected !== false, isStageBusy, isTrialBusy, isPirateBusy,
+      signal: typeof stop.throwIfAborted === 'function' ? stop : undefined };
     async function checkDispatch() {
       if(stop.aborted)return;
       if(usageLedger)await checkFleetSettlement(client,player,usageLedger);
@@ -281,6 +288,10 @@ export async function runLoop(client, protocol, {
       // 城战时间窗先核实；其余任务按配置检查，空闲且无预留的舰队可共享。
       if(getSettings()?.cityWar.reserveDuringWar)await checkCityWar();
       for (const task of dispatchOrder(getSettings())) {
+        if (task === 'pirateHunt' && !pirateChecked) {
+          pirateChecked = true;
+          await runChallengeRound(client, config, { ...challengeOptions, mode: 'pirate', report: serviceReport('world', '海盗讨伐') });
+        }
         if (task === 'cityWar') await checkCityWar();
         if (task === 'radar') await checkRadar();
         if (task === (getSettings()?.treasure.follow?'follow':'treasure')) await checkTreasure();
@@ -613,7 +624,8 @@ export async function runLoop(client, protocol, {
         try { await serviceHeroGrowth(client, protocol, config, { player, enabled: () => legacyActive('heroGrowth'), scheduler: rewards, report: serviceReport('dailies', '成长') }); }
         catch (error) { phaseFailure('dailies', '英雄成长检查', error); }
       }
-      if (isEnabled && legacyEnabled('stageAuto')) {
+      await runChallengeRound(client, config, { ...challengeOptions, mode: 'progression', report: serviceReport('dailies', '推关与试炼') });
+      if (!getSettings()?.progression && isEnabled && legacyEnabled('stageAuto')) {
         try { await serviceStageAuto(client, config, { player, enabled: () => legacyActive('stageAuto'), scheduler: rewards, isBusy: isStageBusy, report: serviceReport('dailies', '成长') }); }
         catch (error) { phaseFailure('dailies', '主线推关检查', error); }
       }

@@ -632,15 +632,12 @@ const HERO_STATUS = { ready: '可做', done: '已完成', blocked: '不可做' }
 let stageVersion = 0;
 let stageAccount = null;
 function stagePreferences() {
-  return { maxFailures: Number($('stage-failures').value) };
+  return {};
 }
 function renderStages(data) {
   $('stage-start').disabled = data.running || !current;
   $('stage-stop').disabled = !data.running || data.stopping;
-  $('stage-failures').disabled = data.running;
-  if (data.running) {
-    $('stage-failures').value = data.maxFailures;
-  }
+  $('stage-failures').textContent = String(data.running ? data.maxFailures : data.configuredMaxFailures ?? '未同步');
   const details = data.stage ? '第 ' + data.stage + ' 关 · 已过 ' + data.wins + ' 关 · 连续失败 ' + data.failures + ' 次' : '';
   $('stage-view').textContent = [data.stopping ? '正在停止，等待在途战报' : data.running ? '自动挑战中' : data.stage ? '已停止' : '未开启', details, data.reason==='尚未开启'?'':data.reason].filter(Boolean).join('　');
 }
@@ -651,9 +648,7 @@ async function refreshStages() {
   const account = current;
   if (stageAccount !== account) {
     stageAccount = account;
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem('stages:' + account)) || {}; } catch {}
-    $('stage-failures').value = saved.maxFailures || 3;
+    $('stage-failures').textContent = '未同步';
     $('stage-start').disabled = $('stage-stop').disabled = true;
     $('stage-view').textContent = '正在读取状态';
   }
@@ -668,19 +663,12 @@ async function refreshStages() {
 async function stageCommand(start) {
   const account = current;
   const prefs = stagePreferences();
-  if (start && (!Number.isSafeInteger(prefs.maxFailures) || prefs.maxFailures < 1)) {
-    reportError(new Error('失败次数需要填写正整数'), '主线推关');
-    return;
-  }
   ++stageVersion;
   $('stage-start').disabled = $('stage-stop').disabled = true;
   try {
     const data = await call('/api/stages/' + (start ? 'start' : 'stop'), {
       method: 'POST', body: JSON.stringify({ confirm: true, ...prefs }),
     });
-    if (start) {
-      try { localStorage.setItem('stages:' + account, JSON.stringify(prefs)); } catch {}
-    }
     if (account === current) renderStages(data);
   } catch (error) {
     if (account === current) { reportError(error); }
@@ -781,15 +769,22 @@ function filterIdleControls(){
  for(const panel of document.querySelectorAll('[data-idle-panel]'))panel.hidden=filtering?![...panel.querySelectorAll('.task-setting')].some(row=>!row.hidden):document.querySelector('[data-idle-group="'+panel.dataset.idlePanel+'"]').getAttribute('aria-selected')!=='true';
  $('idle-filter-count').textContent=filtering?'跨分组找到 '+count+' 项':'';
 }
-$('single-go-pirate').onclick=()=>{const tab=[...document.querySelectorAll('[data-idle-group]')].find(t=>t.textContent==='世界');tab?.click();};
-$('single-go-stages').onclick=()=>document.querySelector('#tabs [data-tab=stages]').click();
+function openChallengeConfig(id){
+  const hash='#config-group-'+id;
+  if(location.hash!==hash)location.hash=hash;
+  else{activateConsolePage(document.querySelector('#tabs [data-tab="settings"]'));configApplyHash();}
+}
+$('single-go-pirate').onclick=()=>openChallengeConfig('pirate-hunt');
+$('single-go-stages').onclick=()=>openChallengeConfig('progression');
 $('single-go-mutual').onclick=()=>activateConsolePage(document.querySelector('#tabs [data-tab=resources]'),'guild');
 $('idle-search').oninput=filterIdleControls;$('idle-filter').onchange=filterIdleControls;
 function renderLoop(data) {
   renderAutomationOverview(data);
   renderPirateAdvance(data.pirateAdvance);
   $('runtime-version').textContent='当前服务加载时间：'+(data.runVersion?new Date(data.runVersion).toLocaleString('zh-CN'):'旧版服务，等待加载本次更新');
-  if(data.singleTasks)$('single-task-status').textContent='需单独启动 · 首杀：'+(data.singleTasks.pirate?.running?'运行中':'未启动')+' · 主线：'+(data.singleTasks.stages?.running?'运行中':'未启动')+' · 互助：'+(data.singleTasks.mutual?.running?'运行中':'未启动')+'。入口：世界 / 挑战 / 资源与玩法 → 联盟。';
+  if(data.singleTasks)$('single-task-status').textContent='手动任务 · 首杀：'+(data.singleTasks.pirate?.running?'运行中':'未启动')+' · 主线：'+(data.singleTasks.stages?.running?'运行中':'未启动')+' · 联盟互助：'+(data.singleTasks.mutual?.running?'运行中':'未启动');
+  const challenge=data.challenges??{},challengeNotes=[challenge.mainline?.reason&&'主线：'+challenge.mainline.reason,...Object.entries(challenge.trials??{}).map(([id,row])=>row.reason&&'试炼'+id+'：'+row.reason),challenge.pirate?.reason&&'海盗：'+challenge.pirate.reason].filter(Boolean);
+  $('challenge-run-state').textContent=challengeNotes.join('；')||'推关与讨伐尚无执行记录';
   loopSettingsRevision = data.settingsRevision;
   for (const input of taskInputs) {
     if (savingTasks.has(current + ':' + input.dataset.autoTask)) continue;
@@ -1914,7 +1909,7 @@ function activateConsolePage(button, resource = selectedResource) {
     if (button.dataset.tab === 'stages') refreshStages();
 }
 document.querySelectorAll('#tabs button').forEach(button => { button.onclick = () => activateConsolePage(button); });
-for(const link of document.querySelectorAll('#tab-idle a[href^="#config-group-"]'))link.onclick=event=>{if(location.hash===link.getAttribute('href')){event.preventDefault();activateConsolePage(document.querySelector('#tabs [data-tab="settings"]'));configApplyHash();}};
+for(const link of document.querySelectorAll('a[href^="#config-group-"]'))link.onclick=event=>{if(location.hash===link.getAttribute('href')){event.preventDefault();activateConsolePage(document.querySelector('#tabs [data-tab="settings"]'));configApplyHash();}};
 document.querySelectorAll('[data-resource-tab]').forEach(button => { button.onclick = () => activateConsolePage(document.querySelector('#tabs [data-tab="resources"]'), button.dataset.resourceTab); });
 
 // 配置页工具栏吸在页头下方；页头高度随触屏尺寸和提示文字变化，手机上页头不吸顶。
@@ -1935,7 +1930,7 @@ async function boot() {
   if(location.hash.startsWith('#config-group-'))history.replaceState(null,'',location.pathname+location.search);
   activateConsolePage(document.querySelector('#tabs [data-tab="overview"]'));
   if (location.hash === '#journal') openJournal();
-  if (location.hash === '#pirate-first-kill') { activateConsolePage(document.querySelector('#tabs [data-tab="idle"]')); $('single-go-pirate').click(); }
+  if (location.hash === '#pirate-first-kill') { activateConsolePage(document.querySelector('#tabs [data-tab="idle"]')); selectIdleGroup(1); }
   pollCapture();
 }
 boot();

@@ -3,7 +3,7 @@ import { defaultSettings } from '../../src/automation-settings.mjs';
 import { loadProtocol } from '../../src/proto.mjs';
 export function pirateAdvanceFixture({mode='win'}={}) {
  const protocol=loadProtocol(),client=new EventEmitter();client.connected=true;client.writes=[];
- const settings=defaultSettings();settings.pirateHunt={fleetIds:['1远征船'],types:['1'],maxLevel:3,minDurabilityPercent:80,petrolReserve:0,fuelBudget:3000,checkEverySeconds:5};
+ const settings=defaultSettings();settings.pirateHunt={...settings.pirateHunt,maxFailures:1,fleetIds:['1远征船'],types:['1'],maxLevel:3,minDurabilityPercent:80,petrolReserve:0,fuelBudget:3000,checkEverySeconds:5};
  const player={level:37,worldId:1001001,scenarioId:1};
  const config={tables:{ModuleOpenCfg:{data:[{moduleId:'世界',playerLevel:16}]},WorldPirateCfg:{data:[1,2,3].map(level=>({season:1,type:1,level,showName:'海盗先锋',power:10000*level}))},'1_SeasonTaskCfg':{data:[{season:1,stage:1,maxPirateLevel:3}]},'1_CityCfg':{data:[{id:1,name:'试验岛'}]},WorldParamCfg:{data:[{paramName:'打野怪消耗汽油',paramValue:300}]},HeroCfg:{data:[{id:'瑞文',name:'骑士瑞文'}]}}};
  const fleet={buildingId:'1远征船',state:1,durability:1000,maxDura:1000,power:100000,curGridIdx:0,autoFight:{isOn:true}};

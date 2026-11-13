@@ -27,11 +27,16 @@ add('worldBoss.enabled','世界Boss每日首战派遣','世界与挑战',{help:'
 add('radar.enabled','联盟情报自动处理','世界与挑战',{help:'逐条领取已完成奖励，并用所选空闲舰队处理新情报。不会开启游戏原生月卡自动功能；消耗遵守情报预算。'});
 add('treasure.enabled','万吨巨轮自动参与','世界与挑战');
 add('cityWar.enabled','城战自动接续','世界与挑战');
+add('progression.enabled','推关与试炼总开关','世界与挑战',{help:'按统一配置自动挑战主线（闯关）和所选试炼。每轮继续推进，达到失败停止次数后本次挂机不再挑战该关；暂停后重新开始挂机可重试。扫荡仍按独立开关执行。'});
+add('progression.mainline','主线 / 闯关自动挑战','世界与挑战',{gates:['progression.enabled']});
+add('progression.trials','试炼自动推关','世界与挑战',{gates:['progression.enabled']});
+add('pirateHunt.enabled','海盗讨伐自动推进','世界与挑战',{help:'每轮核对本人首杀和舰队状态，自动挑战下一等级。消耗汽油，达到失败停止次数或本次预算后停止派遣；先在配置中选择舰队。'});
 add('antique.enabled','藏品自动养成','英雄',{help:'按游戏配置 → 英雄 → 藏品养成执行激活、升星、大师等级和套装升级；只使用现有资源，不购买或消耗钻石。'});
 add('trials.paid','试炼钻石扫荡','世界与挑战');
 add('trials.ads','试炼免广告扫荡','世界与挑战');
 const nativeKeys = new Set(['trialPaidSweep','trialAdSweep','diveEnhance','autoDive','salvageEnhance','autoSalvage','autoFish','fishEnhance','floaters','antiqueFloaters','cargo','farm','collect','finishUpgrade','build','buildSupply','upgrade','finishOrder','startProduce','speedUp','denyOrder','paidGold','dailyRewards','chests','gift','tasks']);
 for (const task of automationTasks) {
+ if (task.key === 'stageAuto') continue;
  if (nativeKeys.has(task.key)) continue;
  const group = ['freeRecruit','ticketRecruit','freeAntiqueRecruit','antiqueRecruitRewards','heroRecruitRewards','heroAdRecruit','antiqueAdRecruit'].includes(task.key) ? '日常招募' : ['周期活动','限时活动'].includes(task.group) ? '活动' : ['联盟','挑战'].includes(task.group) ? '世界与挑战' : task.group === '日常' ? '日常行动' : task.group === '海面' ? '基地' : '任务与领奖';
  const gates = task.group==='日常' ? ['loop.dailies','dailies.enabled'] : task.key==='weekFactory'||task.key==='adSpeedUpBuilding'?['loop.world','building.enabled']:task.key==='adSpeedUpProduce'?['loop.world','factory.enabled']:task.key==='adSpeedUpMuseum'?['loop.world']:[];
@@ -49,6 +54,8 @@ const idleModules = {
  'worldBoss.enabled':['世界','worldBoss','世界Boss首战'], 'radar.enabled':['世界','radar','联盟情报'],
  'treasure.enabled':['世界','treasure','万吨巨轮'], 'cityWar.enabled':['世界','cityWar','城战接续'],
  'schedule.pirate':['世界','pirate-sweep','海盗日常扫荡'],
+ 'progression.enabled':['世界','progression','推关与试炼'],
+ 'pirateHunt.enabled':['世界','pirate-hunt','海盗讨伐'],
  'heroes.enabled':['英雄','heroes','英雄养成'],
  'antique.enabled':['英雄','antique','藏品养成'],
  'dailies.enabled':['日常与活动','rewards','每日任务与奖励'],

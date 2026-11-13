@@ -58,12 +58,15 @@ export function selectPirateAdvance(snapshot,options,{spent=0,pendingFuel=0}={})
  if(options.fuelBudget>0&&spent+view.fuelPerFleet>options.fuelBudget)return{reason:'本次首杀汽油预算已不足'};
  return{target,fleet,cost:view.fuelPerFleet};
 }
-export async function runPirateAdvance({client,config,player,options,ledger,getSettings,enabled,schedule=fn=>fn(),signal,onState=()=>{},sleep=ms=>delay(ms,undefined,{signal}),now=Date.now,prepareDispatch=async()=>{}}) {
+export async function runPirateAdvance({client,config,player,options,ledger,getSettings,enabled,schedule=fn=>fn(),signal,onState=()=>{},sleep=ms=>delay(ms,undefined,{signal}),now=Date.now,prepareDispatch=async()=>{},checkpoint={},oneCheck=false}) {
  const world=String(normalize(player?.worldId));
  if(!/^[1-9]\d*$/.test(world) || !options.fleetIds.length)throw Error('请先设置参与海盗首杀的舰队');
  if(!ledger?.reserve)throw Error('未取得首杀出征确认记录');
  const prefix='pirate-first:'+world+':';
- const state={wins:0,spent:0,target:null,reason:'正在检查首杀目标'};let active=null, fuelCeiling=null;
+ const state=checkpoint.state??={wins:0,failures:0,spent:0,target:null,reason:'正在检查首杀目标'};
+ let active=checkpoint.active??null, fuelCeiling=checkpoint.fuelCeiling??null;
+ const maxFailures=options.maxFailures??1;
+ if(!Number.isSafeInteger(maxFailures)||maxFailures<1||maxFailures>100)throw Error('海盗失败停止次数必须为1–100的整数');
  const live=()=>!signal?.aborted && enabled() && sameOptions(options,getSettings().pirateHunt);
  const publish=()=>onState({...state});
  const update=(key,event)=>{
@@ -73,6 +76,8 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
   } catch(error){state.reason='首杀记录保存失败：'+error.message;}
  };
  try {
+ if(!state.halted&&state.failures>=maxFailures){state.halted=true;state.reason='本次首杀连续战败 '+state.failures+' 次，达到失败停止次数，已停止推进';}
+ if(state.halted){publish();return state;}
  while(!signal?.aborted) {
   reserveDispatch(client,'pirateHunt',options.fleetIds,Date.now()+Math.max(60000,options.checkEverySeconds*3000));
   if(!enabled()){state.reason='账号已暂停或断开';break;}
@@ -89,15 +94,15 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
    }
    if(active) {
     const record=ledger.keyRecords()[active.key];const outcome=record?.details?.outcome??active.result;
-    if(outcome==='lost')return{stop:'本次首杀战败，已停止推进'};
-    if(outcome==='unknown')return{stop:'出征或战果未确认，已停止并保留派遣记录'};
+    if(outcome==='unknown'){state.halted=true;return{stop:'出征或战果未确认，已停止并保留派遣记录'};}
     const fleet=snap.ownFleets.find(f=>f.buildingId===active.buildingId);
-    if(outcome==='won') {
-     if(!active.counted){state.wins++;active.counted=true;}
+    if(outcome==='won'||outcome==='lost') {
+     if(!active.counted){if(outcome==='won'){state.wins++;state.failures=0;}else state.failures++;active.counted=true;}
+     if(outcome==='lost'&&state.failures>=maxFailures){state.halted=true;return{stop:'本次首杀连续战败 '+state.failures+' 次，达到失败停止次数，已停止推进'};}
      if(fleet?.state===1 && !fleet.curGridIdx && !fleet.treasureLootUid && !fleet.chipWar?.rewardTs){active=null;}
-     else {state.reason='已确认首杀，等待舰队回城';return{wait:true};}
+     else {state.reason=outcome==='won'?'已确认首杀，等待舰队回城':'战败 '+state.failures+'/'+maxFailures+' 次，等待舰队回城后重试';return{wait:true};}
     } else {
-     if(now()-active.sentAt>900000)return{stop:'等待战果超时，已停止并保留派遣记录'};
+     if(now()-active.sentAt>900000){state.halted=true;return{stop:'等待战果超时，已停止并保留派遣记录'};}
      state.reason=outcome==='started'||outcome==='ended'?'等待个人首杀记录更新':'等待服务器确认出征';return{wait:true};
     }
    }
@@ -132,11 +137,11 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
    } catch(error){if(ticket && (error.prompt&&error.request==='ChallengePirateRequest' || error.notSent===true))ledger.cancel(ticket);return{stop:error.message};}
   });
   if(result.stop){state.reason=result.stop;publish();break;}
-  publish();await sleep(options.checkEverySeconds*1000);
+  publish();if(oneCheck)break;await sleep(options.checkEverySeconds*1000);
  }
  if(signal?.aborted)state.reason=signal.reason?.message||'已停止首杀推进';
  publish();return state;
- } finally { reserveDispatch(client,'pirateHunt',[]); }
+ } finally { checkpoint.active=active;checkpoint.fuelCeiling=fuelCeiling;reserveDispatch(client,'pirateHunt',[]); }
 }
 export function createPirateAdvanceTask() {
  let controller=null;let state={running:false,stopping:false,wins:0,spent:0,target:null,reason:'尚未开启'};

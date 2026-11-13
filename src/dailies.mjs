@@ -197,7 +197,7 @@ export const DAILY_DRIVERS = {
     probes: [],
     evaluate({ task }) {
       if (task.progress >= task.targetProgress) return { status: 'done' };
-      return { status: 'waiting', reason: '请在「挂机 → 主线推关」单独开启挑战' };
+      return { status: 'waiting', reason: '请在「挂机 → 世界 → 推关与试炼」配置主线 / 闯关自动挑战，也可在挑战页手动开始' };
     },
   },
 
@@ -295,7 +295,7 @@ export const DAILY_DRIVERS = {
     probes: [],
     evaluate({ task }) {
       return task.progress >= task.targetProgress ? { status: 'done' }
-        : { status: 'waiting', reason: '在「挑战 → 试炼副本」选择副本，手动挑战下一关' };
+        : { status: 'waiting', reason: '在「推关与试炼」选择自动推关副本，也可在「挑战 → 试炼副本」手动挑战下一关' };
     },
   },
 

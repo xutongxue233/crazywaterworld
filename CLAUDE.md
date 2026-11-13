@@ -57,6 +57,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - `client.mjs` 的 `GameClient` 管理 WebSocket、序号、Ack、心跳和请求匹配；帧格式见 `codec.mjs`、`frame-header.mjs`、`lz4.mjs`。有响应的请求用 `request`；`sendWatch` 未收到 prompt 也不能据此确认实际结果。
 - 玩法模块先读取状态，再计算计划，最后在发送前复查。明确未发送可释放预留；超时或结果不明需保留记录，按对应玩法查询确认。
 - `loop.mjs` 编排自动任务，结合开关、状态、到期时间、推送和账本决定何时复查，并非第二轮计划必然为空。CLI 与控制台共用它，是否传 `isEnabled` 会影响路径，修改需检查两侧。
+- `challenge-automation.mjs` 接入每轮主线/闯关与试炼挑战，海盗讨伐在 `checkDispatch` 中按舰队优先级每轮最多派遣一次。`loop.challengeRun` 跨重连保留失败计数与海盗预算，达到失败上限不因换轮重试；重新开始挂机才创建新计数。主线与试炼共用 `progression` 配置和失败上限，旧 `schedule.stageAuto` 迁移到 `progression.mainline`。保留手动入口，自动与手动相互避让，未知战果不能当战败。
 - `server.mjs` 管理 HTTP API 与账号会话；同账号手动和挂机写操作经 `enqueue` 串行执行，新增写路由也必须接入。暂停、切号或等待期间关闭开关后，发送前再次检查。
 - 挂机一轮是一个 `enqueue` 任务，可持续一分钟以上。新增只读路由用 `readJob` 或 `progressionJob(..., { read: true })`，队列忙时经 `GameClient.interleaveRead` 插在两次请求之间。`PromptResponse` 没有请求编号，不能让读取与其他请求同时在途；这条通道只能用于确实不改变游戏状态的读取。
 - 网页仅控制和订阅日志，关闭网页不停止后台 `loop.job`。业务日志经 `createConsole({ onLog })` 输出到 CLI；日志回调和 SSE 异常不能影响游戏任务，显式关闭控制台时再关闭 SSE。验证使用 `selftest-console-background.mjs` 的隔离账号与假客户端。

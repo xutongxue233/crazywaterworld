@@ -44,12 +44,13 @@ export const DEFAULT_SETTINGS = {
   heroes: { enabled: true, level: true, star: true, skill: true, heroIds: [], universal: true, keepExp: 0, targetLevel: 0, targetStar: 0 },
   dailies: { enabled: true, claimTasks: true, claimDailyChest: true, claimWeeklyChest: true, claimGift: true },
   tasks: { main: true, branch: true, achievements: true },
+  progression: { enabled: true, mainline: false, trials: false, raidIds: ['1','2','3'], maxFailures: 3 },
   trials: { paid: false, ads: false, raidIds: ['1','2','3'], paidPerRaidLimit: 1, dailyDiamondBudget: 450, maxSingleCost: 50 },
   fleetDispatch: { priority: ['cityWar','pirateHunt','worldBoss','follow','treasure','radar'] },
   worldBoss: { enabled: false, fleetIds: [], minDurabilityPercent: 80, petrolReserve: 0 },
   radar: { enabled:false, fleetIds:[], types:['pirate','collect','refugee','spy','fixed'], allowMaterials:false, minDurabilityPercent:80, petrolReserve:1000, dailyPetrolLimit:10000, checkEverySeconds:30 },
   pirateSweep: { type: '1' },
-  pirateHunt: { fleetIds: [], types: [], maxLevel: 0, minDurabilityPercent: 80, petrolReserve: 0, fuelBudget: 10000, checkEverySeconds: 15 },
+  pirateHunt: { enabled: false, maxFailures: 3, fleetIds: [], types: [], maxLevel: 0, minDurabilityPercent: 80, petrolReserve: 0, fuelBudget: 10000, checkEverySeconds: 15 },
   treasure: { enabled: false, autoJoin: true, follow: false, fleetIds: [], followNames: [], followPlayerIds: [], avoidPlayerIds: [],
     rewardItems: [], avoidNames: [], allowHostile: false, minDurabilityPercent: 80, petrolReserve: 0,
     maxProgress: 90, personalProgressLimit: 20, dailyDispatchLimit: 0, checkEverySeconds: 15, participationMode: 'untilFull', repeatAttack: true,
@@ -98,6 +99,8 @@ const constraints = {
   'heroes.targetLevel': int(10000), 'heroes.targetStar': int(1000),
   'trials.raidIds': { ...strings(3), values: ['1','2','3'] }, 'trials.paidPerRaidLimit': int(100),
   'trials.dailyDiamondBudget': int(100000), 'trials.maxSingleCost': int(10000),
+  'progression.raidIds': { ...strings(3), values: ['1','2','3'] }, 'progression.maxFailures': int(100, 1),
+  'pirateHunt.maxFailures': int(100, 1),
   'pirateSweep.type': {kind:'choice',values:['1','2','3']},
   'pirateHunt.fleetIds': strings(10), 'pirateHunt.types': strings(20), 'pirateHunt.maxLevel': int(1000),
   'pirateHunt.minDurabilityPercent': int(100), 'pirateHunt.petrolReserve': int(), 'pirateHunt.fuelBudget': int(), 'pirateHunt.checkEverySeconds': int(60, 5),
@@ -138,6 +141,7 @@ export function defaultSettings() { return copy(DEFAULT_SETTINGS); }
 
 // 兼容上游已有的快捷开关。未保存细化配置时，执行仍沿用上游行为。
 const nativeFields = {
+  stageAuto: ['progression.mainline'],
   trialPaidSweep: ['trials.paid'], trialAdSweep: ['trials.ads'],
   diveEnhance: ['gather.upgradeDiving'], autoDive: ['gather.diving'], salvageEnhance: ['gather.upgradeSalvage'],
   autoSalvage: ['gather.salvage'], autoFish: ['gather.fishing'], fishEnhance: ['gather.upgradeFishing'],
@@ -175,7 +179,8 @@ export function nativeTaskValues(settings, current) {
 }
 
 export function hasExtraWork(settings) {
-  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled || settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled));
+  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled || settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled)
+    || (settings.progression?.enabled && (settings.progression.mainline || settings.progression.trials)) || settings.pirateHunt?.enabled);
 }
 export function settingsUiRules() {
   return { controlFields: idleControlFields, controlGroups: Object.fromEntries(automationControls.flatMap(c=>c.fields.map(path=>[path,c.idleGroup??c.group]))), mappedTasks: Object.keys(nativeFields), numbers: Object.fromEntries(Object.entries(constraints).filter(([, rule]) => rule.kind === 'number').map(([key, rule]) => [key, { min: rule.min, max: rule.max }])) };
@@ -224,6 +229,9 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
       }
     }
   }
+  if (!Object.hasOwn(input, 'progression')) output.progression.mainline = input.schedule?.stageAuto === true;
+  if (output.progression.trials && !output.progression.raidIds.length) errors['progression.raidIds'] = '请选择自动推关的试炼副本';
+  if (output.pirateHunt.enabled && !output.pirateHunt.fleetIds.length) errors['pirateHunt.fleetIds'] = '请选择自动讨伐海盗的舰队';
   if(output.forge.decompose && !output.forge.decomposeQualities.length)errors['forge.decomposeQualities']='请选择可自动分解的装备品质';
   if(output.pet.release && !output.pet.releaseQualities.length)errors['pet.releaseQualities']='请选择可自动放生的海兽品质';
   if (output.antique.enabled && ![output.antique.activate, output.antique.star, output.antique.master, output.antique.suit].some(Boolean)) errors['antique.enabled'] = '请至少开启一项藏品养成动作';
@@ -349,6 +357,8 @@ export function importAutomationSettings(document, options) {
   if (!plain(document) || ![SETTINGS_FORMAT, LEGACY_SETTINGS_FORMAT].includes(document.format) || document.version !== 1 || Object.keys(document).some(k => !['format', 'version', 'settings'].includes(k))) throw new SettingsError({ import: '请选择本工具导出的配置文件（版本 1），文件不能包含账号或凭据' });
   // 原版本1导出没有巨轮分组，只补新增默认值；既有分组仍严格校验。
   const input = plain(document.settings) ? { ...document.settings } : document.settings;
+  if (plain(input) && !Object.hasOwn(input, 'progression')) input.progression = { ...DEFAULT_SETTINGS.progression, mainline: input.schedule?.stageAuto === true };
+  if (plain(input?.pirateHunt)) input.pirateHunt = { ...DEFAULT_SETTINGS.pirateHunt, ...input.pirateHunt };
   if (plain(input)) for (const group of ['login', 'treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','merchant','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
   if (plain(input?.login)) input.login = { ...DEFAULT_SETTINGS.login, ...input.login };
   if (plain(input?.merchant)) input.merchant = { ...DEFAULT_SETTINGS.merchant, ...input.merchant };

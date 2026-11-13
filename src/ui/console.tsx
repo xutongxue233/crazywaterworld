@@ -28,8 +28,10 @@ export function idlePanel(tasks: AutoTask[]) {
     </Card>
     <Card className="idle-notes">
       <CardContent>
-        <p className="dim" id="single-task-status">单独启动：首杀推进、主线推关、联盟互助。开始挂机不会自动启动这些任务。</p>
-        <div className="bar"><Button id="single-go-pirate" variant="outline" size="sm">前往首杀推进</Button><Button id="single-go-stages" variant="outline" size="sm">前往主线推关</Button><Button id="single-go-mutual" variant="outline" size="sm">前往联盟互助</Button></div>
+        <p className="dim">推关与试炼、海盗讨伐开启并配置后，每轮自动执行。失败达到上限后停止对应玩法，暂停后重新开始挂机可重试。</p>
+        <p className="dim" id="challenge-run-state" role="status">推关与讨伐尚无执行记录</p>
+        <p className="dim" id="single-task-status">也可单独开始主线、试炼和首杀推进；联盟互助仍需单独启动。</p>
+        <div className="bar"><Button id="single-go-pirate" variant="outline" size="sm">配置海盗讨伐</Button><Button id="single-go-stages" variant="outline" size="sm">配置推关与试炼</Button><Button id="single-go-mutual" variant="outline" size="sm">前往联盟互助</Button></div>
         <details className="idle-more"><summary>使用说明</summary>
           <p className="dim">这里只控制模块开启；建造、收取、换单、招募与活动领奖等细项在<button id="idle-go-settings" type="button" className="inline-link">游戏配置</button>设置。</p>
           <p className="dim">当前进度和条件统一在<button id="idle-go-overview" type="button" className="inline-link">总览 → 运行概览</button>查看。</p>
@@ -50,7 +52,7 @@ export function idlePanel(tasks: AutoTask[]) {
         </div>)}
       </CardContent></Card>
       {group === '世界' && <Card><CardHeader><CardTitle>海盗首杀连续推进</CardTitle></CardHeader><CardContent>
-        <p className="dim">确认本人的首杀后逐级推进，战败或条件不足时停止。每次手动开启，重启后不自动恢复。</p>
+        <p className="dim">挂机自动讨伐使用上方开关；这里可单独开始连续推进。达到失败停止次数或条件不足时停止，手动任务重启后不恢复。</p>
         <div className="bar"><a href="#config-group-pirate-hunt">设置舰队、目标与预算</a><Button id="pirate-advance-start" disabled>开启首杀推进</Button><Button id="pirate-advance-stop" variant="outline" disabled>停止首杀推进</Button></div>
         <p id="pirate-advance-state" role="status">尚未开启</p>
       </CardContent></Card>}
@@ -67,12 +69,12 @@ export function stagePanel() {
     <div className="grid gap-3">
     <Card>
       <CardHeader>
-        <CardTitle className="title-with-help">挑战主线关卡<HelpTip title="挑战主线关卡">“次数”指同一关连续失败多少次后停止自动挑战。手动开启后每场间隔5秒，通关后连续失败次数清零。</HelpTip><span id="stage-view" className="heading-status" role="status" aria-live="polite">未同步</span></CardTitle>
+        <CardTitle className="title-with-help">主线 / 闯关<HelpTip title="主线 / 闯关">失败停止次数在“推关与试炼”统一配置。手动连续挑战每场间隔5秒；随挂机挑战每轮一次。通关后连续战败清零。</HelpTip><span id="stage-view" className="heading-status" role="status" aria-live="polite">未同步</span></CardTitle>
       </CardHeader>
       <CardContent>
         <div className="bar">
-          <label htmlFor="stage-failures">次数</label>
-          <Input id="stage-failures" aria-label="主线连续失败停止次数" className="w-20" type="number" min="1" defaultValue="3" />
+          <span>失败停止次数：<span id="stage-failures">未同步</span></span>
+          <a href="#config-group-progression">统一配置推关与试炼</a>
           <Button id="stage-start" disabled>自动挑战</Button>
           <Button id="stage-stop" variant="outline" disabled>停止自动</Button>
         </div>
@@ -80,7 +82,7 @@ export function stagePanel() {
       </CardContent>
     </Card>
     <Card>
-      <CardHeader><CardTitle className="title-with-help">试炼副本<HelpTip title="试炼副本">自动挑战逐关推进，次数指同一关连续失败后的停止上限。“挑战一次”只挑战下一关。扫荡掉落和次数规则在各副本说明中。</HelpTip></CardTitle><CardAction className="row-span-1 self-center"><Button id="trial-refresh" variant="outline" size="sm">刷新试炼进度</Button></CardAction></CardHeader>
+      <CardHeader><CardTitle className="title-with-help">试炼副本<HelpTip title="试炼副本">自动推关、失败停止次数和扫荡统一在“推关与试炼”配置。“挑战一次”只挑战下一关，手动自动挑战连续推进。扫荡次数与失败停止次数分别计算。</HelpTip></CardTitle><CardAction className="row-span-1 self-center"><Button id="trial-refresh" variant="outline" size="sm">刷新试炼进度</Button></CardAction></CardHeader>
       <CardContent>
         <div id="trial-view" className="progression-view" aria-live="polite" />
       </CardContent>

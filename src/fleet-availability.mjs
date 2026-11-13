@@ -29,7 +29,7 @@ export function fleetRecordReason(records,buildingId,worldId){
 
 // 同一连接共享城战时段预留和正在启动的手动首杀；不抢占在途任务。
 const dispatchStates = new WeakMap();
-export const dispatchLabels={maintenance:'战后维修',cityWar:'城战接续',pirateHunt:'单独启动的首杀',worldBoss:'世界Boss首战',follow:'巨轮跟随',treasure:'巨轮普通参战',radar:'联盟情报'};
+export const dispatchLabels={maintenance:'战后维修',cityWar:'城战接续',pirateHunt:'海盗讨伐 / 首杀',worldBoss:'世界Boss首战',follow:'巨轮跟随',treasure:'巨轮普通参战',radar:'联盟情报'};
 export function reconcileBossFleets(ledger,fleets,worldId){
  if(!Array.isArray(fleets))return;
  if(!worldId){

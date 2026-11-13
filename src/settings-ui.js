@@ -224,14 +224,24 @@ const configGroups = [
     configField('schedule.pirate','海盗日常扫荡','switch',{help:'使用游戏每日免费扫荡次数，三种海盗共用。无需舰队，不消耗汽油、耐久或钻石；日常任务完成后仍按剩余扫荡次数执行。'}),
     configField('pirateSweep.type','扫荡海盗种类','choice',{options:[['1','海盗先锋'],['2','海盗精锐'],['3','海盗头目']],help:'默认海盗先锋。自动使用所选种类已首杀的最高等级；地图暂时没有该等级目标时等待，不自动改种类或降级。'}),
   ]},
-  { id: 'pirate-hunt', title: '海盗首杀', category: 'world', fields: [
+  { id: 'progression', title: '推关与试炼', category: 'world', fields: [
+    configField('progression.enabled','推关与试炼总开关'),
+    configField('progression.mainline','主线 / 闯关自动挑战','switch',{help:'主线推关与闯关是同一个玩法。随挂机每轮挑战当前关卡一次，胜利后下一轮继续推进。'}),
+    configField('progression.trials','试炼自动推关','switch',{help:'每轮依次挑战所选副本的下一关，无需每轮手动开始。达到停止上限只暂停对应副本，其他玩法继续。'}),
+    configField('progression.raidIds','自动推关副本','multi',{catalog:'trialRaids',empty:'请选择自动推关副本'}),
+    configField('progression.maxFailures','失败停止次数','number',{unit:'次',help:'主线与每个试炼分别累计同一关的连续战败，通关清零。跨挂机轮次和断线重连保留；达到上限后本次挂机不再重试，暂停后重新开始挂机可重试。不是挑战总次数，也不统计网络错误。手动连续挑战共用此设置。'}),
+    configField('schedule.trialSweep','试炼首轮免费扫荡','switch',{help:'只使用免费档位，扫荡与自动推关分别控制，不计入失败停止次数。'}),
+  ] },
+  { id: 'pirate-hunt', title: '海盗讨伐', category: 'world', fields: [
+    configField('pirateHunt.enabled','海盗自动讨伐'),
+    configField('pirateHunt.maxFailures','失败停止次数','number',{unit:'次',help:'只统计本人战报确认的连续战败，首杀成功清零。跨挂机轮次和重连保留，达到上限后停止本次挂机的海盗派遣；暂停后重新开始挂机可重试。结果未确认时保留记录，不按战败重发。'}),
     configField('pirateHunt.fleetIds','首杀参与舰队','multi',{catalog:'expeditionFleets',empty:'请选择首杀舰队',help:'每次只派一支空闲舰队。可与巨轮、城战、情报共用舰队；实际占用或结果待确认时跳过，不抢占任务。'}),
     configField('pirateHunt.types','海盗类型','multi',{catalog:'pirateTypes',empty:'所有类型',help:'从各类型本人尚未首杀的下一等级开始，优先较低等级；空选表示所有类型。'}),
     configField('pirateHunt.maxLevel','推进等级上限','number',{unit:'级',help:'0表示推进到游戏当前允许的等级。每次必须确认本人首杀记录更新后才推进下一级。'}),
     configField('pirateHunt.minDurabilityPercent','最低舰队耐久','number',{unit:'%',help:'低于阈值停止，不自动修理；零耐久或无法确认上限也不派遣。'}),
     configField('pirateHunt.petrolReserve','出征后保留汽油','number',{unit:'汽油'}),
-    configField('pirateHunt.fuelBudget','本次推进汽油预算','number',{unit:'汽油',help:'一次开启推进期间的出征预算。0表示不限额；未知请求仍保留汽油占用，实际库存及保留量仍检查。'}),
-    configField('pirateHunt.checkEverySeconds','战果检查间隔','number',{unit:'秒',help:'战败、汽油/耐久不足、阶段未开放、无合格目标或结果不明时停止；已出征舰队不会强制召回。'}),
+    configField('pirateHunt.fuelBudget','本次推进汽油预算','number',{unit:'汽油',help:'一次挂机或手动连续推进期间的出征预算，跨轮次与重连累计，不在每轮清零。0表示不限额；未知请求仍保留汽油占用，实际库存及保留量仍检查。'}),
+    configField('pirateHunt.checkEverySeconds','手动推进战果检查间隔','number',{unit:'秒',help:'手动连续推进按此间隔检查，自动讨伐随挂机每轮检查。连续战败达到失败停止次数或结果不明时停止；已出征舰队不会强制召回。'}),
   ] },
   { id: 'cityWar', title: '联盟/城战', category: 'world', fields: [
     configField('schedule.guildWelfare', '领取联盟福利礼包'),
@@ -433,7 +443,7 @@ function configRender() {
     for (const task of tasks.filter(task => task.group === name)) if (!group.fields.some(field => field.key === 'schedule.' + task.key)) group.fields.push(configField('schedule.' + task.key, task.label, 'switch', task.key === 'heroRecruitRewards' ? { help: '只领取本赛季已达标的英雄累计招募奖励，不消耗招募券或钻石。与藏品领奖分别控制，不受日常行动开关控制，暂停托管时停止。' } : {}));
   });
   groups.find(g => g.id === 'rewards').title = '任务与领奖';
-  const trialGroup = groups.find(g => g.id === 'daily-challenges');
+  const trialGroup = groups.find(g => g.id === 'progression');
   if (trialGroup) trialGroup.fields.push(
     configField('trials.ads', '试炼免广告扫荡', 'switch', { help:'渠道开放且该副本广告次数有剩余时执行，账号需有免广告权益或已在“广告奖励”中开启无权益领取。当前配置每副本每天1次，不花钻石。先完成普通首轮免费扫荡。' }),
     configField('trials.paid', '试炼钻石扫荡', 'switch', { help:'普通首轮免费之后才执行付费扫荡；还需开启“基础→加速与钻石”中的钻石总开关，并遵守保留量与全局每日预算。新开关默认关闭。' }),
@@ -555,7 +565,7 @@ function configRenderField(spec) {
   } else if (spec.kind === 'dispatchOrder') {
     control = el('div'); control.id=id;
     const paint=()=>{clear(control);const values=configGet(spec.key);values.forEach((value,index)=>{
-      const line=el('div','config-dispatch-row');const label=({cityWar:'城战接续',pirateHunt:'单独启动的首杀',treasure:'巨轮普通参战',follow:'巨轮跟随',worldBoss:'世界Boss首战',radar:'联盟情报'})[value];line.append(el('span','config-order-num',String(index+1)),el('span','config-order-name',label));const actions=el('div','config-order-tools');
+      const line=el('div','config-dispatch-row');const label=({cityWar:'城战接续',pirateHunt:'海盗讨伐 / 首杀',treasure:'巨轮普通参战',follow:'巨轮跟随',worldBoss:'世界Boss首战',radar:'联盟情报'})[value];line.append(el('span','config-order-num',String(index+1)),el('span','config-order-name',label));const actions=el('div','config-order-tools');
       for(const [offset,text] of [[-1,'上移'],[1,'下移']]){const button=configButton(text,()=>{const next=[...values];[next[index],next[index+offset]]=[next[index+offset],next[index]];configSet(spec.key,next);paint();});button.disabled=index+offset<0||index+offset>=values.length;button.setAttribute('aria-label',label+text);actions.append(button);}line.append(actions);control.append(line);
     });};paint();box.append(control);
   } else if (spec.kind === 'priority') {

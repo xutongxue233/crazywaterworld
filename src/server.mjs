@@ -76,6 +76,7 @@ import { readEquipmentForge, planEquipmentForge, releaseStaleEquipmentForge, for
 import { readAntiqueUpgrade, planAntiqueUpgrade, antiqueEnabled } from './antique-upgrade.mjs';
 import { watchBasePushes, surveyBaseAutomation, planBaseAutomation, baseDemands, previewNativeAutomation } from './base-automation.mjs';
 import { createStageTask } from './stages.mjs';
+import { createChallengeRun } from './challenge-automation.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
@@ -1031,8 +1032,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           if (category === 'pirateHunt') {
             const snapshot=await inspectHunt(client,config,session.player),ledger=usageFor(session);
             for(const fleet of snapshot.view.fleets??[])fleet.reason ||= (!settings.pirateHunt.fleetIds.includes(fleet.buildingId)?'未选择此舰队':'')|| fleetRecordReason(ledger.keyRecords(),fleet.buildingId,exactAutomationId(session.player.worldId))||(previewCityReserved.includes(fleet.buildingId)?'城战时段预留':dispatchReservationReason(client,settings,'pirateHunt',fleet.buildingId,{ignoreOwners:['cityWar']}));
-            const selection=selectPirateAdvance(snapshot,settings.pirateHunt,{spent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0,pendingFuel:pendingPetrol(ledger)});
-            const plan={actions:selection.reason?[]:[{kind:'pirateFirst',label:selection.fleet.name+' → '+selection.target.name+' '+selection.target.level+'级',costs:[{id:'汽油',num:selection.cost}]}],notes:[selection.reason||'首杀需在挂机页单独启动；此处只预览下一次派遣']};
+            const progress=pirateRunState(session);
+            const selection=progress.halted?{reason:progress.reason}:selectPirateAdvance(snapshot,settings.pirateHunt,{spent:progress.spent??0,pendingFuel:pendingPetrol(ledger)});
+            const plan={actions:selection.reason?[]:[{kind:'pirateFirst',label:selection.fleet.name+' → '+selection.target.name+' '+selection.target.level+'级',costs:[{id:'汽油',num:selection.cost}]}],notes:[selection.reason||'开启海盗讨伐后随挂机每轮检查；也可单独手动启动，此处仅预览下一次派遣']};
             return {...output(plan,{fleets:snapshot.view.fleets?.length??0,targets:snapshot.view.targets?.length??0},'海盗首杀'),dispatch:{fleets:snapshot.view.fleets,fuel:snapshot.view.fuel,pending:pendingPetrol(ledger)}};
           }
           if (category === 'antique') {
@@ -1607,7 +1609,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           if (route === 'GET /api/fleets/formation') return readFleetFormations(client, config, player);
           if (route === 'GET /api/pirates/hunt') return pirateHuntOptions(client, config, player);
           const rows = await trialProgress(client, config, player.level);
-          for (const row of rows) row.task = session.trials.get(row.raidId)?.view() ?? { running: false, reason: '尚未开启', wins: 0, failures: 0 };
+          for (const row of rows) {
+            row.task = session.trials.get(row.raidId)?.view() ?? { running: false, reason: '尚未开启', wins: 0, failures: 0 };
+            row.configuredMaxFailures = settingsView(session).settings.progression.maxFailures;
+          }
           const sweepSettings = settingsView(session).settings, ledger = usageFor(session);
           for (const row of rows) row.sweeps = await readTrialSweeps(client, protocol, config, player, sweepSettings, row.raidId, {
             channel: { clientInfo: account.login?.eworldClientInfo, language: account.login?.language },
@@ -1746,12 +1751,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       if(route==='GET /api/world/target'){
         const {session}=scoped_(parsed);
         if(!session.client?.connected||session.paused)throw Error('请先连接当前账号，再读取目标详情');
-        const result=await readJob(session,()=>readWorldTarget(session.client,protocol,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{layer:parsed.searchParams.get('layer'),key:parsed.searchParams.get('key'),pirateSpent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0}));json(result);return;
+        const result=await readJob(session,()=>readWorldTarget(session.client,protocol,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{layer:parsed.searchParams.get('layer'),key:parsed.searchParams.get('key'),pirateSpent:pirateRunState(session).spent??0}));json(result);return;
       }
       if (route === 'GET /api/world/overview') {
         const {session}=scoped_(parsed);
         if(!session.client?.connected||session.paused)throw new Error('请先连接当前账号，再读取世界概览');
-        if(!session.mapRead) { const job=readJob(session,()=>readWorldOverview(session.client,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{pirateSpent:session.pirateAdvance.view().spent??0})).finally(()=>{if(session.mapRead===job)session.mapRead=null;});session.mapRead=job; }
+        if(!session.mapRead) { const job=readJob(session,()=>readWorldOverview(session.client,loadConfigSafe(),session.player,settingsView(session).settings,usageFor(session),{pirateSpent:pirateRunState(session).spent??0})).finally(()=>{if(session.mapRead===job)session.mapRead=null;});session.mapRead=job; }
         json(await session.mapRead);return;
       }
       if (route === 'GET /api/world') {
@@ -1824,6 +1829,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const options=settingsView(session).settings.pirateHunt;
         const generation=session.generation;
         let lastReason='';
+        if (session.loop.running && options.enabled) throw new Error('海盗自动讨伐已随挂机运行，请先暂停挂机再手动开始');
         json(session.pirateAdvance.start(options,async()=>{
           const client=await ensureConnected(session,account);
           return {client,player:session.player,config:loadConfigSafe(),ledger:usageFor(session),getSettings:()=>settingsView(session).settings,
@@ -1876,7 +1882,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         let task = session.trials.get(payload.raidId);
         if (!task) { task = createTrialTask(payload.raidId); session.trials.set(payload.raidId, task); }
         const generation = session.generation;
-        json(task.start(payload, async () => {
+        const progression = settingsView(session).settings.progression;
+        if (session.loop.running && progression.enabled && progression.trials && progression.raidIds.includes(String(payload.raidId))) throw new Error('该试炼已随挂机推关，请先暂停挂机再手动开始');
+        json(task.start({ ...payload, maxFailures: payload.maxFailures ?? progression.maxFailures }, async () => {
           const client = await ensureConnected(session, account);
           return { client, player: session.player, config, schedule: work => enqueue(session, work),
             enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected };
@@ -2078,7 +2086,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         return;
       }
       if (route === 'GET /api/stages') {
-        json(scoped_(parsed).session.stages.view());
+        const { session } = scoped_(parsed);
+        json({ ...session.stages.view(), configuredMaxFailures: settingsView(session).settings.progression.maxFailures });
         return;
       }
       if (route === 'POST /api/stages/start') {
@@ -2086,7 +2095,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         needConfirm(payload);
         const { session, account } = scoped_(parsed);
         if (session.paused) throw new Error('账号已暂停，请先恢复托管');
-        json(session.stages.start(payload, async () => {
+        const progression = settingsView(session).settings.progression;
+        if (session.loop.running && progression.enabled && progression.mainline) throw new Error('主线已随挂机推关，请先暂停挂机再手动开始');
+        json(session.stages.start({ ...payload, maxFailures: payload.maxFailures ?? progression.maxFailures }, async () => {
           const client = await ensureConnected(session, account);
           const config = loadConfigSafe();
           let nextCheck = 0;
@@ -2236,7 +2247,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     // Persist only continuous runs for restart. Reserve this account before login awaits.
     saveAutomation(account.id, { enabled: rounds === 0, everySeconds });
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
-      history: [], error: null, recovery: null, connectionFailure: null, controller: new AbortController() });
+      history: [], error: null, recovery: null, connectionFailure: null, challengeRun: createChallengeRun(), controller: new AbortController() });
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，${rounds === 0 ? '持续运行' : '共 ' + rounds + ' 轮'}，每 ${everySeconds} 秒检查一次；关闭网页后继续运行，请保留启动窗口`);
     let credentialFailed = false, recoveryAttempts = 0, kickedRecovery = false;
@@ -2275,6 +2286,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           getFishingGoldReserve: () => loop.fishingGoldReserve,
           getCompassSpinCount: () => loop.compassSpinCount,
           isStageBusy: () => session.stages.view().running,
+          isTrialBusy: id => session.trials.get(id)?.view().running === true,
+          isPirateBusy: () => session.pirateAdvance.view().running,
+          challengeRun: loop.challengeRun,
           getSettings: () => session.preferences,
           onFishBookComplete: () => {
             const saved=loadAutomationSettings(session.id);
@@ -2411,6 +2425,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       });
     } catch { /* 保留未同步状态，下一分钟重试。 */ }
   }
+  function pirateRunState(session) {
+    const manual=session.pirateAdvance.view();
+    return manual.running?manual:session.loop.running?(session.loop.challengeRun?.pirate?.state??{}):{};
+  }
   function loopView(session) {
     const loop = session.loop;
     const rewards = session.client ? rewardSchedule(session.client) : null;
@@ -2421,14 +2439,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       runVersion: RUN_VERSION,
       fleetMaintenance:{...(loop.fleetMaintenance??{rows:[],reason:'等待首次检查'}),enabled:loop.running&&!!session.client?.connected&&fleetMaintenanceEnabled(settingsView(session).settings)},
       singleTasks: {pirate:session.pirateAdvance.view(), stages:session.stages?.view?.(), mutual:session.mutualAid?.view?.()},
+      challenges: { mainline: loop.challengeRun?.mainline ?? {}, trials: loop.challengeRun?.trials ?? {}, pirate: loop.challengeRun?.pirate?.state ?? {} },
       pirateAdvance: session.pirateAdvance.view(),
       controls: automationControlView(settingsView(session).settings).filter(control => !control.taskKey || isActivityTaskAvailable(control.taskKey, session.client)).map(control=>{
         const aliases={'factory.produce':'startProduce','factory.cooperateNative':'nativeProduce','factory.gain':'collect','factory.speedUp':'speedUp','building.build':'build','building.upgrade':'upgrade','building.finish':'finishUpgrade','resident.enabled':'finishOrder','resident.reroll':'denyOrder','farm.enabled':'farm','radar.enabled':'联盟情报','treasure.enabled':'万吨巨轮','cityWar.enabled':'城战接续','forge.enabled':'装备锻造','antique.enabled':'藏品养成','dailies.claimTasks':'dailyRewards','dailies.claimDailyChest':'chests','dailies.claimWeeklyChest':'chests','dailies.claimGift':'gift','resident.rewards':'orderDaily','trials.paid':'trialPaidSweep','trials.ads':'trialAdSweep'};
         const key=control.taskKey||aliases[control.key]||({'worldBoss.enabled':'worldBoss','gather.fishing':'autoFish','gather.upgradeFishing':'fishEnhance','gather.diving':'autoDive','gather.salvage':'autoSalvage','gather.upgradeDiving':'diveEnhance','gather.upgradeSalvage':'salvageEnhance','gather.floaters':'floaters','gather.antiqueFloaters':'antiqueFloaters','cargo.enabled':'cargo','building.collect':'collect','building.supply':'buildSupply','building.speedUp':'speedUp','gold.enabled':'paidGold'})[control.key]||control.key;
-        const recorded=loop.controlStatus?.get(key),observed=rewards?.status(key);
+        const challengeKeys=control.key==='progression.mainline'?['stageAuto']:control.key==='pirateHunt.enabled'?['pirateAuto']:control.key==='progression.trials'?settingsView(session).settings.progression.raidIds.map(id=>'trialAuto:'+id):[key];
+        const recorded=challengeKeys.map(k=>loop.controlStatus?.get(k)).filter(Boolean).sort((a,b)=>(b.checkedAt??0)-(a.checkedAt??0))[0],observed=rewards?.status(key);
         let state=(observed?.checkedAt??0)>(recorded?.checkedAt??0)?observed:recorded||observed;
         if(state?.checkedAt && beijingDay(state.checkedAt*1000)!==displayUsage.day)state=null;
-        state??={text:control.group==='总控制'?'控制项，不单独执行':control.key.endsWith('.enabled')&&['building','factory','heroes','pet','gather'].includes(control.key.split('.')[0])?'分组控制，具体动作状态见下方子项':'本次连接尚无检查结果',state:'unseen',checkedAt:null};
+        state??={text:control.group==='总控制'?'控制项，不单独执行':control.key.endsWith('.enabled')&&['building','factory','heroes','pet','gather','progression'].includes(control.key.split('.')[0])?'分组控制，具体动作状态见下方子项':'本次连接尚无检查结果',state:'unseen',checkedAt:null};
         if(control.key==='events.enabled'&&session.client){const events=watchBasePushes(session.client);state={text:events.choiceObserved?'已同步 '+events.choices.size+' 条事件（等待匹配可处理选项）':'未同步：本次连接尚未收到随机事件状态',state:events.choiceObserved?'waiting':'pending'};}
         return {...control,observation:state,...runtimeProgress(control,state,displayUsage,{running:loop.running,connected:!!session.client?.connected,treasureReward,freeTimes:session.client?.freeRecruitTimes,now:Date.now()+(session.client?.serverClockOffsetMs||0)}),nextCheck:loop.running&&session.client?.connected&&control.enabled&&!control.blockedBy.length?rewards?.nextCheck(key)??null:null,stale:!loop.running||!session.client?.connected};
       }),
