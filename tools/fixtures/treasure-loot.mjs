@@ -8,7 +8,11 @@ export const treasureConfig = { tables: {
   GameplayOpenCfg: table([{ gameplay: '世界宝藏', openDays: [3, 1] }]),
   WorldParamCfg: table([{ paramName: '进攻宝藏消耗汽油', paramValue: 500 }]),
   TreasureLootParamCfg: table([{ paramName: '每日宝藏奖励次数', paramValue: 3 }]),
-  TreasureLootCfg: table([{ quality: 'ORANGE', name: '万吨货轮' }]),
+  TreasureLootCfg: table([
+    { quality: 'BLUE', name: '小型货轮' },
+    { quality: 'PURPLE', name: '中型货轮' },
+    { quality: 'ORANGE', name: '万吨货轮' },
+  ]),
   GuildTitleCfg: table([{ title: 1, treasureLoot: 0 }, { title: 2, treasureLoot: 1 }]),
   BuildingUnlockCfg: table([1, 2, 3].map(n => ({ buildingId: n + '远征船', buildingType: '远征船' }))),
 } };
@@ -43,7 +47,7 @@ export function treasureFixture() {
     defenders: { 71: [{ name: '同行者甲', guildIdx: 7, isNpc: false }], 72: [{ name: '守卫', guildIdx: 0, isNpc: true }] },
     ranks: { 71: [{ playerId: '9007199254740995', nickname: '同行者甲', guildIdx: 7 }], 72: [] },
   };
-  const protocol = { Color: { ORANGE: 5 }, TreasureLootSendFleetsRequest: {} };
+  const protocol = { Color: { BLUE: 3, PURPLE: 4, ORANGE: 5 }, TreasureLootSendFleetsRequest: {} };
   for (const stem of ['TreasureLootStats', 'TreasureLootList', 'MyFleets', 'OnWater', 'AllItem', 'GuildInfo', 'UniteWorldsPlan', 'TreasureLootDefence', 'TreasureLootRank', 'WorldInfo']) {
     protocol[stem + 'Request'] = {}; protocol[stem + 'Response'] = {};
   }

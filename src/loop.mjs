@@ -610,7 +610,7 @@ export async function runLoop(client, protocol, {
         catch (error) { phaseFailure('dailies', '联盟情报检查', error); }
       }
       if (isEnabled && legacyEnabled('treasureLoot')) {
-        try { await serviceTreasureLoot(client, config, { player, enabled: () => legacyActive('treasureLoot'), scheduler: rewards, report: serviceReport('dailies', '世界宝藏') }); }
+        try { await serviceTreasureLoot(client, config, { player, protocol, getSettings, enabled: () => legacyActive('treasureLoot'), scheduler: rewards, report: serviceReport('dailies', '世界宝藏') }); }
         catch (error) { phaseFailure('dailies', '世界宝藏检查', error); }
       }
       if (isEnabled && ['museumCollect', 'museumExplore'].some(legacyEnabled)) {

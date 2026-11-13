@@ -21,7 +21,7 @@ const check = async (name, fn) => {
   catch (error) { results.push({ name, passed: false, error: error.stack }); console.error('失败：' + name + '\n' + error.stack); }
 };
 async function preview(fixture, settings, options) {
-  return planTreasureLoot(await readTreasureLoot(fixture.client, fixture.protocol, fixture.config, fixture.player), fixture.config, settings, options);
+  return planTreasureLoot(await readTreasureLoot(fixture.client, fixture.protocol, fixture.config, fixture.player, { preferences: settings.treasure }), fixture.config, settings, options);
 }
 async function run(fixture, settings, usage = ledger(), options = {}) {
   return runTreasureLoot(fixture.client, fixture.protocol, fixture.config, fixture.player, { getSettings: () => settings, ledger: usage, ...options });
@@ -230,7 +230,7 @@ try {
     const f = treasureFixture(), s = treasureSettings(); f.state.targets = [];
     f.state.fleets.forEach(fleet => { fleet.autoFight = { isOn: true }; });
     const plan = await preview(f, s);
-    assert.equal(plan.actions.length, 0); assert.deepEqual(plan.notes, ['当前没有可读取的万吨货轮']);
+    assert.equal(plan.actions.length, 0); assert.deepEqual(plan.notes, ['当前没有可读取的万吨货轮，保持等待，不抢小型或中型货轮']);
     assert(plan.fleets.every(fleet => fleet.state === '空闲' && !fleet.reason));
   });
 

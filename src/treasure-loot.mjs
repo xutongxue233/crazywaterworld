@@ -4,7 +4,7 @@ import { freeFleet, normalizeFleet, radarFuelReserve } from './radar.mjs';
 import { gameplayOpenDay, worldOpenDays } from './extra-rewards.mjs';
 import {fleetRecordReason,legacyFleetReservationReason} from './fleet-availability.mjs';
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
-// 万吨巨轮：读取实际状态后规划，派遣前再次核对；保存设置和预览均不发送游戏动作。
+// 货轮：读取实际状态后规划，派遣前再次核对；保存设置和预览均不发送游戏动作。
 import { exactAutomationId } from './automation-policy.mjs';
 import { readGuildMembers } from './guild.mjs';
 import { displayMaterial } from './config.mjs';
@@ -38,6 +38,21 @@ export const treasureRepairKey = (worldId, buildingId) => `treasureRepair:${worl
 const homeIdle = fleet => fleet?.state === 1 && fleet.treasureLootUid === 0 && fleet.curGridIdx === 0 && !(fleet.chipWar?.rewardTs > 0);
 const needsRepair = (fleet, preferences) => fleet.durability === 0 || fleet.durability * 100 < fleet.maxDura * preferences.minDurabilityPercent;
 const canRepeat = (record, fleet, preferences) => record?.confirmed === true && preferences.repeatAttack === true && homeIdle(fleet);
+
+// 游戏没有数值吨位字段：TreasureLootCfg 将 BLUE/PURPLE/ORANGE 对应为小型/中型/万吨货轮。
+// 只接收协议与配置共同确认的类型；缺失开关沿用只抢万吨，未知品质不作小船放行。
+function treasureTypes(protocol, config) {
+  const types = ['BLUE', 'PURPLE', 'ORANGE'].flatMap(quality => {
+    const configured = rows(config, 'TreasureLootCfg').filter(row => row.quality === quality);
+    const color = protocol?.Color?.[quality];
+    return configured.length === 1 && integer(color, 1) ? [{ quality, color, name: configured[0].name }] : [];
+  });
+  return types.filter(type => types.filter(other => other.color === type.color).length === 1);
+}
+const allowedTreasureType = (target, types, preferences) => types.find(type => type.color === target.color &&
+  (preferences?.onlyTenThousand === false || type.quality === 'ORANGE'));
+const waitingForTreasure = preferences => preferences?.onlyTenThousand === false
+  ? '当前没有可读取的货轮，保持等待' : '当前没有可读取的万吨货轮，保持等待，不抢小型或中型货轮';
 
 function openingReason(config, player, now) {
   const required = rows(config, 'ModuleOpenCfg').find(row => row.moduleId === '世界宝藏')?.playerLevel;
@@ -115,16 +130,17 @@ export async function readTreasureLoot(client, protocol, config, player, { targe
     treasureLootUid: fleet.treasureLootUid, curGridIdx: fleet.curGridIdx,
     ownerPlayerId: fleet.owner ? exactAutomationId(fleet.owner.playerId) : null }));
   snapshot.allUids = list.treasure.filter(target => integer(target.uid, 1, 2147483647)).map(target => target.uid);
-  const orange = protocol.Color?.ORANGE;
-  if (!integer(orange, 1) || !rows(config, 'TreasureLootCfg').some(row => row.quality === 'ORANGE')) {
-    snapshot.reason = '当前协议或配置无法确认万吨货轮类型'; return snapshot;
+  const types = treasureTypes(protocol, config);
+  if (!types.some(type => preferences?.onlyTenThousand === false || type.quality === 'ORANGE')) {
+    snapshot.reason = preferences?.onlyTenThousand === false ? '当前协议或配置无法确认货轮类型' : '当前协议或配置无法确认万吨货轮类型'; return snapshot;
   }
   const seen = new Set(), duplicates = new Set();
   for (const uid of snapshot.allUids) { if (seen.has(uid)) duplicates.add(uid); seen.add(uid); }
   // 同名响应不含请求uid，逐艘查询，避免并发串配参与者。
   for (const target of list.treasure) {
-    if (target.color !== orange || (targetUid !== null && target.uid !== targetUid)) continue;
-    const item = { uid: target.uid, color: target.color, ownerGuildIdx: target.ownerGuildIdx, progress: target.progress,
+    const type = allowedTreasureType(target, types, preferences);
+    if (!type || (targetUid !== null && target.uid !== targetUid)) continue;
+    const item = { uid: target.uid, color: target.color, quality: type.quality, name: type.name, ownerGuildIdx: target.ownerGuildIdx, progress: target.progress,
       ownerFleetNum: target.ownerFleetNum,gridIdx:target.gridIdx,
       reward: Array.isArray(target.reward?.asset) ? target.reward.asset.map(asset => ({ id: asset?.id, num: exactQuantity(asset?.num) })) : null,
       defenders: [], rank: [], fighters: [], personalProgress: null, reason: '' };
@@ -220,6 +236,8 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
   const candidates = [];
   for (const target of snapshot.targets) {
     let reason = target.reason;
+    if (!reason && !['BLUE', 'PURPLE', 'ORANGE'].includes(target.quality)) reason = '货轮类型未确认，等待重新核对';
+    if (!reason && p.onlyTenThousand !== false && target.quality !== 'ORANGE') reason = '已开启只抢万吨货轮，跳过此货轮并等待';
     const follow = following(target, p, snapshot.playerId, snapshot.nickname, snapshot);
     if (!reason && !integer(p.personalProgressLimit, 0, 100)) reason = '个人进度上限未确认，暂不派遣或备战维修';
     if (!reason && p.personalProgressLimit === 0) reason = '个人进度上限为0，停止新派遣和备战维修';
@@ -233,13 +251,13 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
     if (!reason && p.rewardItems.length && !target.reward.some(asset => p.rewardItems.includes(asset.id))) reason = '奖励不在所选范围';
     if (!reason && !follow && (p.follow || !p.autoJoin)) reason = '未匹配指定跟随玩家的已出发舰队或当前守军，等待目标，不参加其他货轮';
     const reward = (target.reward ?? []).slice(0, 3).map(asset => displayMaterial(config, asset.id)).join('、');
-    const label = `万吨货轮（${reward || '奖励未确认'}，进度 ${target.progress ?? '?'}%）`;
+    const label = `${target.name || '货轮'}（${reward || '奖励未确认'}，进度 ${target.progress ?? '?'}%）`;
     plan.targets.push({ label, reason, followName: follow?.name ?? null,followPhase:follow?.phase??null, personalProgress: target.personalProgress, personalProgressLimit: p.personalProgressLimit });
     if (reason) plan.notes.push(label + '：' + reason);
     else candidates.push({ target, follow, label });
   }
   candidates.sort((a, b) => (a.follow?.priority ?? Infinity) - (b.follow?.priority ?? Infinity) || a.target.progress - b.target.progress || a.target.uid - b.target.uid);
-  if (!snapshot.targets.length) plan.notes.push('当前没有可读取的万吨货轮');
+  if (!snapshot.targets.length) plan.notes.push(waitingForTreasure(p));
   if (rewardBlocked) return plan;
   let fuel = snapshot.fuel - pendingFuel;
   if (!integer(pendingFuel)) { plan.notes.push('未确认派遣的汽油记录异常，停止派遣'); return plan; }
@@ -284,7 +302,7 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
         worldId: snapshot.worldId, beforeDurability: fleet.durability, mode: follow ? 'follow' : 'auto',
         followName: follow?.name ?? null, followPlayerId: follow?.playerId ?? null,followPhase:follow?.phase??null,followDepartedAt:follow?.departedAt??null,followSeenAt:follow?.seenAt??null,
         uniqueKey: treasureRepairKey(snapshot.worldId, buildingId), costs: [{ id: '汽油', num: cost }],
-        label: `${fleetName(buildingId)}普通维修至满耐久，完成后重新检查万吨货轮` });
+        label: `${fleetName(buildingId)}普通维修至满耐久，完成后重新检查货轮` });
       fuel -= cost + snapshot.fuelPerFleet; repairPetrol += cost; count++;
       continue;
     }
@@ -439,7 +457,7 @@ async function legacyReadFleets(client) {
   return { fleets, fuel };
 }
 
-export async function serviceTreasureLoot(client, config, { player, enabled = () => false, report = () => {}, scheduler } = {}) {
+export async function serviceTreasureLoot(client, config, { player, protocol, getSettings = () => null, enabled = () => false, report = () => {}, scheduler } = {}) {
   const finish = entry => { report({ key, label, ...entry }); };
   const skip = reason => finish({ skipped: true, reason });
   const later = seconds => scheduler?.defer(key, scheduler.now() + seconds);
@@ -473,10 +491,21 @@ export async function serviceTreasureLoot(client, config, { player, enabled = ()
     if (fuel - cost < radarFuelReserve) { later(600); return skip('派遣后需保留 ' + radarFuelReserve + ' 汽油，当前 ' + fuel); }
     const treasures = (await client.request('TreasureLootListRequest', {}, 'TreasureLootListResponse'))?.treasure;
     if (!Array.isArray(treasures)) throw new Error('未能读取宝藏列表');
-    const target = pickTreasure(treasures, guildId % 1000, session.refused, now);
-    if (!target) { later(300); return skip('当前没有无主或本盟的宝藏'); }
+    const types = treasureTypes(protocol, config);
+    const preferences = getSettings()?.treasure;
+    const target = pickTreasure(treasures.filter(row => allowedTreasureType(row, types, preferences)), guildId % 1000, session.refused, now);
+    if (!target) { later(300); return skip(waitingForTreasure(preferences) + '（仅考虑无主或本盟目标）'); }
     const fleet = pickTreasureFleet(fleets, client);
     if (!fleet) { later(300); return skip('没有空闲且耐久不低于 80% 的舰队'); }
+    if (!enabled()) return;
+    // 旧入口也复读原目标并检查最新开关；目标变化时等待，不降级换抢其他货轮。
+    const freshTargets = (await client.request('TreasureLootListRequest', {}, 'TreasureLootListResponse'))?.treasure;
+    if (!Array.isArray(freshTargets)) throw new Error('出征前未能确认货轮列表');
+    const matches = freshTargets.filter(row => row.uid === target.uid);
+    if (matches.length !== 1 || !allowedTreasureType(matches[0], types, getSettings()?.treasure) ||
+        !pickTreasure(matches, guildId % 1000, session.refused, now)) {
+      later(300); return skip('出征前货轮类型、归属或筛选条件已变化，保持等待');
+    }
     if (!enabled()) return;
     const id = fleet.buildingId;
     session.fleets.set(id, { uid: target.uid, seen: false });

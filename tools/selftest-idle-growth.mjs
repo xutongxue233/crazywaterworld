@@ -230,6 +230,7 @@ const treasureConfig = { tables: {
   GameplayOpenCfg: { data: [{ gameplay: '世界宝藏', openDays: [3] }] },
   GuildTitleCfg: { data: [{ title: 1, treasureLoot: 0 }, { title: 2, treasureLoot: 1 }] },
   TreasureLootParamCfg: { data: [{ paramName: '每日宝藏奖励次数', paramValue: 3 }] },
+  TreasureLootCfg: { data: [{ quality: 'BLUE', name: '小型货轮' }, { quality: 'PURPLE', name: '中型货轮' }, { quality: 'ORANGE', name: '万吨货轮' }] },
   WorldParamCfg: { data: [{ paramName: '进攻宝藏消耗汽油', paramValue: 500 }] },
 } };
 const treasurePlayer = { level: 21, worldId: 2_001_000_007, guildId: 2004001001004, worldOpenTime: 1000 };
@@ -243,7 +244,7 @@ const treasureWorld = (overrides = {}) => {
     TreasureLootStatsRequest: { todayRewardTimes: 0 },
     MyFleetsRequest: () => ({ fleets: state.fleets }),
     AllItemRequest: { items: [{ itemId: '汽油', num: 20000 }] },
-    TreasureLootListRequest: { treasure: [{ uid: 7, color: 3, progress: 10, ownerGuildIdx: 0, reward: { asset: [{ id: '蓝芯片宝箱', num: 3 }] } }] },
+    TreasureLootListRequest: { treasure: [{ uid: 7, color: 5, progress: 10, ownerGuildIdx: 0, reward: { asset: [{ id: '蓝芯片宝箱', num: 3 }] } }] },
     TreasureLootSendFleetsRequest: ({ fleetBuildingIds }) => {
       state.fleets = state.fleets.map(fleet => (fleet.buildingId === fleetBuildingIds[0] ? { ...fleet, treasureLootUid: 7 } : fleet));
       return {};
@@ -255,7 +256,7 @@ try {
   {
     const { client, state } = treasureWorld();
     const { entries, report } = collect();
-    const options = { player: treasurePlayer, enabled: () => true, report };
+    const options = { player: treasurePlayer, protocol, enabled: () => true, report };
     await serviceTreasureLoot(client, treasureConfig, options);
     assert.equal(entries[0].ok, true, JSON.stringify(entries));
     assert.deepEqual(client.sent('TreasureLootSendFleetsRequest')[0][1], { uid: 7, fleetBuildingIds: ['2远征船'] }, '选耐久达标里战力最高的一队');
@@ -271,7 +272,7 @@ try {
   const reasonFor = async (player, overrides, config = treasureConfig) => {
     const { client } = treasureWorld(overrides);
     const { entries, report } = collect();
-    await serviceTreasureLoot(client, config, { player, enabled: () => true, report });
+    await serviceTreasureLoot(client, config, { player, protocol, enabled: () => true, report });
     assert.equal(client.sent('TreasureLootSendFleetsRequest').length, 0);
     return entries[0].reason;
   };
@@ -280,7 +281,7 @@ try {
   assert.match(await reasonFor(treasurePlayer, { GuildInfoRequest: { myTitle: 1 } }), /职级不能占领/);
   assert.match(await reasonFor(treasurePlayer, { TreasureLootStatsRequest: { todayRewardTimes: 3 } }), /已用完/);
   assert.match(await reasonFor(treasurePlayer, { AllItemRequest: { items: [{ itemId: '汽油', num: 10400 }] } }), /保留 10000 汽油/);
-  assert.match(await reasonFor(treasurePlayer, { TreasureLootListRequest: { treasure: [{ uid: 7, color: 3, progress: 10, ownerGuildIdx: 9 }] } }), /没有无主或本盟/);
+  assert.match(await reasonFor(treasurePlayer, { TreasureLootListRequest: { treasure: [{ uid: 7, color: 5, progress: 10, ownerGuildIdx: 9 }] } }), /无主或本盟/);
   assert.match(await reasonFor(treasurePlayer, { MyFleetsRequest: { fleets: [idleFleet('1远征船', { durability: 50 })] } }), /耐久/);
   assert.match(await reasonFor(treasurePlayer, { MyFleetsRequest: { fleets: [idleFleet('1远征船', { treasureLootUid: 3 }), idleFleet('2远征船', { treasureLootUid: 4 }), idleFleet('3远征船', { treasureLootUid: 5 })] } }), /足够领完/);
   assert.match(await reasonFor({ ...treasurePlayer, worldOpenTime: Date.now() / 1000 }), /尚未开放/);
@@ -288,21 +289,21 @@ try {
     const { client } = treasureWorld();
     registerFleetReservations(client, 'radar', () => false, () => true);
     const { entries, report } = collect();
-    await serviceTreasureLoot(client, treasureConfig, { player: treasurePlayer, enabled: () => true, report });
+    await serviceTreasureLoot(client, treasureConfig, { player: treasurePlayer, protocol, enabled: () => true, report });
     assert.match(entries[0].reason, /尚未确认/, '其他玩法结果未确认时等待');
     assert.equal(client.sent('TreasureLootSendFleetsRequest').length, 0);
   }
   {
     const { client } = treasureWorld({ TreasureLootSendFleetsRequest: () => { throw prompt('TreasureLootSendFleetsRequest'); } });
     const { entries, report } = collect();
-    await serviceTreasureLoot(client, treasureConfig, { player: treasurePlayer, enabled: () => true, report });
+    await serviceTreasureLoot(client, treasureConfig, { player: treasurePlayer, protocol, enabled: () => true, report });
     assert.equal(entries[0].ok, false);
     assert.equal(isFleetReserved(client, '2远征船'), false, '明确被拒后释放舰队');
   }
   {
     const { client } = treasureWorld({ TreasureLootSendFleetsRequest: () => ({}) });
     const { entries, report } = collect();
-    await serviceTreasureLoot(client, treasureConfig, { player: treasurePlayer, enabled: () => true, report });
+    await serviceTreasureLoot(client, treasureConfig, { player: treasurePlayer, protocol, enabled: () => true, report });
     assert.match(entries[0].error, /未确认/);
     assert.equal(isFleetReserved(client, '2远征船'), true, '结果不明时继续占用舰队，不重复派遣');
   }

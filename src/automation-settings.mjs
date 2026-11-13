@@ -51,7 +51,7 @@ export const DEFAULT_SETTINGS = {
   radar: { enabled:false, fleetIds:[], types:['pirate','collect','refugee','spy','fixed'], allowMaterials:false, minDurabilityPercent:80, petrolReserve:1000, dailyPetrolLimit:10000, checkEverySeconds:30 },
   pirateSweep: { type: '1' },
   pirateHunt: { enabled: false, maxFailures: 3, fleetIds: [], types: [], maxLevel: 0, minDurabilityPercent: 80, petrolReserve: 0, fuelBudget: 10000, checkEverySeconds: 15 },
-  treasure: { enabled: false, autoJoin: true, follow: false, fleetIds: [], followNames: [], followPlayerIds: [], avoidPlayerIds: [],
+  treasure: { enabled: false, autoJoin: true, onlyTenThousand: true, follow: false, fleetIds: [], followNames: [], followPlayerIds: [], avoidPlayerIds: [],
     rewardItems: [], avoidNames: [], allowHostile: false, minDurabilityPercent: 80, petrolReserve: 0,
     maxProgress: 90, personalProgressLimit: 20, dailyDispatchLimit: 0, checkEverySeconds: 15, participationMode: 'untilFull', repeatAttack: true,
     autoRepair: true, maxRepairCost: 15000, dailyRepairPetrolLimit: 20000 },
@@ -365,7 +365,7 @@ export function importAutomationSettings(document, options) {
   if (plain(input?.antique)) input.antique = { ...DEFAULT_SETTINGS.antique, ...input.antique };
   if (plain(input?.treasure)) {
     input.treasure = { ...input.treasure };
-    for (const key of ['avoidPlayerIds', 'participationMode', 'repeatAttack', 'autoRepair', 'maxRepairCost', 'dailyRepairPetrolLimit', 'personalProgressLimit']) {
+    for (const key of ['onlyTenThousand', 'avoidPlayerIds', 'participationMode', 'repeatAttack', 'autoRepair', 'maxRepairCost', 'dailyRepairPetrolLimit', 'personalProgressLimit']) {
       if (!Object.hasOwn(input.treasure, key)) input.treasure[key] = copy(DEFAULT_SETTINGS.treasure[key]);
     }
   }
