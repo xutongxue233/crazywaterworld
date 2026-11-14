@@ -808,6 +808,8 @@ function renderLoop(data) {
     setTaskSwitch(input, task?.enabled === true);
     input.closest('.task-setting').dataset.blocked=String(task?.enabled&&!!task?.blockedBy?.length);
     input.title=task?.blockedBy?.length?'需先开启：'+task.blockedBy.join('、'):'';
+    const note=input.closest('.task-setting').querySelector('[data-module-note]');
+    if(note){note.textContent=task?.configurationNote||'';note.hidden=!note.textContent;}
     input.disabled = false;
   }
   if (loopAccount !== current || data.running) {

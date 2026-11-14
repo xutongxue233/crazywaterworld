@@ -8,8 +8,9 @@ export function registerFleetReservations(client, owner, contains, hasAny = () =
 }
 
 export function isFleetReserved(client, buildingId, exceptOwner) {
+  const ignored = Array.isArray(exceptOwner) ? exceptOwner : [exceptOwner];
   for (const [owner, { contains }] of reservations.get(client) ?? []) {
-    if (owner !== exceptOwner && contains(buildingId)) return true;
+    if (!ignored.includes(owner) && contains(buildingId)) return true;
   }
   return false;
 }

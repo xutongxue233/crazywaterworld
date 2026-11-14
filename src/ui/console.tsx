@@ -47,7 +47,7 @@ export function idlePanel(tasks: AutoTask[]) {
       <Card><CardHeader><CardTitle>{group}</CardTitle></CardHeader>
       <CardContent className="task-grid idle-module-grid">
         {modules.filter(t => t.idleGroup === group).map(t => <div className="task-setting" key={t.key}>
-          <div className="task-label-block"><div className="task-label-line"><label htmlFor={'auto-' + t.key}>{t.idleLabel||t.label}</label>{t.help && t.key !== 'gather.enabled' && <HelpTip title={t.label}>{t.help}</HelpTip>}</div></div>
+          <div className="task-label-block"><div className="task-label-line"><label htmlFor={'auto-' + t.key}>{t.idleLabel||t.label}</label>{t.help && t.key !== 'gather.enabled' && <HelpTip title={t.label}>{t.help}</HelpTip>}</div><span className="dim" data-module-note="" hidden /></div>
           <div className="idle-module-actions"><a href={"#config-group-"+t.configTarget} aria-label={"配置"+(t.idleLabel||t.label)}>配置</a><Switch id={'auto-' + t.key} data-auto-task={t.key} data-setting-control="" className="p-0" disabled /></div>
         </div>)}
       </CardContent></Card>

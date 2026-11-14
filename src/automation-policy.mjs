@@ -26,9 +26,12 @@ export function automationWireId(value) {
 }
 
 const gatherTasks = new Set(['autoFish', 'autoDive', 'autoSalvage', 'floaters', 'antiqueFloaters', 'fishEnhance', 'diveEnhance', 'salvageEnhance', 'diveKey']);
+const museumActions = new Set(['museumCollect', 'museumExplore', 'museumAchievement', 'museumComplete', 'museumStart', 'museumGuide', 'museumExhibition', 'museumKeyword']);
 
 export function worldPreferenceEnabled(settings, kind) {
   if (!settings) return true;
+  if (museumActions.has(kind) && settings.museum?.runEnabled === false) return false;
+  if (['radarAuto', 'radarRepair'].includes(kind) && settings.radar?.runEnabled === false) return false;
   if (gatherTasks.has(kind) && (!settings.loop.world || settings.gather.enabled === false)) return false;
   if (['gainFactory', 'collectProduct', 'finishUpgrade', 'build', 'buildSupply', 'upgrade', 'weekFactory', 'finishOrder', 'denyOrder', 'startProduce', 'farm', 'speedUpUpgrade', 'speedUpProduce'].includes(kind) && !settings.loop.world) return false;
   const b = settings.building, f = settings.factory, r = settings.resident;

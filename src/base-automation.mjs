@@ -76,8 +76,8 @@ export async function surveyBaseAutomation(client, protocol, config, player, set
   };
   const member = !!exactAutomationId(player?.guildId);
   const [museum, heroes, pets, gold, guildOrder, guildShip, radar] = await Promise.all([
-    settings.museum.enabled || settings.museum.upgrade || needs.has('museum') ? get('MuseumInfoRequest') : null,
-    settings.museum.enabled ? get('AllHeroRequest') : null,
+    settings.museum.runEnabled !== false && (settings.museum.enabled || settings.museum.upgrade || needs.has('museum')) ? get('MuseumInfoRequest') : null,
+    settings.museum.runEnabled !== false && settings.museum.enabled ? get('AllHeroRequest') : null,
     settings.pet.enabled && settings.pet.advance ? get('AllPetRequest') : null,
     settings.gold.enabled ? get('ClickGoldInfoRequest') : null,
     member && needs.has('guildRecruit') && !settings.alliance?.enabled ? get('GuildOrderRequest') : null,
@@ -120,11 +120,11 @@ export function baseDemands(snapshot, config, settings) {
   const demands = [];
   const add = (source, requirements) => { const items = quantities(requirements); if (validCosts(items)) demands.push({ source, requirements: items }); };
   for (const stage of snapshot.museum?.exploreStages ?? []) {
-    if (!settings.museum.enabled || stage.expedition?.endTime > 0 || !stageAvailable(stage, snapshot, config, settings)) continue;
+    if (settings.museum.runEnabled === false || !settings.museum.enabled || stage.expedition?.endTime > 0 || !stageAvailable(stage, snapshot, config, settings)) continue;
     const { factor, costs } = museumFactor(stage, snapshot, config, settings);
     add('museum', costs.map(item => ({ ...item, num: item.num * factor })));
   }
-  if (settings.museum.upgrade) for (const ex of snapshot.museum?.exhibitions ?? []) {
+  if (settings.museum.runEnabled !== false && settings.museum.upgrade) for (const ex of snapshot.museum?.exhibitions ?? []) {
     const next = rows(config, 'MuseumAreaCfg').find(r => r.areaId === ex.exhibitionId && r.level === ex.level + 1);
     if (next && next.playerLevelReq <= (snapshot.player?.level ?? 0)) add('museum', next.costArr);
   }
@@ -235,7 +235,7 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
 
   function planMuseum() {
     const pref = settings.museum, data = snapshot.museum;
-    if (!pref.enabled && !pref.upgrade) return;
+    if (pref.runEnabled === false || !pref.enabled && !pref.upgrade) return;
     if (!data) { notes.push('博物馆：本轮未取得状态，待开放或连接恢复后再检查'); return; }
     if (pref.enabled) {
       const claimed = new Set((data.claimedAchievements ?? []).map(Number));
@@ -365,7 +365,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
     try {
       const current = getSettings();
       const [group, key] = step.setting.split('.');
-      if (!current[group]?.[key] || (group === 'pet' && !current.pet.enabled) || (group === 'museum' && !current.museum.enabled && key !== 'upgrade')) continue;
+      if (!current[group]?.[key] || (group === 'pet' && !current.pet.enabled) || (group === 'museum' && (current.museum.runEnabled === false || !current.museum.enabled && key !== 'upgrade'))) continue;
       if (!protocol[step.request]) throw new Error('当前协议不支持此动作');
       if (step.kind === 'museumComplete' && (!protocol.MuseumCompleteExploreResponse || !protocol.MuseumRewardRequest || !protocol.MuseumRewardResponse)) throw new Error('当前协议不能完整确认探宝结算与领奖');
       if(step.kind==='choiceEvent') {
@@ -420,7 +420,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         if (step.kind === 'museumStart' && !(body.expedition?.endTime > 0)) throw new Error('服务器尚未确认探宝队伍出发');
         if (step.kind === 'museumComplete') {
           if (!Number.isSafeInteger(body.grade) || body.grade < 1 || body.grade > 5) throw new Error('服务器尚未确认探宝结算');
-          if (!enabled() || !getSettings()?.loop.world || !getSettings()?.museum.enabled) throw new AutomationSkip('探宝已结算，操作已暂停，奖励留待下次领取');
+          if (!enabled() || !getSettings()?.loop.world || getSettings()?.museum.runEnabled === false || !getSettings()?.museum.enabled) throw new AutomationSkip('探宝已结算，操作已暂停，奖励留待下次领取');
           const reward = normalize(await client.request('MuseumRewardRequest', { stageId: step.body.stageId }, 'MuseumRewardResponse', 15000));
           if (reward.exploreStage?.stageId !== step.body.stageId || reward.exploreStage.expedition?.endTime > 0) throw new Error('服务器尚未确认探宝奖励领取完成');
           body = { settlement: body, ...reward };

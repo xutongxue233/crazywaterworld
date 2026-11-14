@@ -2218,7 +2218,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           session.loop.tasks = tasks;
         }
         if (session.client && payload.enabled) rewardSchedule(session.client).clearTask(task.key);
-        if (!Object.values(session.loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !antiqueEnabled(session.preferences)) stopLoop(session, '全部自动项目已暂停');
+        if (!Object.values(session.loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !(session.preferences?.radar?.runEnabled !== false && session.preferences?.radar?.enabled) && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !antiqueEnabled(session.preferences)) stopLoop(session, '全部自动项目已暂停');
         emit(session, 'info', task.label + (payload.enabled ? nativePreferenceEnabled(session.preferences, task.key) ? '已启用' : '已保存为开启，当前分组总开关仍暂停此动作' : '已暂停'));
         json(loopView(session));
         return;
@@ -2260,7 +2260,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     const everySeconds = options.everySeconds ?? current.settings.loop.everySeconds;
     if (!Number.isSafeInteger(rounds) || rounds < 0 || rounds > 100000) throw new Error('轮数必须是 0–100000 的整数');
     if (!Number.isSafeInteger(everySeconds) || everySeconds < 1 || everySeconds > 86400) throw new Error('间隔秒数需要为 1–86400 的整数');
-    if (!Object.values(loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !cityWarEnabled(session.preferences) && !forgeEnabled(session.preferences) && !antiqueEnabled(session.preferences)) throw new Error('请至少启用一个自动项目');
+    if (!Object.values(loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !(session.preferences?.radar?.runEnabled !== false && session.preferences?.radar?.enabled) && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !cityWarEnabled(session.preferences) && !forgeEnabled(session.preferences) && !antiqueEnabled(session.preferences)) throw new Error('请至少启用一个自动项目');
     // Persist only continuous runs for restart. Reserve this account before login awaits.
     if (current.revision && (current.settings.loop.rounds !== rounds || current.settings.loop.everySeconds !== everySeconds)) {
       const next = structuredClone(current.settings);

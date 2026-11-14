@@ -1,7 +1,8 @@
 // 截图对照新增模块：默认只提供配置，不替用户开启资源消费。
 export const siliconFleetDefaults = id => ({ id, enabled: false, tier: 'ORANGE', emptyOnly: true,
   opponentOrder: 'powerDesc', maxPowerRatio: 100, failureLimit: 1, dailyAttackLimit: 30,
-  pursuit: false, safePlayers: [], safeGuilds: [], autoRepair: false, repairSpeedUp: false,
+  pursuit: false, huntEnabled: false, huntPlayers: [], huntRetreat: 'never',
+  safePlayers: [], safeGuilds: [], autoRepair: false, repairSpeedUp: false,
   marchSpeedUp: false, marchTargetSeconds: 60, minDurabilityPercent: 1, maxRepairCost: 0 });
 export const EXTENDED_DEFAULTS = {
   alliance: { enabled: false, recruit: false, recruitDailyLimit: 0, recruitProduction: false,
@@ -49,7 +50,10 @@ export function validateSiliconFleets(value, errors, catalog) {
     for (const [key, rule] of Object.entries(SILICON_FLEET_NUMBERS)) if (!Number.isSafeInteger(row[key]) || row[key] < rule.min || row[key] > rule.max) errors[prefix + '.' + key] = `请输入 ${rule.min}–${rule.max} 之间的整数`;
     if (!['BLUE', 'PURPLE', 'ORANGE'].includes(row.tier)) errors[prefix + '.tier'] = '请选择初等、中等或高等硅矿';
     if (!['powerAsc', 'powerDesc'].includes(row.opponentOrder)) errors[prefix + '.opponentOrder'] = '请选择有效战力顺序';
-    for (const key of ['safePlayers', 'safeGuilds']) if (!Array.isArray(row[key]) || row[key].length > 100 || new Set(row[key]).size !== row[key].length || row[key].some(v => typeof v !== 'string' || !v.trim() || v !== v.trim() || v.length > 80 || /[\r\n\u0000-\u001f]/.test(v))) errors[prefix + '.' + key] = '请输入不重复的完整名称，每行一个';
+    if (!['never', 'afterReward', 'onTarget'].includes(row.huntRetreat)) errors[prefix + '.huntRetreat'] = '请选择有效的追杀撤退策略';
+    for (const key of ['safePlayers', 'safeGuilds', 'huntPlayers']) if (!Array.isArray(row[key]) || row[key].length > 100 || new Set(row[key]).size !== row[key].length || row[key].some(v => typeof v !== 'string' || !v.trim() || v !== v.trim() || v.length > 80 || /[\r\n\u0000-\u001f]/.test(v))) errors[prefix + '.' + key] = '请输入不重复的完整名称，每行一个';
+    if (row.huntEnabled && Array.isArray(row.huntPlayers) && !row.huntPlayers.length) errors[prefix + '.huntPlayers'] = '开启追杀前，请填写玩家完整昵称';
+    if (Array.isArray(row.huntPlayers) && row.huntPlayers.every(v => typeof v === 'string') && new Set(row.huntPlayers.map(v => v.trim().toLocaleLowerCase())).size !== row.huntPlayers.length) errors[prefix + '.huntPlayers'] = '追杀名单不能包含重复昵称（忽略大小写）';
     if (Array.isArray(row.safeGuilds) && row.safeGuilds.some(v => !/^[1-9]\d{0,2}$/.test(v))) errors[prefix + '.safeGuilds'] = '请输入1–999的联盟数字编号，每行一个';
     output.push(structuredClone(row));
   }

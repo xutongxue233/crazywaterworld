@@ -24,7 +24,8 @@ export async function readAllianceRadar(client,config,player){
  return {world,guild,events,fleets:own.fleets.map(f=>normalize({...f,state:f.state,durability:f.durability,maxDura:f.maxDura,curGridIdx:f.curGridIdx})),buildings:water.building,stock,fuel,cost};
 }
 const eventKey=(_snapshot,event)=>radarKey(event);
-export async function runAllianceRadar(client,config,player,{getSettings,ledger,enabled,report,canUseFleet=()=>true}){
+export async function runAllianceRadar(client,config,player,{getSettings,ledger,enabled:callerEnabled,report,canUseFleet=()=>true}){
+ const enabled=()=>callerEnabled()&&getSettings()?.radar?.runEnabled!==false&&getSettings()?.radar?.enabled===true;
  if(!enabled()||!getSettings()?.radar.enabled||busy.has(client))return;busy.add(client);
  const note=reason=>report({label:'联盟情报',skipped:true,reason});
  try{

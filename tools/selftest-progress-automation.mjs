@@ -12,8 +12,11 @@ const migrated = taskSettings({ mail: true });
 for (const key of keys) {
   assert.equal(automationTasks.find(task => task.key === key)?.initial, false);
   assert.equal(migrated[key], false, 'existing accounts must opt in to new spending');
-  const control = [...PAGE.matchAll(/<button\b[^>]*>/g)].map(match => match[0]).find(button => button.includes('data-auto-task="schedule.' + key + '"'));
+  const module = ['radarAuto', 'radarRepair'].includes(key) ? 'radar' : ['museumCollect', 'museumExplore'].includes(key) ? 'museum' : null;
+  const controlKey = module ? module + '.runEnabled' : 'schedule.' + key;
+  const control = [...PAGE.matchAll(/<button\b[^>]*>/g)].map(match => match[0]).find(button => button.includes('data-auto-task="' + controlKey + '"'));
   assert.ok(control?.includes('role="switch"'), 'the saved schedule control must be a real rendered switch');
+  if (module) assert(PAGE.includes("configField('schedule." + key + "'"), 'the legacy choice remains editable in detailed settings');
   assert.ok(!PAGE.includes('data-legacy="true"'), 'compatibility controls must be real switches');
 }
 

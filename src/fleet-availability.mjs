@@ -45,6 +45,7 @@ export function fleetDispatchView(client,settings,ledger,fleets,worldId){
  const order=dispatchOrder(settings),time=Date.now();
  return fleets.map(f=>{
   const intents=order.filter(k=>{
+   if(k==='radar'&&settings?.radar?.runEnabled===false)return false;
    if(k==='silicon')return settings?.silicon?.enabled&&settings.silicon.fleets?.some(policy=>policy.enabled&&policy.id===f.buildingId);
    if(k==='pirateHunt')return dispatchStates.get(client)?.get(k)?.until>time&&dispatchStates.get(client).get(k).ids.includes(f.buildingId);
    const p=settings[k==='follow'?'treasure':k];

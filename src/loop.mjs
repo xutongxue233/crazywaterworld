@@ -235,9 +235,9 @@ export async function runLoop(client, protocol, {
     const serviceActive = key => isActivityTaskAvailable(key, client) && (active(key) || Boolean((getSettings() || key === 'battleReportRewards') && aliases[key]?.some(active)));
     const takeoverReason = key => {
       const s = getSettings();
-      if (s?.radar?.enabled && ['radarAuto','radarRepair'].includes(key)) return '联盟情报';
+      if (s?.radar?.runEnabled !== false && s?.radar?.enabled && ['radarAuto','radarRepair'].includes(key)) return '联盟情报';
       if (s?.forge?.enabled && ['equipmentCollect','equipmentCraft'].includes(key)) return '装备锻造';
-      if (s?.loop?.world && s.museum?.enabled && ['museumCollect','museumExplore','museumAchievements'].includes(key)) return '博物馆';
+      if (s?.loop?.world && s.museum?.runEnabled !== false && s.museum?.enabled && ['museumCollect','museumExplore','museumAchievements'].includes(key)) return '博物馆';
       if (s?.loop?.world && s.pet?.enabled && ['petCollect','petBreed'].includes(key)) return '海兽';
       if (s?.treasure?.enabled && key === 'treasureLoot') return '巨轮';
       if (s?.loop?.heroes && s.heroes?.enabled && key === 'heroGrowth') return '英雄成长';
@@ -468,7 +468,7 @@ export async function runLoop(client, protocol, {
     }
 
     async function checkRadar(){
-      if(stop.aborted || !getSettings()?.radar.enabled || Date.now()<radarAt)return;
+      if(stop.aborted || getSettings()?.radar.runEnabled === false || !getSettings()?.radar.enabled || Date.now()<radarAt)return;
       try{await runAllianceRadar(client,config,player,{getSettings,ledger:usageLedger,canUseFleet:id=>!dispatchReservationReason(client,getSettings(),'radar',id),enabled:()=>!stop.aborted&&client.connected,report(entry){summary.world.results.push(entry);if(!entry.skipped)summary.world.planned++;stepLog('world')({...entry,title:entry.label,category:'联盟情报'});}});}
       catch(error){phaseFailure('world','联盟情报',error);}
       finally{rewards?.expect('联盟情报',rewards.now()+(getSettings()?.radar.checkEverySeconds??30));radarAt=Date.now()+(getSettings()?.radar.checkEverySeconds??30)*1000;}
@@ -1017,7 +1017,7 @@ export async function runLoop(client, protocol, {
           const afkAt = isEnabled && enabled('afk') ? (afkDeadline ?? Date.now() + 60_000) : Infinity;
           const wakeAt = Math.min(nextRound, factorySchedule.nextAt(), siliconNext(), extendedNext(), merchantNext(),
             fleetMaintenanceEnabled(getSettings()) ? maintenanceAt : Infinity,
-            getSettings()?.radar.enabled ? radarAt : Infinity,
+            getSettings()?.radar.runEnabled !== false && getSettings()?.radar.enabled ? radarAt : Infinity,
             isEnabled && enabled('upgrade') ? upgradeAt : Infinity,
             treasureAutomationEnabled(getSettings()) ? treasureAt : Infinity,
             cityWarEnabled(getSettings()) ? cityWarAt : Infinity,
@@ -1036,7 +1036,7 @@ export async function runLoop(client, protocol, {
           if (extendedNext() <= Date.now()) await schedule(checkExtended);
           const dispatchAt = Math.min(siliconNext(),
             fleetMaintenanceEnabled(getSettings()) ? maintenanceAt : Infinity,
-            getSettings()?.radar.enabled ? radarAt : Infinity,
+            getSettings()?.radar.runEnabled !== false && getSettings()?.radar.enabled ? radarAt : Infinity,
             cityWarEnabled(getSettings()) ? cityWarAt : Infinity,
             treasureAutomationEnabled(getSettings()) ? treasureAt : Infinity);
           if (dispatchSettingsPending || dispatchAt <= Date.now()) {

@@ -42,7 +42,7 @@ export const DEFAULT_SETTINGS = {
   cargo: { enabled: false, dailyLoadLimit: 0 },
   events: { enabled: false, otherOption: 1 },
   pet: { release: false, releaseQualities: [], enabled: false, claim: true, breed: false, species: [], quality: 'BLUE', universal: false, feed: false, advance: false },
-  museum: { enabled: false, upgrade: false, factor: 1, materialFactor: false, factorMaterials: [], stockThreshold: 0, matchedFactor: 1, maps: [], useGuide: false, dailyGuideLimit: 0 },
+  museum: { runEnabled: true, enabled: false, upgrade: false, factor: 1, materialFactor: false, factorMaterials: [], stockThreshold: 0, matchedFactor: 1, maps: [], useGuide: false, dailyGuideLimit: 0 },
   resources: { keepAccelerators: 0, allowDiamonds: false, diamondThreshold: 0, diamondDailyLimit: 2000 },
   // noPrivilege 仅保留旧配置/导出的兼容字段；无权益账号统一走等待领取。
   ads: { noPrivilege: true, waitSeconds: 15 },
@@ -54,7 +54,7 @@ export const DEFAULT_SETTINGS = {
   trials: { paid: false, ads: false, raidIds: ['1','2','3'], paidPerRaidLimit: 1, dailyDiamondBudget: 450, maxSingleCost: 50 },
   fleetDispatch: { priority: ['cityWar','pirateHunt','worldBoss','follow','treasure','radar','silicon'] },
   worldBoss: { enabled: false, fleetIds: [], minDurabilityPercent: 80, petrolReserve: 0 },
-  radar: { enabled:false, fleetIds:[], types:['pirate','collect','refugee','spy','fixed'], allowMaterials:false, minDurabilityPercent:80, petrolReserve:1000, dailyPetrolLimit:10000, checkEverySeconds:30 },
+  radar: { runEnabled:true, enabled:false, fleetIds:[], types:['pirate','collect','refugee','spy','fixed'], allowMaterials:false, minDurabilityPercent:80, petrolReserve:1000, dailyPetrolLimit:10000, checkEverySeconds:30 },
   pirateSweep: { type: '1' },
   pirateHunt: { enabled: false, maxFailures: 3, fleetIds: [], types: [], maxLevel: 0, minDurabilityPercent: 80, petrolReserve: 0, fuelBudget: 10000, checkEverySeconds: 15 },
   treasure: { enabled: false, autoJoin: true, onlyTenThousand: true, follow: false, fleetIds: [], followNames: [], followPlayerIds: [], avoidPlayerIds: [],
@@ -192,11 +192,11 @@ export function nativeTaskValues(settings, current) {
 
 export function hasExtraWork(settings) {
   if (settings?.alliance?.enabled || settings?.heroRaid?.enabled || settings?.silicon?.enabled) return true;
-  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled || settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled)
+  return !!settings && ((settings.loop.world && (settings.museum.runEnabled !== false && (settings.museum.enabled || settings.museum.upgrade) || settings.events.enabled || settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled)
     || (settings.progression?.enabled && (settings.progression.mainline || settings.progression.trials)) || settings.pirateHunt?.enabled);
 }
 export function hasBaseWork(settings) {
-  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled ||
+  return !!settings && ((settings.loop.world && (settings.museum.runEnabled !== false && (settings.museum.enabled || settings.museum.upgrade) || settings.events.enabled ||
     settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) ||
     (settings.loop.dailies && settings.gold.enabled));
 }
@@ -411,6 +411,7 @@ export function importAutomationSettings(document, options) {
   if (plain(input?.pet)) input.pet={release:false,releaseQualities:[],...input.pet};
   if (plain(input?.forge)) input.forge={decompose:false,decomposeQualities:[],...input.forge};
   if (plain(input?.gather)) input.gather = { enabled:true, fishBook:false, antiqueFloaters: false, ...input.gather };
+  for (const group of ['museum','radar']) if (plain(input?.[group])) input[group] = { runEnabled:true, ...input[group] };
   if (plain(input?.factory) && !Object.hasOwn(input.factory, 'checkEverySeconds')) input.factory = { ...input.factory, checkEverySeconds: DEFAULT_SETTINGS.factory.checkEverySeconds };
   return validateSettings(input, options);
 }
