@@ -6,7 +6,7 @@ import { HelpTip } from "./help-tip"
 export function settingsPage() {
   return renderToStaticMarkup(<div id="config-root">
     <div className="config-toolbar">
-      <div className="config-owner"><div className="title-with-help"><strong id="config-account-name">当前账号的游戏配置</strong><HelpTip title="游戏配置">修改后自动保存，无需点击保存。停止输入约0.6秒后提交，校验失败会提示修正。只更新当前账号，不会启动挂机；已有挂机在下次检查时使用新设置。</HelpTip></div><span id="config-state" role="status" aria-live="polite">尚未载入</span></div>
+      <div className="config-owner"><div className="title-with-help"><strong id="config-account-name">当前账号的游戏配置</strong><HelpTip title="游戏配置">本页设置自动挂机的执行细项、策略、权限和参数；对应功能的启停统一在挂机页控制。修改后自动保存，无需点击保存。停止输入约0.6秒后提交，校验失败会提示修正。只更新当前账号，不会启动挂机；已有挂机在下次检查时使用新设置。</HelpTip></div><span id="config-state" role="status" aria-live="polite">尚未载入</span></div>
       <div className="config-actions">
         <Button id="config-import" type="button" size="sm" variant="outline" disabled>导入</Button>
         <Button id="config-export" type="button" size="sm" variant="outline" disabled>导出</Button>

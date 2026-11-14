@@ -33,7 +33,7 @@ export function idlePanel(tasks: AutoTask[]) {
         <p className="dim" id="single-task-status">手动主线、试炼和首杀推进在挑战页开始；联盟互助仍需单独启动。</p>
         <div className="bar"><Button id="single-go-pirate" variant="outline" size="sm">配置海盗讨伐</Button><Button id="single-go-stages" variant="outline" size="sm">配置推关与试炼</Button><Button id="single-go-mutual" variant="outline" size="sm">前往联盟互助</Button></div>
         <details className="idle-more"><summary>使用说明</summary>
-          <p className="dim">这里只控制模块开启；建造、收取、换单、招募与活动领奖等细项在<button id="idle-go-settings" type="button" className="inline-link">游戏配置</button>设置。</p>
+          <p className="dim">本页只负责开启或关闭对应的自动挂机。收取、建造、种植、加速等执行细项，以及策略、权限和参数，都在<button id="idle-go-settings" type="button" className="inline-link">游戏配置</button>设置。</p>
           <p className="dim">当前进度和条件统一在<button id="idle-go-overview" type="button" className="inline-link">总览 → 运行概览</button>查看。</p>
           <p className="dim" id="runtime-version" />
         </details>

@@ -626,11 +626,10 @@ function configRender() {
       const heading = el('div', 'config-group-heading title-with-help'); const title = el('h3', '', group.title); title.id = section.id + '-title'; heading.append(title);
 
       section.append(heading);
-      if (group.movedHelp.length) section.append(el('p', 'config-help', group.movedHelp.join(' ')));
       if (group.movedCount || group.id === 'pirate-hunt') {
-        const jump=el('button','config-small-button','前往挂机设置');jump.type='button';
-        jump.onclick=()=>{document.querySelector('#tabs [data-tab="idle"]').click();const tab=[...document.querySelectorAll('[data-idle-group]')].find(x=>x.textContent===group.controlGroup);tab?.click();if(group.controlGroup==='总控制'){document.querySelector('[aria-label="挂机设置分组"]').scrollIntoView({block:'center'});}};
-        const note=el('div','config-help','模块总开关在挂机页，细项在本组设置。');note.append(jump);section.append(note);
+        const jump=el('button','config-small-button','前往挂机启停');jump.type='button';
+        jump.onclick=()=>openIdleControls(group.controlKeys.find(key=>movedFields.has(key)));
+        const note=el('div','config-help','是否自动运行由挂机页控制；执行细项、策略、权限和参数在这里设置。');note.append(jump);section.append(note);
       }
       for (const spec of group.fields) { const field = { ...spec, category, groupId: group.id }; configEditor.fields.set(spec.key, field); section.append(configRenderField(field)); }
       groupHost.append(section);

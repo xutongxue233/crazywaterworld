@@ -692,9 +692,15 @@ const savingTasks = new Set();
 let loopSettingsRevision = null;
 function selectIdleGroup(value) {
   document.querySelector('[aria-label="挂机设置分组"]').hidden=false;
-  $('idle-search').value='';$('idle-filter').value='all';for(const row of document.querySelectorAll('.task-setting'))row.hidden=false;$('idle-filter-count').textContent='';
+  $('idle-search').value='';$('idle-filter').value='all';
   document.querySelectorAll('[data-idle-group]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.idleGroup===String(value))));
   document.querySelectorAll('[data-idle-panel]').forEach(panel=>panel.hidden=panel.dataset.idlePanel!==String(value));
+  filterIdleControls();
+}
+function openIdleControls(key) {
+  document.querySelector('#tabs [data-tab="idle"]').click();
+  const input=$('auto-'+key),panel=input?.closest('[data-idle-panel]');
+  if(panel) { selectIdleGroup(panel.dataset.idlePanel); input.closest('.task-setting').scrollIntoView({block:'center'}); input.focus({preventScroll:true}); }
 }
 for(const button of document.querySelectorAll('[data-idle-group]')) {
   button.onclick=()=>selectIdleGroup(button.dataset.idleGroup);
@@ -779,7 +785,7 @@ $('idle-go-settings').onclick=()=>document.querySelector('#tabs [data-tab="setti
 $('idle-go-overview').onclick=()=>{document.querySelector('#tabs [data-tab="overview"]').click();$('overview-task-summary').scrollIntoView({block:'center'});};
 function filterIdleControls(){
  const query=$('idle-search').value.trim().toLowerCase(),mode=$('idle-filter').value;let count=0;
- for(const input of taskInputs){const row=input.closest('.task-setting');const match=(!query||row.textContent.toLowerCase().includes(query))&&(mode!=='enabled'||input.getAttribute('aria-checked')==='true')&&(mode!=='blocked'||row.dataset.blocked==='true');row.hidden=!match;if(match)count++;}
+ for(const input of taskInputs){const row=input.closest('.task-setting');const match=row.dataset.unavailable!=='true'&&(!query||row.textContent.toLowerCase().includes(query))&&(mode!=='enabled'||input.getAttribute('aria-checked')==='true')&&(mode!=='blocked'||row.dataset.blocked==='true');row.hidden=!match;if(match)count++;}
  const filtering=!!query||mode!=='all';
  document.querySelector('[aria-label="挂机设置分组"]').hidden=filtering;
  for(const panel of document.querySelectorAll('[data-idle-panel]'))panel.hidden=filtering?![...panel.querySelectorAll('.task-setting')].some(row=>!row.hidden):document.querySelector('[data-idle-group="'+panel.dataset.idlePanel+'"]').getAttribute('aria-selected')!=='true';
@@ -805,12 +811,13 @@ function renderLoop(data) {
   for (const input of taskInputs) {
     if (savingTasks.has(current + ':' + input.dataset.autoTask)) continue;
     const task = (data.controls ?? []).find(t => t.key === input.dataset.autoTask);
+    input.closest('.task-setting').dataset.unavailable=String(!task);
     setTaskSwitch(input, task?.enabled === true);
     input.closest('.task-setting').dataset.blocked=String(task?.enabled&&!!task?.blockedBy?.length);
     input.title=task?.blockedBy?.length?'需先开启：'+task.blockedBy.join('、'):'';
     const note=input.closest('.task-setting').querySelector('[data-module-note]');
-    if(note){note.textContent=task?.configurationNote||'';note.hidden=!note.textContent;}
-    input.disabled = false;
+    if(note){note.textContent=task?.configurationNote||(task?.enabled&&task?.blockedBy?.length?'需先开启：'+task.blockedBy.join('、'):'');note.hidden=!note.textContent;}
+    input.disabled = !task;
   }
   if (loopAccount !== current || data.running) {
     $('loop-every').value = data.everyMs / 1000;
