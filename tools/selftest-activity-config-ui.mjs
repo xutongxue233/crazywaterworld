@@ -57,13 +57,20 @@ await test('复开后全部入口和参数恢复，原配置定义未被过滤�
   assert(!hidden.some(group => group.id === 'river-series'));
 });
 
-const loadSource = script.slice(script.indexOf('async function configLoad('), script.indexOf('function configMayChangeAccount('));
-const saveSource = script.slice(script.indexOf('async function configSave('), script.indexOf('async function configImportFile('));
+const loadSource = script.slice(script.indexOf('async function configLoad('), script.indexOf('async function configMayChangeAccount('));
+const saveSource = script.slice(script.indexOf('function configSave('), script.indexOf('async function configImportFile('));
 const dirtySource = script.slice(script.indexOf('function configIsDirty('), script.indexOf('function configVisible('));
+const page = fs.readFileSync(new URL('../src/page.mjs', import.meta.url), 'utf8');
+const toggleSource = page.slice(page.indexOf('async function toggleAutoTask('), page.indexOf('for (const input of taskInputs) input.onclick'));
 function loadFixture(initial = dataFor([])) {
   const state = { next: structuredClone(initial), renders: [], usageRenders: 0, messages: [], calls: [] };
-  const api = new Function('state', 'renderGroups', definitions + '\n' + dirtySource + '\n' + loadSource + '\n' + saveSource + `
+  const api = new Function('state', 'renderGroups', definitions + '\n' + dirtySource + '\n' + loadSource + '\n' + saveSource + '\n' + toggleSource + `
     const current = 'isolated-account', accounts = [];
+    const savingTasks = new Set();
+    let loopVersion = 0, loopSettingsRevision = 7;
+    const setTaskSwitch = (input, value) => { input.checked = value; };
+    const refreshLoop = () => {};
+    const reportError = error => { throw error; };
     const $ = () => ({});
     const call = async route => { state.calls.push(route); return route === '/api/settings' ? structuredClone(state.next) : { controls: [] }; };
     const configBusy = value => { configEditor.busy = value; };
@@ -74,7 +81,7 @@ function loadFixture(initial = dataFor([])) {
     const configErrors = error => { throw error; };
     const configRenderUsage = () => { state.usageRenders++; };
     const configRender = () => state.renders.push({ groups: renderGroups(configEditor.data), draft: structuredClone(configEditor.draft) });
-    return { editor: configEditor, load: configLoad, save: configSave, dirty: configIsDirty };
+    return { editor: configEditor, load: configLoad, save: configSave, dirty: configIsDirty, toggle: toggleAutoTask };
   `)(state, renderGroups);
   return { state, ...api };
 }
@@ -130,6 +137,21 @@ await test('规则不变的后台刷新只更新运行数据，不反复重绘�
   assert.equal(f.editor.draft.eventActions.compassThreshold, 42);
 });
 
+await test('挂机开关保存期间开始编辑，随后刷新保留同账号草稿和原冲突版本', async () => {
+  const f = loadFixture(); await f.load();
+  const owner = f.editor.owner;
+  f.state.next.revision = 8;
+  const input = { dataset: { autoTask: 'building.collect' }, checked: true, getAttribute() { return String(this.checked); } };
+  const pending = f.toggle(input);
+  f.editor.draft.eventActions.compassThreshold = 88;
+  await pending;
+  assert.equal(f.editor.owner, owner, '快捷开关不能让草稿失去账号归属');
+  await f.load();
+  assert.equal(f.editor.draft.eventActions.compassThreshold, 88);
+  assert.equal(f.editor.data.revision, 7, '保留版本冲突保护，不能用旧草稿覆盖新开关');
+  assert(f.dirty());
+});
+
 await test('只改变任务清单也更新动态配置入口', async () => {
   const f = loadFixture(); await f.load();
   f.state.next.tasks = f.state.next.tasks.filter(task => task.key !== 'festivalActive');
@@ -140,6 +162,8 @@ await test('只改变任务清单也更新动态配置入口', async () => {
 
 await test('保存回复带回新的下线规则时同步重绘，避免后续刷新误判展示未变', async () => {
   const f = loadFixture(); await f.load();
+  f.editor.draft.schedule.riverScore = false;
+  f.state.next.settings.schedule.riverScore = false;
   f.state.next.rules.hiddenFields = [...hiddenFields];
   f.state.next.running = true;
   await f.save();

@@ -6,11 +6,11 @@ import { HelpTip } from "./help-tip"
 export function settingsPage() {
   return renderToStaticMarkup(<div id="config-root">
     <div className="config-toolbar">
-      <div className="config-owner"><div className="title-with-help"><strong id="config-account-name">当前账号的游戏配置</strong><HelpTip title="游戏配置">保存只更新当前账号的配置，不会启动挂机。已有挂机在下次检查时使用新设置；运行轮数在下次开始挂机时生效。</HelpTip></div><span id="config-state" role="status" aria-live="polite">尚未载入</span></div>
+      <div className="config-owner"><div className="title-with-help"><strong id="config-account-name">当前账号的游戏配置</strong><HelpTip title="游戏配置">修改后自动保存，无需点击保存。停止输入约0.6秒后提交，校验失败会提示修正。只更新当前账号，不会启动挂机；已有挂机在下次检查时使用新设置。</HelpTip></div><span id="config-state" role="status" aria-live="polite">尚未载入</span></div>
       <div className="config-actions">
         <Button id="config-import" type="button" size="sm" variant="outline" disabled>导入</Button>
         <Button id="config-export" type="button" size="sm" variant="outline" disabled>导出</Button>
-        <Button id="config-save" type="submit" size="sm" form="config-form" aria-label="保存配置" disabled>保存</Button>
+        <Button id="config-retry" type="button" size="sm" variant="outline" hidden disabled>重试自动保存</Button>
         <input id="config-file" type="file" accept=".json,application/json" hidden />
       </div>
     </div>

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { claimAdShop } from '../src/ad-shop.mjs';
+import { adAccess, claimAdShop } from '../src/ad-shop.mjs';
 
 const NOW = 100, TOMORROW = 10000;
 function fixture({ vip = 3, firstCharge = false, max = [2, 1] } = {}) {
@@ -31,6 +31,7 @@ function fixture({ vip = 3, firstCharge = false, max = [2, 1] } = {}) {
   const options = {
     clientInfo: { channelId: '1400', appId: '14021170', originVersion: '' }, language: 'zh_CN',
     player: { level: 10, vip: { vipLevel: vip } }, enabled: () => enabled, report: e => log.push(e),
+    getSettings: () => ({ ads: { noPrivilege: false, waitSeconds: 0.01 } }),
     schedule: {
       due: key => { assert.equal(key, 'adShop'); return now >= until; },
       now: () => now, nextDay: () => TOMORROW, defer: (key, time) => { assert.equal(key, 'adShop'); until = time; },
@@ -58,9 +59,11 @@ for (const via of ['VIP', '首充']) {
 }
 {
   const f = fixture({ vip: 2 });
+  assert.equal((await adAccess(f.client, f.config.tables, f.options)).waitMs, 15000, '旧账号没有ads配置时默认等待15秒');
+  f.calls.length = 0;
   await f.run();
-  assert.deepEqual(names(f), ['FirstChargeRequest']);
-  assert.match(f.log[0].reason, /没有免广告权益/);
+  assert.deepEqual(f.products.map(p => p.gotTimes), [2, 1]);
+  assert(names(f).includes('FirstChargeRequest'));
   assert(f.until() > NOW);
 }
 for (const change of [
@@ -97,8 +100,10 @@ for (const change of [
 {
   const f = fixture({ firstCharge: false, vip: 1 });
   f.products[0].reward = true;
+  const access = await adAccess(f.client, f.config.tables, f.options);
+  assert.equal(access.waitMs, 15000, '商品奖励标记不能当作免广告权益，仍须等待');
   await f.run();
-  assert.deepEqual(names(f), ['FirstChargeRequest'], '商品奖励标记不能当作免广告权益');
+  assert(names(f).includes('GotAdvRewardRequest'));
 }
 {
   const f = fixture({ max: [4, 1] });

@@ -39,7 +39,8 @@ export const DEFAULT_SETTINGS = {
   pet: { release: false, releaseQualities: [], enabled: false, claim: true, breed: false, species: [], quality: 'BLUE', universal: false, feed: false, advance: false },
   museum: { enabled: false, upgrade: false, factor: 1, materialFactor: false, factorMaterials: [], stockThreshold: 0, matchedFactor: 1, maps: [], useGuide: false, dailyGuideLimit: 0 },
   resources: { keepAccelerators: 0, allowDiamonds: false, diamondThreshold: 0, diamondDailyLimit: 2000 },
-  ads: { noPrivilege: false, waitSeconds: 15 },
+  // noPrivilege 仅保留旧配置/导出的兼容字段；无权益账号统一走等待领取。
+  ads: { noPrivilege: true, waitSeconds: 15 },
   gold: { enabled: false, times: 3 },
   heroes: { enabled: true, level: true, star: true, skill: true, heroIds: [], universal: true, keepExp: 0, targetLevel: 0, targetStar: 0 },
   dailies: { enabled: true, claimTasks: true, claimDailyChest: true, claimWeeklyChest: true, claimGift: true },
@@ -163,9 +164,10 @@ export function applyNativeTask(settings, key, enabled) {
   }
   return result;
 }
-export function settingsFromNative(tasks, { everySeconds = 60, fishingGoldReserve = 10000 } = {}) {
+export function settingsFromNative(tasks, { rounds = 0, everySeconds = 60, fishingGoldReserve = 10000 } = {}) {
   let result = defaultSettings();
   for (const [key, value] of Object.entries(taskSettings(tasks))) result = applyNativeTask(result, key, value);
+  result.loop.rounds = rounds;
   result.loop.everySeconds = Math.max(1, Number.isSafeInteger(everySeconds) ? everySeconds : 60);
   result.gather.fishingGoldReserve = fishingGoldReserve;
   return result;
@@ -279,6 +281,7 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
     if (output.farm.crops.some(v => !crops.has(v.id))) errors['farm.crops'] = '包含当前游戏中不存在的作物';
   }
   if (Object.keys(errors).length) throw new SettingsError(errors);
+  output.ads.noPrivilege = true;
   output.schedule = nativeTaskValues(output, output.schedule);
   return output;
 }

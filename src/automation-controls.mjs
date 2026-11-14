@@ -62,14 +62,14 @@ const idleModules = {
  'loop.tasks':['日常与活动','rewards','主线、支线与成就'],
  'loop.dailies':['日常与活动','daily-actions','日常行动'],
  'schedule.guildOrders':['世界','guild-orders','联盟订单'],
- 'schedule.radarAuto':['世界','radar','联盟情报派遣（沿用原规则）'],
+ 'schedule.radarAuto':['世界','radar','联盟情报派遣'],
  'schedule.radarRepair':['世界','radar','情报舰队维修'],
- 'schedule.equipmentCollect':['英雄','equipment-legacy','装备制造领取（沿用原规则）'],
- 'schedule.equipmentCraft':['英雄','equipment-legacy','装备制造续产（沿用原规则）'],
- 'schedule.museumCollect':['基地','museum','博物馆领奖（沿用原规则）'],
- 'schedule.museumExplore':['基地','museum','博物馆探险（沿用原规则）'],
- 'schedule.petCollect':['基地','pet','海兽成熟领取（沿用原规则）'],
- 'schedule.petBreed':['基地','pet','海兽培育（沿用原规则）'],
+ 'schedule.equipmentCollect':['英雄','equipment-legacy','装备制造领取'],
+ 'schedule.equipmentCraft':['英雄','equipment-legacy','装备制造续产'],
+ 'schedule.museumCollect':['基地','museum','博物馆领奖'],
+ 'schedule.museumExplore':['基地','museum','博物馆探险'],
+ 'schedule.petCollect':['基地','pet','海兽成熟领取'],
+ 'schedule.petBreed':['基地','pet','海兽培育'],
 };
 for(const control of controls){const module=idleModules[control.key];if(module)Object.assign(control,{idleGroup:module[0],configTarget:module[1],idleLabel:module[2]});}
 export const idleAutomationControls=controls.filter(c=>c.idleGroup);

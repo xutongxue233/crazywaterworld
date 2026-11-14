@@ -85,11 +85,12 @@ await test('走江积分、战令及免费/广告助力分别回读，二次检�
   assert.equal(f.sent('BattlePassGotRewardRequest')[0].body.type, 10);
   assert.deepEqual(f.sent('GotAdvRewardRequest')[0].body, { type: 4, id: 1001 });
 });
-await test('广告权益不足只领免费档，活动未开放不读写活动协议', async () => {
+await test('广告权益不足等待后领取，活动未开放不读写活动协议', async () => {
   const f = setup();
   f.player.vip.vipLevel = 0;
+  f.settings.ads = { noPrivilege: false, waitSeconds: 0.01 };
   await f.run(riverActivity, 'riverHelp');
-  assert.equal(f.sent('GotAdvRewardRequest').length, 0);
+  assert.equal(f.sent('GotAdvRewardRequest').length, 1);
   f.client.festivals[0].subActivity[0].openTime = f.now + 100;
   const before = f.state.reads.length;
   await f.run(riverActivity, 'riverScore');

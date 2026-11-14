@@ -493,8 +493,9 @@ async function loadAccounts(reload) {
 }
 
 $('account').onchange = async () => {
-  if (!configMayChangeAccount($('account').value)) { $('account').value = current || ''; return; }
-  current = $('account').value;
+  const next = $('account').value;
+  if (!await configMayChangeAccount(next)) { $('account').value = current || ''; return; }
+  current = next;
   giftAccountChanged();
   configAccountChanged();
   loginSettingsAccountChanged();
@@ -725,7 +726,8 @@ async function pirateAdvanceCommand(start) {
   if(start&&(!$('pirate-manual-failures').reportValidity()||!Number.isSafeInteger(maxFailures)))return;
   if(start)pirateFailureOptions.set(account,maxFailures);
   pirateAdvanceErrors.delete(account);
-  if(start && configIsDirty()){reportError(new Error('请先保存海盗首杀参数，再开启推进'));return;}
+  if(start && !await configFlush()){reportError(new Error('海盗参数尚未保存，请先处理配置页的提示'));return;}
+  if(account!==current)return;
   $('pirate-advance-start').disabled=$('pirate-advance-stop').disabled=true;
   try{const data=await call('/api/pirates/advance/'+(start?'start':'stop'),{method:'POST',body:JSON.stringify({confirm:true,...(start?{maxFailures}:{})})});if(account===current)renderPirateAdvance(data);}
   catch(error){if(account===current){pirateAdvanceErrors.set(account,error.message);$('pirate-advance-state').textContent='未启动：'+error.message;reportError(error);}}
@@ -856,18 +858,21 @@ async function refreshLoop() {
 
 async function toggleAutoTask(input) {
   const account = current, key = input.dataset.autoTask, saving = account + ':' + key;
-  if (configIsDirty()) { reportError(new Error('游戏配置有未保存草稿，请先保存或重新载入，再修改挂机开关')); return; }
+  if (savingTasks.has(saving)) return;
   const enabled = input.getAttribute('aria-checked') !== 'true';
-  setTaskSwitch(input, enabled);
   savingTasks.add(saving);
   input.disabled = true;
   ++loopVersion;
   try {
+    if (!await configFlush()) throw new Error('配置尚未保存，请先处理配置页的提示');
+    if (account !== current) return;
+    setTaskSwitch(input, enabled);
     const eventTask = Boolean(input.dataset.eventTask);
     if (eventTask) activityTaskEdits.set(saving, { enabled, pending: true, version: ++activitiesVersion });
     const updated = await call(eventTask ? '/api/loop/task' : '/api/loop/control', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled, ...(eventTask ? {} : { revision: loopSettingsRevision }) }) });
     if (eventTask) { syncActivityTask(key, enabled, account); activityTaskEdits.set(saving, { enabled, pending: false, version: ++activitiesVersion }); }
-    if (account === current) { loopSettingsRevision = updated.settingsRevision; configEditor.owner = null; }
+    // 草稿仍属于当前账号；configLoad 按版本刷新，不能清空 owner 后绕过未保存保护。
+    if (account === current) { loopSettingsRevision = updated.settingsRevision; }
   } catch (error) { if (input.dataset.eventTask) activityTaskEdits.delete(saving); if(account===current){setTaskSwitch(input, !enabled); reportError(error);} }
   finally {
     savingTasks.delete(saving);
@@ -886,6 +891,9 @@ async function toggleAutoTask(input) {
 for (const input of taskInputs) input.onclick = () => toggleAutoTask(input);
 
 $('loop-start').onclick = async () => {
+  const account = current;
+  if (!await configFlush()) { reportError(new Error('配置尚未保存，请先处理配置页的提示')); return; }
+  if (account !== current) return;
   try {
     await call('/api/loop/start', {
       method: 'POST',
@@ -1419,7 +1427,7 @@ async function renderAccounts() {
     const use = smallButton(account.id === current ? '已选中' : '切换到它');
     use.disabled = account.id === current;
     use.onclick = async () => {
-      if (!configMayChangeAccount(account.id)) return;
+      if (!await configMayChangeAccount(account.id)) return;
       current = account.id;
       snapshot=account.status??{};renderAccountSelect();
       giftAccountChanged();

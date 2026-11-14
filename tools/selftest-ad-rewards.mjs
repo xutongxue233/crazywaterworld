@@ -184,16 +184,22 @@ await test('协议目录与文档枚举、字段一致', () => {
   for (const name of ['TrialRaidBuySweepResponse', 'SpeedUpUpgradeBuildingResponse', 'MuseumSpeedUpCaseResponse']) assert(!p[name], name + ' 不存在，不能按名称拼接回包');
 });
 
-await test('新增任务默认关闭，旧设置和旧导出不会开启无权益领取', () => {
+await test('广告任务仍独立开关，无权益策略默认开启且兼容旧关闭值', () => {
   const defaults = defaultSettings();
-  assert.deepEqual(defaults.ads, { noPrivilege: false, waitSeconds: 15 });
+  assert.deepEqual(defaults.ads, { noPrivilege: true, waitSeconds: 15 });
   for (const key of ['afkAd', 'compassAdGift', 'adSpeedUpProduce', 'adSpeedUpBuilding', 'adSpeedUpMuseum']) assert.equal(automationTasks.find(task => task.key === key)?.initial, false, key);
   const old = validateSettings(defaultSettings());
   delete old.ads;
   const file = path.join(dir, 'old-settings.json');
   fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { qa: { settings: old, revision: 3 } } }));
-  assert.equal(loadAutomationSettings('qa', { file }).settings.ads.noPrivilege, false);
-  assert.equal(importAutomationSettings({ format: 'crazywaterword-automation', version: 1, settings: old }).ads.noPrivilege, false);
+  assert.equal(loadAutomationSettings('qa', { file }).settings.ads.noPrivilege, true);
+  assert.equal(importAutomationSettings({ format: 'crazywaterword-automation', version: 1, settings: old }).ads.noPrivilege, true);
+  old.ads = { noPrivilege: false, waitSeconds: 21 };
+  fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { qa: { settings: old, revision: 3 } } }));
+  const bytes = fs.readFileSync(file);
+  assert.deepEqual(loadAutomationSettings('qa', { file }).settings.ads, { noPrivilege: true, waitSeconds: 21 });
+  assert.deepEqual(importAutomationSettings({ format: 'crazywaterword-automation', version: 1, settings: old }).ads, { noPrivilege: true, waitSeconds: 21 });
+  assert.deepEqual(fs.readFileSync(file), bytes, '读取迁移不改写磁盘与版本');
   for (const bad of [4, 121, 1.5]) assert.throws(() => validateSettings({ ...defaultSettings(), ads: { noPrivilege: true, waitSeconds: bad } }), /5–120/);
   const closed = defaultSettings();
   closed.loop.world = false;
@@ -203,10 +209,12 @@ await test('新增任务默认关闭，旧设置和旧导出不会开启无权�
   assert.equal(nativePreferenceEnabled(open, 'adSpeedUpProduce'), false);
   assert.deepEqual(automationControlView(open).find(c => c.key === 'schedule.adSpeedUpProduce').blockedBy, ['工厂总开关']);
   const ui = fs.readFileSync(new URL('../src/settings-ui.js', import.meta.url), 'utf8');
-  for (const key of ['ads.noPrivilege', 'ads.waitSeconds', 'schedule.afkAd', 'schedule.compassAdGift', 'schedule.adSpeedUpProduce', 'schedule.adSpeedUpBuilding', 'schedule.adSpeedUpMuseum']) assert(ui.includes("'" + key + "'"), key);
+  assert(!ui.includes("configField('ads.noPrivilege'"));
+  assert(!ui.includes('when:d=>d.ads.noPrivilege'));
+  for (const key of ['ads.waitSeconds', 'schedule.afkAd', 'schedule.compassAdGift', 'schedule.adSpeedUpProduce', 'schedule.adSpeedUpBuilding', 'schedule.adSpeedUpMuseum']) assert(ui.includes("'" + key + "'"), key);
 });
 
-await test('无权益且未开启时全部入口都不发送广告或领奖请求', async () => {
+await test('旧无权益开关为false不再阻止已开启的广告入口', async () => {
   const f = server(), c = context(f, { opted: false, keys: ['afkAd', 'adSpeedUpProduce', 'adSpeedUpBuilding', 'adSpeedUpMuseum', 'heroAdRecruit', 'antiqueAdRecruit'] });
   f.state.building = [factory('1木工厂', [job(1, HOUR)])];
   await claimAfkAd(f.client, config, c.ctx);
@@ -214,8 +222,17 @@ await test('无权益且未开启时全部入口都不发送广告或领奖请�
   await recruitWithSkipAds(f.client, config, { ...c.ctx, enabled: key => ['heroAdRecruit', 'antiqueAdRecruit'].includes(key) });
   const schedule = { due: () => true, now: nowS, nextDay: () => nowS() + 86400, defer() {} };
   await claimAdShop(f.client, config, { ...c.ctx, enabled: () => true, schedule });
+  for (const name of ['DrawAfkRewardRequest', 'SpeedUpFactoryProduceRequest', 'RecruitStartRequest', 'AntiqueRecruitRequest', 'GotAdvRewardRequest']) assert(f.names().includes(name), name);
+  assert(!c.log.some(row => row.reason === '当前账号没有免广告权益'));
+});
+
+await test('无权益默认策略不绕过各广告任务的关闭开关', async () => {
+  const f = server(), c = context(f);
+  await claimAfkAd(f.client, config, c.ctx);
+  await claimAdSpeedUps(f.client, config, c.ctx);
+  await recruitWithSkipAds(f.client, config, c.ctx);
+  await claimAdShop(f.client, config, { ...c.ctx, enabled: () => false, schedule: { due: () => true } });
   assert.deepEqual(f.state.writes, []);
-  assert(c.log.some(row => row.reason === '当前账号没有免广告权益'));
 });
 
 await test('挂机收益：60 秒窗口内申请、等待后领取，次数用完即停', async () => {
@@ -440,13 +457,13 @@ await test('招募：前一天未知记录不再永久阻塞，当天未知仍�
 });
 
 const trialRun = (f, l, options = {}) => executeTrialSweep(f.client, f.protocol, f.config, f.player, 1, 'ad', { getSettings: () => f.settings, ledger: l, channel: f.channel, ...options });
-await test('试炼广告扫荡：无权益需开启，等待后发送，暂停释放记录', async () => {
+await test('试炼广告扫荡：旧无权益关闭值也等待领取，暂停释放记录', async () => {
   const closed = trialModesFixture();
   closed.player.vip.vipLevel = 1;
+  closed.settings.ads = { noPrivilege: false, waitSeconds: WAIT_SECONDS };
   const none = await trialRun(closed, ledger());
-  assert.equal(none.skipped, true);
-  assert.equal(none.reason, '当前账号没有免广告权益');
-  assert.deepEqual(closed.state.writes, []);
+  assert.equal(none.ok, true);
+  assert.deepEqual(closed.state.writes.map(row => row.name), ['WatchAdvRequest', 'TrialRaidBuySweepRequest']);
 
   const f = trialModesFixture(), l = ledger();
   f.player.vip.vipLevel = 1;
@@ -507,10 +524,11 @@ function seasonal({ opted = true } = {}) {
   return { ...f, l, log, run, sent: name => f.state.writes.filter(row => row.name === name), set: value => { on = value; } };
 }
 
-await test('走江广告礼包：无权益开启后领取，回包有奖励即确认，未开启仍只领免费档', async () => {
+await test('走江广告礼包：旧无权益关闭值仍领取，回包有奖励即确认', async () => {
   const closed = seasonal({ opted: false });
   await closed.run(riverActivity, 'riverHelp');
-  assert.equal(closed.sent('WatchAdvRequest').length, 0);
+  assert.equal(closed.sent('WatchAdvRequest').length, 1);
+  assert.equal(closed.sent('GotAdvRewardRequest').length, 1);
   assert.equal(closed.sent('SnowballClaimGiftRequest').length, 1);
 
   const f = seasonal();
@@ -539,11 +557,11 @@ await test('走江广告礼包：无权益开启后领取，回包有奖励即�
   assert.equal(takeAdSlot(g.client, { waitMs: 1 }), true, '未真正发送时不占用本轮额度');
 });
 
-await test('龙王罗盘广告礼包：type=3 仅领广告档，次日可再领，未开启不发送', async () => {
+await test('龙王罗盘广告礼包：type=3 仅领广告档，次日可再领，无权益默认领取', async () => {
   const closed = seasonal({ opted: false });
   await closed.run(compassActivity, 'compassAdGift');
-  assert.equal(closed.sent('WatchAdvRequest').length, 0);
-  assert.equal(closed.log.at(-1).reason, '当前账号没有免广告权益');
+  assert.equal(closed.sent('WatchAdvRequest').length, 1);
+  assert.equal(closed.sent('GotAdvRewardRequest').length, 1);
 
   const f = seasonal();
   await f.run(compassActivity, 'compassAdGift');

@@ -44,15 +44,19 @@ export async function hasSkipPrivilege(client, tables, player) {
   return Array.isArray(state?.firstCharge?.record) && state.firstCharge.record.length > 0;
 }
 
-// 无权益账号需用户主动开启：协议层只发广告申请并等待，不播放视频。
+// 已开启的广告任务，无权益时统一申请并等待；旧 noPrivilege 值不再门控。
 // reason 非空表示不可领取；waitMs 为 0 表示账号有权益，与客户端一样立即领取。
+export function adWaitMs(settings) {
+  const seconds = settings?.ads?.waitSeconds ?? 15;
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new Error('广告等待时间必须大于 0');
+  return seconds * 1000;
+}
+
 export async function adAccess(client, tables, { player, clientInfo, language, settings }) {
   const reason = channelUnavailable(tables, player, clientInfo, language);
   if (reason) return { reason };
   if (await hasSkipPrivilege(client, tables, player)) return { waitMs: 0 };
-  const ads = settings?.ads;
-  if (ads?.noPrivilege !== true || !(ads.waitSeconds > 0)) return { reason: '当前账号没有免广告权益' };
-  return { waitMs: ads.waitSeconds * 1000 };
+  return { waitMs: adWaitMs(settings) };
 }
 
 function adState(client) {

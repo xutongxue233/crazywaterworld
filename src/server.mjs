@@ -234,7 +234,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       dailySingle: dailySingleState(),
       loop: {
         running: false,
-        rounds: 0,
+        rounds: preferences?.loop.rounds ?? saved?.rounds ?? 0,
         completed: 0,
         everyMs: (preferences?.loop.everySeconds ?? saved?.everySeconds ?? 60) * 1000,
         tasks: preferences ? nativeTaskValues(preferences, taskSettings(saved?.tasks)) : taskSettings(saved?.tasks),
@@ -297,15 +297,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     session.loop.tasks = nativeTaskValues(entry.settings, session.loop.tasks);
     session.loop.fishingGoldReserve = entry.settings.gather.fishingGoldReserve;
     session.loop.everyMs = entry.settings.loop.everySeconds * 1000;
+    if (!session.loop.running) session.loop.rounds = entry.settings.loop.rounds;
   }
 
   function settingsView(session) {
     const saved = loadAutomationSettings(session.id);
     if (saved.revision && saved.revision !== session.preferencesRevision) adoptPreferences(session, saved);
     const settings = saved.revision ? saved.settings : settingsFromNative(session.loop.tasks, {
-      everySeconds: session.loop.everyMs / 1000, fishingGoldReserve: session.loop.fishingGoldReserve,
+      rounds: session.loop.rounds, everySeconds: session.loop.everyMs / 1000, fishingGoldReserve: session.loop.fishingGoldReserve,
     });
-    const baseRevision = createHash('sha256').update(JSON.stringify([session.loop.tasks, session.loop.everyMs, session.loop.fishingGoldReserve])).digest('hex');
+    const baseRevision = createHash('sha256').update(JSON.stringify([session.loop.tasks, session.loop.rounds, session.loop.everyMs, session.loop.fishingGoldReserve])).digest('hex');
     const availability = activityAvailability(session.client);
     return { settings, revision: saved.revision, savedAt: saved.savedAt, baseRevision, catalog: settingsCatalog(loadConfigSafe()),
       tasks: automationTasks.filter(task => !availability.hiddenTasks.includes(task.key)), rules: { ...settingsUiRules(), hiddenFields: availability.hiddenFields },
@@ -2137,7 +2138,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
-        startLoop(session, account, { rounds: payload.rounds ?? 0, everySeconds: payload.everySeconds });
+        startLoop(session, account, { rounds: payload.rounds, everySeconds: payload.everySeconds });
         json(loopView(session));
         return;
       }
@@ -2235,15 +2236,24 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     emit(session, 'info', reason);
   }
 
-  function startLoop(session, account, { rounds = 0, everySeconds = session.loop.everyMs / 1000 } = {}) {
+  function startLoop(session, account, options = {}) {
     if (session.paused) throw new Error('账号已暂停，请先恢复托管');
     const loop = session.loop;
     if (loop.running) throw new Error('这个账号的挂机已在运行');
-    if (!Number.isSafeInteger(rounds) || rounds < 0) throw new Error('轮数必须是非负整数');
+    const current = settingsView(session);
+    const rounds = options.rounds ?? current.settings.loop.rounds;
+    const everySeconds = options.everySeconds ?? current.settings.loop.everySeconds;
+    if (!Number.isSafeInteger(rounds) || rounds < 0 || rounds > 100000) throw new Error('轮数必须是 0–100000 的整数');
     if (!Number.isSafeInteger(everySeconds) || everySeconds < 1 || everySeconds > 86400) throw new Error('间隔秒数需要为 1–86400 的整数');
     if (!Object.values(loop.tasks).some(Boolean) && !hasExtraWork(session.preferences) && !session.preferences?.radar?.enabled && !session.preferences?.worldBoss?.enabled && !treasureAutomationEnabled(session.preferences) && !cityWarEnabled(session.preferences) && !forgeEnabled(session.preferences) && !antiqueEnabled(session.preferences)) throw new Error('请至少启用一个自动项目');
     // Persist only continuous runs for restart. Reserve this account before login awaits.
-    saveAutomation(account.id, { enabled: rounds === 0, everySeconds });
+    if (current.revision && (current.settings.loop.rounds !== rounds || current.settings.loop.everySeconds !== everySeconds)) {
+      const next = structuredClone(current.settings);
+      next.loop.rounds = rounds;
+      next.loop.everySeconds = everySeconds;
+      adoptPreferences(session, saveAutomationSettings(session.id, next, { revision: current.revision }));
+    }
+    saveAutomation(account.id, { enabled: rounds === 0, rounds, everySeconds });
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
       history: [], error: null, recovery: null, connectionFailure: null, challengeRun: createChallengeRun(), controller: new AbortController() });
     const { signal } = loop.controller;
@@ -2495,7 +2505,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           for (const account of loadStore().accounts) {
             if (!account.automation?.enabled || account.automation.paused) continue;
             const session = sessionFor(account.id);
-            try { startLoop(session, account); }
+            try { startLoop(session, account, { rounds: 0 }); }
             catch (error) { emit(session, 'error', `无法恢复挂机：${error.message}`); }
           }
           resolve(address);

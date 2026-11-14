@@ -1,6 +1,6 @@
-// 试炼钻石/广告扫荡：费用、免广告权益或无权益开关在发送前再次核对。
+// 试炼钻石/广告扫荡：发送前复查费用与权益，无权益时申请后等待。
 import { exactAutomationId } from './automation-policy.mjs';
-import { takeAdSlot, prepareAd, coolAd, isAdNotFinished, AD_PACED_REASON, AD_NOT_FINISHED_REASON, AD_PAUSED_REASON } from './ad-shop.mjs';
+import { adWaitMs, takeAdSlot, prepareAd, coolAd, isAdNotFinished, AD_PACED_REASON, AD_NOT_FINISHED_REASON, AD_PAUSED_REASON } from './ad-shop.mjs';
 const rows = (config, key) => config?.tables?.[key]?.data ?? [];
 const valid = n => Number.isSafeInteger(n) && n >= 0;
 const nowOf = client => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
@@ -94,8 +94,7 @@ export async function readTrialSweeps(client, protocol, config, player, settings
       if (channelReason) throw new Error(channelReason);
       let skip = vip?.effects?.some(([key,value]) => key === '免广告' && Number(value) > 0);
       if (!skip) { const charge = await client.request('FirstChargeRequest', {}, 'FirstChargeResponse'); if (!Array.isArray(charge.firstCharge?.record)) throw new Error('免广告权益未确认'); skip = charge.firstCharge.record.length > 0; }
-      if (!skip && !(settings?.ads?.noPrivilege === true && settings.ads.waitSeconds > 0)) throw new Error('当前账号没有免广告权益');
-      state.adWaitMs = skip ? 0 : settings.ads.waitSeconds * 1000;
+      state.adWaitMs = skip ? 0 : adWaitMs(settings);
       const water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
       const id = effectIds[raidId], entries = water.adv?.filter(r => r.id === id);
       const limit = rows(config, 'AdvEffectCfg').find(r => r.id === id)?.dailyLimit;

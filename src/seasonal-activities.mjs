@@ -166,7 +166,7 @@ async function snowGift(client, config, ctx, event, allowed) {
     }
     const access = await adAccess(client, config.tables, { ...ctx, settings: ctx.settings?.() });
     if (access.reason) {
-      waiting(ctx, access.reason === '当前账号没有免广告权益' ? '广告礼包需要游戏内观看、已有免广告权益或开启无权益领取' : access.reason);
+      waiting(ctx, access.reason);
       continue;
     }
     const adTarget = 'pack:4:' + pack.packId;
