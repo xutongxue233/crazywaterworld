@@ -264,10 +264,10 @@ const configGroups = [
   { id: 'treasure', title: '万吨巨轮', category: 'world', fields: [
     configField('treasure.enabled', '巨轮自动化总开关', 'switch', { help: '开始挂机后生效，独立于基地自动化。按所选舰队、参与模式和预算出征；耐久不足可先普通维修。不会召回、补油或修改编队。' }),
     configField('treasure.onlyTenThousand', '只抢万吨货轮', 'switch', { help: '默认开启，只参加游戏标记为橙色品质的万吨货轮；没有符合条件的目标就等待，不抢小型或中型货轮。常规参加、跟随和旧版自动抢货轮均遵守。关闭后也可参加游戏配置已确认的小型、中型货轮，其他筛选仍有效。' }),
-    configField('treasure.autoJoin', '常规自动参加', 'switch', { when:d=>!d.treasure.follow, help:'仅在未开启指定跟随时生效。开启跟随后，以名单为硬条件，不使用常规自动参加兜底。' }),
+    configField('treasure.autoJoin', '常规自动参加', 'switch', { when:d=>!d.treasure.follow, help:'仅在未开启指定跟随时生效。开启跟随后，首次出征必须匹配名单，不使用常规自动参加兜底；已确认的跟随按反复攻占设置接续。' }),
     configField('treasure.participationMode', '参与模式', 'radio', { options: [['untilFull', '打满就停'], ['always', '每次参与']], help: '打满就停：达到游戏今日领奖上限后不再派遣或维修。每次参与：领奖已满仍可参加，但不增加奖励次数，其他限制仍有效。' }),
-    configField('treasure.repeatAttack', '反复攻占', 'switch', { help: '已确认出征后，被打回或返航且回到主城空闲时，可再次参与同一货轮。请求结果未知时继续等待确认。' }),
-    configField('treasure.follow', '跟随指定玩家', 'switch', { help: '识别名单中正在前往货轮的舰队，也兼容当前守军。收到可识别的出发推送后会提前唤醒检查，发送前仍核对目标、预算、避战和舰队占用。历史排名、已返航或过期行军不会触发；未收到推送时按原检查间隔读取，不能保证同时抵达或必得奖励。' }),
+    configField('treasure.repeatAttack', '反复攻占', 'switch', { help: '已确认出征后，被打回或返航且回到主城空闲时，可再次参与同一货轮。跟随模式下，同一舰队首次跟随出征确认后，维修和再次攻占不再等待跟随玩家；新货轮或未首次跟随成功的舰队仍需匹配名单。请求结果未知时继续等待确认。' }),
+    configField('treasure.follow', '跟随指定玩家', 'switch', { help: '首次出征识别名单中正在前往货轮的舰队，也兼容当前守军。开启反复攻占后，同一舰队对同一货轮首次跟随成功即可继续攻占，不再要求跟随玩家仍在场；重连和重启保留确认记录。收到可识别的出发推送后会提前唤醒检查，每次发送前仍核对目标、预算、避战和舰队占用。历史排名、已返航或过期行军不会触发首次跟随；不能保证同时抵达或必得奖励。' }),
     configField('treasure.fleetIds', '参与舰队', 'multi', { catalog: 'expeditionFleets', empty: '请选择参与舰队，空选不派遣', help: '只使用已建成、有英雄编队且实际空闲的舰队；行军、战斗、维修和驻外等占用会跳过。游戏自动作战开关开启不等于正在作战。' }),
     configField('treasure.followPlayerIds', '跟随名单', 'players', { when: d => d.treasure.follow, help: '从当前账号的盟友名单搜索多选，按选择顺序优先跟随。使用完整角色 ID 区分同名玩家；也可补充未列出的角色 ID。未列出的已选 ID 仍保留，需要时手动移除。' }),
     configField('treasure.followNames', '补充跟随昵称（可选）', 'names', { when: d => d.treasure.follow, help: '保留原有手填名单。每行一个完整昵称，角色 ID 名单优先；同名无法确认身份时跳过。', placeholder: '每行输入一位其他玩家的完整昵称' }),

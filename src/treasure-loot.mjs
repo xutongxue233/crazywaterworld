@@ -35,10 +35,28 @@ function exactQuantity(value) {
 
 export const treasureAutomationEnabled = settings => !!settings?.treasure?.enabled && (settings.treasure.autoJoin || settings.treasure.follow);
 export const treasureDispatchKey = (worldId, uid, buildingId) => `treasure:${worldId}:${uid}:${fleetNumber(buildingId)}`;
+export const treasureFollowKey = (worldId, uid, buildingId) => `treasureFollow:${worldId}:${uid}:${fleetNumber(buildingId)}`;
 export const treasureRepairKey = (worldId, buildingId) => `treasureRepair:${worldId}:${fleetNumber(buildingId)}`;
 const homeIdle = fleet => fleet?.state === 1 && fleet.treasureLootUid === 0 && fleet.curGridIdx === 0 && !(fleet.chipWar?.rewardTs > 0);
 const needsRepair = (fleet, preferences) => fleet.durability === 0 || fleet.durability * 100 < fleet.maxDura * preferences.minDurabilityPercent;
 const canRepeat = (record, fleet, preferences) => record?.confirmed === true && preferences.repeatAttack === true && homeIdle(fleet);
+const confirmedFollow = record => record?.confirmed === true && !record.expired &&
+  ['treasureDispatch', 'treasureFollow'].includes(record.details?.kind) && ['departing', 'defending'].includes(record.details.followPhase);
+function repeatFollowRecord(keys, snapshot, target, fleet, preferences) {
+  if (!preferences.follow || !preferences.repeatAttack || !homeIdle(fleet)) return null;
+  return [keys[treasureFollowKey(snapshot.worldId, target.uid, fleet.buildingId)],
+    keys[treasureDispatchKey(snapshot.worldId, target.uid, fleet.buildingId)]].find(confirmedFollow) ?? null;
+}
+
+// 首次跟随的成功证据独立于每次派遣锁，复派被拒、维修、重连或换日均不丢失。
+function rememberFollow(ledger, worldId, uid, buildingId, record) {
+  if (!confirmedFollow(record)) return;
+  const key = treasureFollowKey(worldId, uid, buildingId), existing = ledger.keyRecords()[key];
+  if (existing?.confirmed) return;
+  if (existing) ledger.resolveKey(key, true);
+  else ledger.confirm(ledger.reserve({}, {}, {}, { uniqueKey: key,
+    details: { ...record.details, kind: 'treasureFollow', worldId, uid, buildingId } }));
+}
 
 // 游戏没有数值吨位字段：TreasureLootCfg 将 BLUE/PURPLE/ORANGE 对应为小型/中型/万吨货轮。
 // 只接收协议与配置共同确认的类型；缺失开关沿用只抢万吨，未知品质不作小船放行。
@@ -250,7 +268,8 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
     if (!reason && [...target.defenders, ...target.fighters].some(member => !member.isNpc && target.rank.some(row =>
       (p.avoidPlayerIds ?? []).includes(row.playerId) && row.name === member.name && (member.guildIdx == null || row.guildIdx === member.guildIdx)))) reason = '当前守军或战斗者命中所选避战玩家';
     if (!reason && !matchesTreasureRewards(config, p.rewardItems, target.reward)) reason = '奖励不在所选范围';
-    if (!reason && !follow && (p.follow || !p.autoJoin)) reason = '未匹配指定跟随玩家的已出发舰队或当前守军，等待目标，不参加其他货轮';
+    const repeatFollow = p.fleetIds.some(id => repeatFollowRecord(keys, snapshot, target, snapshot.fleets.find(fleet => fleet.buildingId === id), p));
+    if (!reason && !follow && !repeatFollow && (p.follow || !p.autoJoin)) reason = '未匹配指定跟随玩家的已出发舰队或当前守军，等待目标，不参加其他货轮';
     const reward = (target.reward ?? []).slice(0, 3).map(asset => displayMaterial(config, asset.id)).join('、');
     const label = `${target.name || '货轮'}（${reward || '奖励未确认'}，进度 ${target.progress ?? '?'}%）`;
     plan.targets.push({ label, reason, followName: follow?.name ?? null,followPhase:follow?.phase??null, personalProgress: target.personalProgress, personalProgressLimit: p.personalProgressLimit });
@@ -284,10 +303,15 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
     if (reason) { const view = plan.fleets.find(row => row.name === fleetName(buildingId)); if (view) view.reason = reason; plan.notes.push(fleetName(buildingId) + '：' + reason); continue; }
     const chosen = candidates.find(row => {
       const record = keys[treasureDispatchKey(snapshot.worldId, row.target.uid, buildingId)];
-      return !record || canRepeat(record, fleet, p);
+      const followed = keys[treasureFollowKey(snapshot.worldId, row.target.uid, buildingId)];
+      if (p.follow && !row.follow && !repeatFollowRecord(keys, snapshot, row.target, fleet, p)) return false;
+      return !(record || followed) || canRepeat(record ?? followed, fleet, p);
     });
     if (!chosen) { if (candidates.length) plan.notes.push(fleetName(buildingId) + '：已参与这些货轮，反复攻占未开启或前次结果仍待确认'); continue; }
-    const { target, follow, label } = chosen;
+    const { target, label } = chosen;
+    const previousFollow = repeatFollowRecord(keys, snapshot, target, fleet, p), repeatFollow = !!previousFollow;
+    const follow = repeatFollow ? { name: previousFollow.details.followName ?? null,
+      playerId: previousFollow.details.followPlayerId ?? null, phase: 'repeat' } : chosen.follow;
     if (needsRepair(fleet, p)) {
       const quote = snapshot.repairs?.[buildingId];
       let repairReason = '';
@@ -300,7 +324,7 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
       if (repairReason) { if (view) view.reason = repairReason; plan.notes.push(fleetName(buildingId) + '：' + repairReason); continue; }
       if (view) view.reason = '先普通维修，结束后重新检查货轮再派遣';
       plan.actions.push({ kind: 'treasureRepair', request: 'RepairFleetRequest', body: { buildingId }, buildingId, targetUid: target.uid,
-        worldId: snapshot.worldId, beforeDurability: fleet.durability, mode: follow ? 'follow' : 'auto',
+        worldId: snapshot.worldId, beforeDurability: fleet.durability, mode: follow ? 'follow' : 'auto', repeatFollow,
         followName: follow?.name ?? null, followPlayerId: follow?.playerId ?? null,followPhase:follow?.phase??null,followDepartedAt:follow?.departedAt??null,followSeenAt:follow?.seenAt??null,
         uniqueKey: treasureRepairKey(snapshot.worldId, buildingId), costs: [{ id: '汽油', num: cost }],
         label: `${fleetName(buildingId)}普通维修至满耐久，完成后重新检查货轮` });
@@ -308,27 +332,33 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
       continue;
     }
     plan.actions.push({ kind: 'treasureDispatch', request: requestName,
-      body: { uid: target.uid, fleetBuildingIds: [buildingId] }, buildingId, targetUid: target.uid, worldId: snapshot.worldId, mode: follow ? 'follow' : 'auto',
+      body: { uid: target.uid, fleetBuildingIds: [buildingId] }, buildingId, targetUid: target.uid, worldId: snapshot.worldId, mode: follow ? 'follow' : 'auto', repeatFollow,
       followName: follow?.name ?? null, followPlayerId: follow?.playerId ?? null,followPhase:follow?.phase??null,followDepartedAt:follow?.departedAt??null,followSeenAt:follow?.seenAt??null,
       uniqueKey: treasureDispatchKey(snapshot.worldId, target.uid, buildingId),
       costs: [{ id: '汽油', num: snapshot.fuelPerFleet }],
-      label: `${fleetName(buildingId)}${follow ? '跟随 ' + follow.name + (follow.phase==='departing'?'（已出发）':'（当前守军）') + ' 参加' : '自动参加'}${label}` });
+      label: `${fleetName(buildingId)}${repeatFollow ? '再次参加（首次跟随已确认）' : follow ? '跟随 ' + follow.name + (follow.phase==='departing'?'（已出发）':'（当前守军）') + ' 参加' : '自动参加'}${label}` });
     fuel -= snapshot.fuelPerFleet; count++;
   }
   return plan;
 }
 
-function reconcileKeys(snapshot, ledger, preferences) {
+function reconcileKeys(snapshot, ledger) {
   if (snapshot.reason || !ledger?.keyRecords || !ledger.resolveKey) return;
   for (const [key, record] of Object.entries(ledger.keyRecords())) {
+    const followed = /^treasureFollow:(\d+):(\d+):(\d+)$/.exec(key);
+    if (followed && Number(followed[1]) === snapshot.worldId && !snapshot.allUids.includes(Number(followed[2]))) {
+      if (record.confirmed) ledger.releaseCompletedKey(key);
+      else ledger.cancel({ id: record.id });
+      continue;
+    }
     const match = /^treasure:(\d+):(\d+):(\d+)$/.exec(key);
     if (match && Number(match[1]) === snapshot.worldId) {
       const uid = Number(match[2]), fleet = snapshot.fleets.find(row => row.buildingId === match[3] + '远征船');
-      if (canRepeat(record, fleet, preferences)) ledger.releaseCompletedKey(key);
-      else if (!record.confirmed && !record.expired) {
-        if (fleet?.treasureLootUid === uid) ledger.resolveKey(key, true);
+      if (!record.confirmed && !record.expired) {
+        if (fleet?.treasureLootUid === uid) { ledger.resolveKey(key, true); record.confirmed = true; }
         else if (homeIdle(fleet) && !snapshot.allUids.includes(uid)) ledger.resolveKey(key, false);
       }
+      if (snapshot.allUids.includes(uid)) rememberFollow(ledger, snapshot.worldId, uid, match[3] + '远征船', record);
     }
   }
   settleFleetSnapshot(ledger,{worldId:snapshot.worldId,fleets:snapshot.fleets,now:snapshot.now,kinds:['treasureRepair']});
@@ -344,7 +374,7 @@ export async function runTreasureLoot(client, protocol, config, player, { getSet
   try {
     const snapshot = await readTreasureLoot(client, protocol, config, player, { preferences: getSettings().treasure });
     if (integer(petrolCeiling)) snapshot.fuel = Math.min(snapshot.fuel, petrolCeiling);
-    reconcileKeys(snapshot, ledger, getSettings().treasure);
+    reconcileKeys(snapshot, ledger);
     const pendingFuel = () => { const counters = ledger.pendingCounters?.() ?? {}; return (counters.treasurePetrol ?? 0) + (counters.cityWarPetrol ?? 0) + (counters.piratePetrol ?? 0) + (counters.radarPetrol ?? 0) + (counters.worldBossPetrol ?? 0) + (counters.siliconPetrol ?? 0); };
     const plan = planTreasureLoot(snapshot, config, getSettings(), { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingFuel: pendingFuel(), reservedFleetIds });
     onNotes?.(plan.notes);
@@ -358,12 +388,13 @@ export async function runTreasureLoot(client, protocol, config, player, { getSet
         mapChecked = true;
       }
       const fresh = await readTreasureLoot(client, protocol, config, player, { targetUid: proposed.targetUid, preferences: getSettings().treasure });
-      reconcileKeys(fresh, ledger, getSettings().treasure);
+      reconcileKeys(fresh, ledger);
       fresh.fuel = Math.min(fresh.fuel, remainingFuel);
       const current = getSettings();
       const reviewed = planTreasureLoot(fresh, config, current, { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingFuel: pendingFuel(), reservedFleetIds });
       const step = reviewed.actions.find(action => action.uniqueKey === proposed.uniqueKey && action.kind === proposed.kind && action.targetUid === proposed.targetUid && action.costs[0].num === proposed.costs[0].num &&
-        (proposed.mode !== 'follow' || (action.mode === 'follow' && action.followName === proposed.followName && action.followPlayerId === proposed.followPlayerId)));
+        (proposed.mode !== 'follow' || (action.mode === 'follow' && (proposed.repeatFollow ? action.repeatFollow :
+          action.followName === proposed.followName && action.followPlayerId === proposed.followPlayerId))));
       if (!step) {
         const entry = { step: proposed, skipped: true, reason: '出征前目标、玩家或舰队条件已变化，本次不派遣' };
         results.push(entry); onStep?.(entry); continue;
@@ -374,8 +405,10 @@ export async function runTreasureLoot(client, protocol, config, player, { getSet
       const repair = step.kind === 'treasureRepair';
       const limits = repair ? { treasureRepairPetrol: current.treasure.dailyRepairPetrolLimit || undefined } : current.treasure.dailyDispatchLimit > 0 ? { treasureDispatches: current.treasure.dailyDispatchLimit } : {};
       const counters = repair ? { treasureRepairs: 1, treasureRepairPetrol: step.costs[0].num, treasurePetrol: step.costs[0].num } : { treasureDispatches: 1, treasurePetrol: step.costs[0].num };
+      // 直到实际准备再次派遣才换锁，维修或跳过检查不能抹掉已参与记录。
+      if (!repair && canRepeat(ledger.keyRecords()[step.uniqueKey], fresh.fleets.find(row => row.buildingId === step.buildingId), current.treasure)) ledger.releaseCompletedKey(step.uniqueKey);
       const ticket = ledger.reserve(counters, limits, {}, { uniqueKey: step.uniqueKey,
-        details: { kind: step.kind, buildingId: step.buildingId, uid: step.targetUid, beforeDurability: step.beforeDurability ?? fresh.fleets.find(row => row.buildingId === step.buildingId)?.durability, sentAt: fresh.now,followPlayerId:step.followPlayerId,followPhase:step.followPhase,followDepartedAt:step.followDepartedAt,followSeenAt:step.followSeenAt } });
+        details: { kind: step.kind, buildingId: step.buildingId, uid: step.targetUid, beforeDurability: step.beforeDurability ?? fresh.fleets.find(row => row.buildingId === step.buildingId)?.durability, sentAt: fresh.now,followName:step.followName,followPlayerId:step.followPlayerId,followPhase:step.followPhase,followDepartedAt:step.followDepartedAt,followSeenAt:step.followSeenAt } });
       if (!enabled() || !client.connected || current !== getSettings() || !treasureAutomationEnabled(getSettings()) || legacyFleetReservationReason(client,step.buildingId)) { ledger.cancel(ticket); break; }
       let entry;
       try {
