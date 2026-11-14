@@ -9,6 +9,7 @@ import { exactAutomationId } from './automation-policy.mjs';
 import { readGuildMembers } from './guild.mjs';
 import { displayMaterial } from './config.mjs';
 import {watchTreasureTravel,matchesFollowDeparture} from './treasure-follow.mjs';
+import { matchesTreasureRewards } from './treasure-reward-filter.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const integer = (value, min = 0, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && value >= min && value <= max;
@@ -248,7 +249,7 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
     if (!reason && [...target.defenders, ...target.fighters].some(member => !member.isNpc && p.avoidNames.includes(member.name))) reason = '当前守军或战斗者命中避战名单';
     if (!reason && [...target.defenders, ...target.fighters].some(member => !member.isNpc && target.rank.some(row =>
       (p.avoidPlayerIds ?? []).includes(row.playerId) && row.name === member.name && (member.guildIdx == null || row.guildIdx === member.guildIdx)))) reason = '当前守军或战斗者命中所选避战玩家';
-    if (!reason && p.rewardItems.length && !target.reward.some(asset => p.rewardItems.includes(asset.id))) reason = '奖励不在所选范围';
+    if (!reason && !matchesTreasureRewards(config, p.rewardItems, target.reward)) reason = '奖励不在所选范围';
     if (!reason && !follow && (p.follow || !p.autoJoin)) reason = '未匹配指定跟随玩家的已出发舰队或当前守军，等待目标，不参加其他货轮';
     const reward = (target.reward ?? []).slice(0, 3).map(asset => displayMaterial(config, asset.id)).join('、');
     const label = `${target.name || '货轮'}（${reward || '奖励未确认'}，进度 ${target.progress ?? '?'}%）`;

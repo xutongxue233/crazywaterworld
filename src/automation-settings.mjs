@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { taskSettings } from './automation.mjs';
 import { EXTENDED_DEFAULTS, EXTENDED_CONSTRAINTS, SILICON_FLEET_NUMBERS, validateSiliconFleets } from './extended-settings.mjs';
+import { treasureRewardOptions } from './treasure-reward-filter.mjs';
 
 // 设置与登录凭据分开保存。导出只包含设置，不包含账号、凭据或用量账本。
 const dataDirectory = () => process.env.CW_DATA_DIR ? path.resolve(process.env.CW_DATA_DIR) : path.resolve(import.meta.dirname, '../data');
@@ -318,10 +319,11 @@ export function settingsCatalog(config) {
   for (const item of buildings) counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
   for (const item of buildings) if (counts.get(item.label) > 1) item.label += `（${item.value}）`;
   const factoryTypes = new Set(rows('BuildingProduceCfg').map(r => r.buildType));
+  const materials = unique([...rows('ItemCfg').map(r => option(r.id, r.show_name || r.showName || r.name || r.id)), ...rows('ResourceCfg').map(r => option(r.id, r.show_name || r.id))]);
   return {
     buildings, factories: buildings.filter(r => factoryTypes.has(r.value)),
     guildTech: unique(rows('GuildTechCfg').map(r => option(r.techId, r.name || '科技 ' + r.techId))),
-    materials: unique([...rows('ItemCfg').map(r => option(r.id, r.show_name || r.showName || r.name || r.id)), ...rows('ResourceCfg').map(r => option(r.id, r.show_name || r.id))]),
+    materials, treasureRewards: treasureRewardOptions(config, materials),
     crops: rows('FarmlandPlantCfg').map(r => option(r.id)),
     maps: rows('MuseumExpeditionStageCfg').map(r => option(r.stageId, r.name)),
     heroes: rows('HeroCfg').filter(r => r.universalItemId || r.quality).map(r => option(r.id, r.showName || r.id)),
