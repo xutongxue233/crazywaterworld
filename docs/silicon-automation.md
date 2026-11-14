@@ -1,6 +1,6 @@
-# 硅矿截图对照与协议依据
+# 硅矿自动化：功能与协议依据
 
-本次核对使用本机微信缓存第 76 版 `_src_chunks_.wxapkg` 的 protobuf 和同版 `_subpackages_main_.wxapkg` 客户端逻辑，以及当前 `config_cn` 配置。私有缓存不纳入仓库。离线回归后按用户要求进行单队初等空位真实派遣，确认汽油消耗及重连防重；完整实测范围见 [实测记录](live-validation-2026-11-14.md)。
+协议依据为本机微信缓存第 76 版 `_src_chunks_.wxapkg` 的 protobuf 和同版 `_subpackages_main_.wxapkg` 客户端逻辑，以及当前 `config_cn` 配置。私有缓存不纳入仓库。在线验证仅覆盖单队初等空位派遣、汽油消耗与重连防重，不代表其他策略和奖励分支均已验证。
 
 ## 已有与新增
 

@@ -1,6 +1,6 @@
-# 超凡英雄活动：截图对照与实际协议
+# 超凡英雄活动：功能与协议依据
 
-核对日期：2026-11-14。依据本机微信版本 76 的主包 `HeroRaidOrderPanel`、`HeroRaidLotteryPanel`、`HeroRaidUtil`、活动模型和配套 protobuf 类型。订单与奖励通过离线假客户端回归；真实账号已收到完整但为空的活动清单，因此尚未在线验证交单或领奖，见 [实测记录](live-validation-2026-11-14.md)。
+核对日期：2026-11-14。依据本机微信版本 76 的主包 `HeroRaidOrderPanel`、`HeroRaidLotteryPanel`、`HeroRaidUtil`、活动模型和配套 protobuf 类型。订单与奖励通过离线假客户端回归，尚未在线验证交单或领奖。
 
 ## 对照结果
 
