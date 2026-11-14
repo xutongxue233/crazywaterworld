@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { defaultSettings, validateSettings, saveAutomationSettings, loadAutomationSettings, exportAutomationSettings, importAutomationSettings, createUsageLedger, beijingDay, nativeTaskValues, applyNativeTask, settingsFromNative } from '../src/automation-settings.mjs';
+import { defaultSettings, validateSettings, saveAutomationSettings, loadAutomationSettings, exportAutomationSettings, importAutomationSettings, createUsageLedger, beijingDay, nativeTaskValues, applyNativeTask, settingsFromNative, settingsUiRules } from '../src/automation-settings.mjs';
 import { createActionGuard, budgetPreview, exactAutomationId, automationWireId } from '../src/automation-policy.mjs';
 import { planWorld, runWorld } from '../src/world.mjs';
 import { planBaseAutomation, runBaseAutomation, watchBasePushes, gameSeason, previewNativeAutomation } from '../src/base-automation.mjs';
@@ -74,6 +74,59 @@ try {
     assert.throws(() => importAutomationSettings({ ...document, accounts: [] }), /不能包含账号或凭据/);
     const changed = applyNativeTask(initial, 'collect', false); assert.equal(changed.building.collect, false); assert.equal(changed.factory.gain, false);
     assert.equal(nativeTaskValues(changed, {}).collect, false);
+  });
+
+  await check('工厂兜底间隔默认值、边界、保存与导入严格校验', () => {
+    const initial = defaultSettings(); assert.equal(initial.factory.checkEverySeconds, 30);
+    const file = path.join(directory, 'factory-settings.json');
+    let revision = 0;
+    for (const seconds of [1, 300]) {
+      const settings = defaultSettings(); settings.factory.checkEverySeconds = seconds;
+      assert.equal(validateSettings(settings).factory.checkEverySeconds, seconds);
+      const saved = saveAutomationSettings('factory-test', settings, { file, revision }); revision = saved.revision;
+      assert.equal(loadAutomationSettings('factory-test', { file }).settings.factory.checkEverySeconds, seconds);
+      assert.equal(importAutomationSettings(exportAutomationSettings(saved.settings)).factory.checkEverySeconds, seconds);
+    }
+    const bytes = fs.readFileSync(file);
+    const invalidField = error => !!error.fields?.['factory.checkEverySeconds'];
+    for (const seconds of [0, 301, -1, 1.5, '30', null, true, undefined]) {
+      const settings = defaultSettings(); settings.factory.checkEverySeconds = seconds;
+      assert.throws(() => validateSettings(settings), invalidField);
+      assert.throws(() => saveAutomationSettings('factory-test', settings, { file, revision }), invalidField);
+      assert.throws(() => importAutomationSettings({ ...exportAutomationSettings(initial), settings }), invalidField);
+      assert.deepEqual(fs.readFileSync(file), bytes);
+    }
+    const missing = defaultSettings(); delete missing.factory.checkEverySeconds;
+    assert.throws(() => saveAutomationSettings('factory-test', missing, { file, revision }), invalidField);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+  });
+
+  await check('旧工厂设置补齐兜底间隔并保留显式开关', () => {
+    const file = path.join(directory, 'legacy-factory-settings.json');
+    const booleanKeys = Object.keys(defaultSettings().factory).filter(key => typeof defaultSettings().factory[key] === 'boolean');
+    for (const enabled of [true, false]) {
+      const document = exportAutomationSettings(defaultSettings()); delete document.settings.factory.checkEverySeconds;
+      for (const key of booleanKeys) document.settings.factory[key] = enabled;
+      fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { legacy: { settings: document.settings, revision: 7 } } }));
+      const bytes = fs.readFileSync(file), loaded = loadAutomationSettings('legacy', { file });
+      assert.equal(loaded.revision, 7); assert.deepEqual(fs.readFileSync(file), bytes);
+      for (const restored of [loaded.settings, importAutomationSettings(document)]) {
+        assert.equal(restored.factory.checkEverySeconds, 30);
+        for (const key of booleanKeys) assert.equal(restored.factory[key], enabled, key + ' 保留显式开关');
+      }
+      delete document.settings.factory.produce;
+      assert.throws(() => importAutomationSettings(document), error => !!error.fields?.['factory.produce']);
+    }
+  });
+
+  await check('工厂界面提供受限的兜底秒数及调度说明', () => {
+    const source = fs.readFileSync(new URL('../src/settings-ui.js', import.meta.url), 'utf8');
+    const groups = new Function(source.slice(0, source.indexOf('function configGet(')) + '\nreturn configGroups;')();
+    const fields = groups.find(group => group.id === 'factory').fields.filter(field => field.key === 'factory.checkEverySeconds');
+    assert.equal(fields.length, 1);
+    assert.equal(fields[0].label, '兜底检查间隔'); assert.equal(fields[0].kind, 'number'); assert.equal(fields[0].unit, '秒');
+    assert.deepEqual(settingsUiRules().numbers[fields[0].key], { min: 1, max: 300 });
+    for (const phrase of ['服务端完工时间', '建筑状态推送', '缺料', '满仓', '错误', '独立于主循环间隔', '账号队列占用时等待']) assert.ok(fields[0].help.includes(phrase), phrase);
   });
 
   await check('按账号保存、版本冲突与损坏文件不覆盖', () => {

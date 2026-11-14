@@ -1,6 +1,8 @@
 // 手动开启的单次互助，不接入常驻挂机；赠送额度和未知请求记录跨重启保留。
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { exactAutomationId, automationWireId } from './automation-policy.mjs';
 import { readGuildMembers, claimMyGuildAid } from './guild.mjs';
 import { displayMaterial } from './config.mjs';
@@ -16,14 +18,30 @@ function quantity(v) {
   else if (Number.isInteger(v?.low) && Number.isInteger(v?.high)) n = (BigInt(v.high) << 32n) + BigInt(v.low >>> 0);
   return n >= 0n && n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : null;
 }
-export function mutualOptions(input = {}) {
+export function mutualOptions(input = {}, { draft = false } = {}) {
   const target = input.target ?? 20, mode = input.mode ?? 'all', memberIds = input.memberIds ?? [];
   const askEnabled = input.askEnabled ?? false, askTarget = input.askTarget ?? 20, askItemId = input.askItemId ?? '';
+  const checkEverySeconds = input.checkEverySeconds ?? 15;
   if (!Number.isSafeInteger(target) || target < 0 || target > 20) throw new Error('今日赠送目标请输入0–20；0表示不赠送');
   if (!['all','selected'].includes(mode) || !Array.isArray(memberIds) || memberIds.length > 100 || new Set(memberIds).size !== memberIds.length || memberIds.some(id => typeof id !== 'string' || exactAutomationId(id) !== id)) throw new Error('请选择有效的盟友范围');
-  if (target > 0 && mode === 'selected' && !memberIds.length) throw new Error('指定盟友模式至少选择一位盟友');
-  if (typeof askEnabled !== 'boolean' || !Number.isSafeInteger(askTarget) || askTarget < 0 || askTarget > 20 || typeof askItemId !== 'string' || askItemId.length > 120 || (askEnabled && !askItemId)) throw new Error('请选择求助材料，并填写0–20之间的今日求助目标');
-  return { target, mode, memberIds: mode === 'selected' ? [...memberIds] : [], askEnabled, askTarget, askItemId };
+  if (!draft && target > 0 && mode === 'selected' && !memberIds.length) throw new Error('指定盟友模式至少选择一位盟友');
+  if (typeof askEnabled !== 'boolean' || !Number.isSafeInteger(askTarget) || askTarget < 0 || askTarget > 20 || typeof askItemId !== 'string' || askItemId.length > 120 || (!draft && askEnabled && !askItemId)) throw new Error('请选择求助材料，并填写0–20之间的今日求助目标');
+  if (!Number.isSafeInteger(checkEverySeconds) || checkEverySeconds < 1 || checkEverySeconds > 300) throw new Error('等待检查间隔请输入1–300秒的整数');
+  return { target, mode, memberIds: [...memberIds], askEnabled, askTarget, askItemId, checkEverySeconds };
+}
+
+// 单次任务的预设独立于挂机设置和用量账本保存；恢复预设绝不恢复任务。
+const presetFile = accountId => path.join(process.env.CW_DATA_DIR ? path.resolve(process.env.CW_DATA_DIR) : path.resolve(import.meta.dirname, '../data'), 'guild-mutual-preset-' + encodeURIComponent(accountId) + '.json');
+export function loadMutualPreset(accountId) {
+  try { return mutualOptions(JSON.parse(fs.readFileSync(presetFile(accountId), 'utf8')), { draft:true }); }
+  catch (error) { if (error.code === 'ENOENT') return mutualOptions(); throw error; }
+}
+export function saveMutualPreset(accountId, input) {
+  const options = mutualOptions(input, { draft:true }), file = presetFile(accountId), tmp = file + '.tmp';
+  fs.mkdirSync(path.dirname(file), { recursive:true });
+  try { fs.writeFileSync(tmp, JSON.stringify(options) + '\n'); fs.renameSync(tmp, file); }
+  finally { fs.rmSync(tmp, { force:true }); }
+  return options;
 }
 
 function helpMaterials(config,player) {
@@ -174,7 +192,7 @@ async function mutualStep(context, options, startIdentity, day, signal, exchange
   if(options.askEnabled && !state.ownRequests.some(r=>r.itemId===options.askItemId && (r.ready || r.endTime>state.now)) && exchange.received<=exchange.sent)
     return{done:true,received,reason:'所选材料的求助已领完且不能继续发布，本次互赠结束；保留手头材料'};
   const chosen=state.candidates.find(row=>!ledger.hasKey(`guildAidGift:${state.worldId}:${state.playerId}:${row.id}`));
-  if (!chosen) return {received,waiting:true,reason:(state.candidates.length?'可赠送的求助已有处理记录，等待列表刷新':state.reason)+'，15秒后再检查'};
+  if (!chosen) return {received,waiting:true,reason:(state.candidates.length?'可赠送的求助已有处理记录，等待列表刷新':state.reason)+'，'+options.checkEverySeconds+'秒后再检查'};
   if (!allowed() || state.day!==day || beijingDay(nowOf(client)*1000)!==day || ledger.snapshot().day!==day || chosen.endTime<=nowOf(client)) return {done:true,received,reason:'赠送前状态或日期已变化，本次结束'};
   const key=`guildAidGift:${state.worldId}:${state.playerId}:${chosen.id}`;
   const ticket=ledger.reserve({guildAidGifts:1},{guildAidGifts:options.target},{},{uniqueKey:key,details:{kind:'guildAidGift',day,worldId:state.worldId,playerId:state.playerId,guildId:state.guildId,reqId:chosen.id,memberId:chosen.memberId,itemId:chosen.itemId}});
@@ -210,7 +228,7 @@ export async function runGuildMutual(context, options, {signal,wait=sleep,onStep
     sent+=result.sent??0;received+=result.received??0;published+=result.published??0;exchange.sent=sent;
     onStep({...result,sent,received,published,day});
     if(result.done)return{...result,sent,received,published,day};
-    await wait(result.waiting?15000:1000,undefined,{signal});
+    await wait(result.waiting?options.checkEverySeconds*1000:1000,undefined,{signal});
   }
 }
 

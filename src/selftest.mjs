@@ -942,7 +942,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     { ...config.tables.BuildingProduceCfg.data[0], itemId: '纸', produceTime: 600 },
   ] } } };
   const balanced = planWorld(balancing, { config: recipes }).actions.filter(a => a.kind === 'startProduce');
-  assert.deepEqual(balanced.map(a => a.body.productId), ['纸', '纸', '纸', '布匹', '纸', '布匹']);
+  assert.deepEqual(balanced.map(a => a.body.productId), Array(6).fill('布匹'), '备货先按耗时升序，达到水位后再安排较慢产品');
   weekly.orders = [];
   weekly.weekOrder = new Map([['布匹', 4]]);
   weekly.stock.set('布匹', 1);

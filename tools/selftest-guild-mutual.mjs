@@ -1,7 +1,7 @@
 import os from 'node:os';
 import assert from 'node:assert/strict';import fs from'node:fs';import path from'node:path';
 import { createUsageLedger, defaultSettings, saveAutomationSettings } from '../src/automation-settings.mjs';
-import { readMutualAid, mutualOptions, runGuildMutual, createGuildMutualTask } from '../src/guild-mutual.mjs';
+import { readMutualAid, mutualOptions, runGuildMutual, createGuildMutualTask, loadMutualPreset, saveMutualPreset } from '../src/guild-mutual.mjs';
 import { guildMutualFixture } from './fixtures/guild-mutual.mjs';
 const base=path.join(os.tmpdir(),'cw-guild-mutual-tests');fs.mkdirSync(base,{recursive:true});const dir=fs.mkdtempSync(path.join(base,'run-'));process.env.CW_DATA_DIR=dir;
 let serial=0;const results=[];const ledger=()=>createUsageLedger('qa',{file:path.join(dir,'ledger-'+serial+++'.json')});
@@ -10,6 +10,49 @@ const run=(f,l,options,extra={})=>runGuildMutual(context(f,l),options,{wait:asyn
 const check=async(name,work)=>{try{await work();results.push({name,passed:true});console.log('通过：'+name);}catch(e){results.push({name,passed:false,error:e.stack});console.error('失败：'+name+'\n'+e.stack);}};
 try{
  await check('范围与0–20边界，指定盟友不能空选或用不精确ID',()=>{assert.equal(mutualOptions().target,20);for(const v of [-1,21,1.5,'20'])assert.throws(()=>mutualOptions({target:v}));assert.throws(()=>mutualOptions({mode:'selected'}));assert.throws(()=>mutualOptions({mode:'selected',memberIds:['9e16']}));assert.throws(()=>mutualOptions({askEnabled:true}));assert.equal(mutualOptions({target:0}).target,0);});
+ await check('互助预设按账号保存，未填完的选择不丢失且不能直接启动',()=>{
+  const preset={target:7,mode:'selected',memberIds:[],askEnabled:true,askTarget:9,askItemId:'',checkEverySeconds:1};
+  assert.deepEqual(saveMutualPreset('preset-a',preset),preset);assert.deepEqual(loadMutualPreset('preset-a'),preset);assert.equal(loadMutualPreset('preset-b').checkEverySeconds,15);assert.equal(loadMutualPreset('preset-b').target,20);
+  assert.throws(()=>mutualOptions(loadMutualPreset('preset-a')));assert.equal(createGuildMutualTask().view().running,false);
+  const selected={...preset,memberIds:['9007199254740995'],askItemId:'橡胶圈',mode:'all'};saveMutualPreset('preset-a',selected);assert.deepEqual(loadMutualPreset('preset-a').memberIds,selected.memberIds);
+  for(const checkEverySeconds of [0,-1,301,1.5,'1'])assert.throws(()=>saveMutualPreset('preset-a',{...selected,checkEverySeconds}));assert.deepEqual(loadMutualPreset('preset-a'),selected);
+ });
+ await check('自定等待间隔用于缺料检查，成功赠送节奏仍为一秒',async()=>{
+  const f=guildMutualFixture(),waits=[],steps=[];f.state.stock.橡胶圈=0;
+  const result=await run(f,ledger(),{target:1,checkEverySeconds:2},{wait:async ms=>{waits.push(ms);f.state.stock.橡胶圈=1;},onStep:step=>steps.push(step)});
+  assert.equal(result.sent,1);assert.deepEqual(waits,[2000,1000]);assert(steps.some(step=>/2秒后再检查/.test(step.reason)));
+ });
+ await check('前端预设保存串行处理后续编辑，切号与旧响应不会覆盖草稿',async()=>{
+  const source=fs.readFileSync(new URL('../src/ui/progression.js',import.meta.url),'utf8'),from=source.indexOf('function mutualPresetValues('),to=source.indexOf('function renderGuildMutual(',from);
+  assert(from>=0&&to>from);const drafts=new Map(),calls=[];let release;
+  const api=new Function('mutualDrafts','mutualWidgets','call',source.slice(from,to)+'; return {save:saveGuildMutualDraft};')(drafts,new Map(),async(route,request)=>{calls.push({route,payload:JSON.parse(request.body)});if(calls.length===1)await new Promise(resolve=>{release=resolve});return {preset:calls.at(-1).payload};});
+  const a={...mutualOptions(),version:1,savedVersion:0,valid:true,saving:null};drafts.set('a',a);drafts.set('b',{...mutualOptions(),target:3,version:1,savedVersion:0,valid:true,saving:null});
+  const first=api.save('a');a.target=8;a.version++;const again=api.save('a');await api.save('b');assert.equal(calls.length,2);release();await Promise.all([first,again]);
+  assert.deepEqual(calls.map(row=>row.route),['/api/guild/mutual/preset?account=a','/api/guild/mutual/preset?account=b','/api/guild/mutual/preset?account=a']);assert.equal(calls[2].payload.target,8);assert.equal(a.target,8);assert.equal(a.savedVersion,2);assert.equal(drafts.get('b').target,3);
+ });
+ await check('保存尚未回包时清空赠送或求助目标不落盘为0，补完后续存',async()=>{
+  const source=fs.readFileSync(new URL('../src/ui/progression.js',import.meta.url),'utf8'),from=source.indexOf('const mutualDrafts ='),to=source.indexOf('async function refreshGuildMutualState(',from);
+  assert(from>=0&&to>from);
+  for(const label of ['本工具今日赠送目标','游戏今日发起求助目标']){
+   const nodes=[],calls=[];let release;
+   function node(tag,cls,text=''){
+    const n={tag,cls,textContent:text,value:'',children:[],attrs:{},isConnected:true,
+     setAttribute(key,value){this.attrs[key]=value;},append(...items){this.children.push(...items);},add(option){this.children.push(option);},
+     querySelectorAll(tag){return this.children.flatMap(child=>[...(child.tag===tag?[child]:[]),...(child.querySelectorAll?.(tag)??[])]);},
+     checkValidity(){return !(this.required&&this.value==='')&&Number.isSafeInteger(Number(this.value))&&Number(this.value)>=Number(this.min)&&Number(this.value)<=Number(this.max);},
+     reportValidity(){return this.checkValidity();}};nodes.push(n);return n;
+   }
+   const env={node,call:async(route,request)=>{calls.push({route,payload:JSON.parse(request.body)});if(calls.length===1)await new Promise(resolve=>{release=resolve});return {preset:calls.at(-1).payload};}};
+   const api=new Function('env',`const current='a',snapshot={paused:false},disconnected=new Set(),el=env.node,clear=node=>{node.children=[];},smallButton=text=>el('button','',text),makeHelpTip=()=>el('span'),call=env.call,Option=function(text,value){this.text=text;this.value=value;};\n`+source.slice(from,to)+';return {render:renderGuildMutual,drafts:mutualDrafts};')(env);
+   api.render(node('div'),{preset:mutualOptions()},'a');
+   let input=nodes.find(n=>n.attrs['aria-label']===label);input.value='7';input.oninput();const draft=api.drafts.get('a'),pending=draft.saving;
+   input.value='';input.oninput();assert.equal(draft.valid,false);release();await pending;
+   assert.equal(calls.length,1);assert.equal(draft.savedVersion,1);assert.equal(draft.version,2);assert(nodes.some(n=>/预设尚未保存/.test(n.textContent)));
+   const field=label==='本工具今日赠送目标'?'target':'askTarget';assert.equal(draft[field],'');assert.equal(calls[0].payload[field],7);
+   api.render(node('div'),{preset:mutualOptions()},'a');input=nodes.filter(n=>n.attrs['aria-label']===label).at(-1);assert.equal(input.value,'');
+   input.value='9';input.oninput();await draft.saving;assert.equal(calls.length,2);assert.equal(calls[1].payload[field],9);assert.equal(draft.savedVersion,draft.version);assert.equal(draft.valid,true);
+  }
+ });
  await check('仅一个橡胶圈完成20次相互赠送，每次一条，先收再送',async()=>{
   const f=guildMutualFixture(),l=ledger();f.state.autoReturn=true;const result=await run(f,l,{target:20,mode:'selected',memberIds:[f.friend],askEnabled:true,askItemId:'橡胶圈',askTarget:20});
   assert.equal(result.sent,20);assert.equal(result.received,20);assert.equal(result.published,20);assert.equal(f.state.stock.橡胶圈,1);assert.equal(f.state.peak,1);assert.equal(l.snapshot().counters.guildAidGifts,20);
@@ -116,6 +159,19 @@ try{
  });
  await check('重复开启拒绝，手动停止不再发送，重建任务不自动运行',async()=>{
   const f=guildMutualFixture(),task=createGuildMutualTask();let release;task.start({target:1},()=>new Promise(r=>{release=r}));assert.throws(()=>task.start({target:1},()=>{}));task.stop();release(context(f,ledger()));await new Promise(r=>setImmediate(r));assert.equal(task.view().running,false);assert.equal(f.state.writes.length,0);assert.equal(createGuildMutualTask().view().running,false);
+ });
+ await check('HTTP暂停断线时也能保存预设，账号隔离且重启恢复但不自动开任务',async()=>{
+  fs.writeFileSync(path.join(dir,'accounts.json'),JSON.stringify({version:1,activeId:'preset-http-a',accounts:['preset-http-a','preset-http-b'].map(id=>({id,label:'预设验证',url:'ws://127.0.0.1:1',login:{},automation:{enabled:false,paused:true}}))}));
+  const {createConsole}=await import('../src/server.mjs'),preset={target:11,mode:'selected',memberIds:['9007199254740995'],askEnabled:true,askTarget:13,askItemId:'橡胶圈',checkEverySeconds:1};
+  let app=createConsole({port:0});
+  try{
+   await app.listen();let root='http://127.0.0.1:'+app.server.address().port;
+   const response=await fetch(root+'/api/guild/mutual/preset?account=preset-http-a',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(preset)});assert.equal(response.status,200);assert.deepEqual((await response.json()).preset,preset);
+   const read=id=>fetch(root+'/api/guild/mutual?account='+id).then(r=>r.json());assert.deepEqual((await read('preset-http-a')).preset,preset);assert.equal((await read('preset-http-b')).preset.target,20);
+   assert.equal(app.sessions.get('preset-http-a').client,null);assert.equal(app.sessions.get('preset-http-a').mutualAid.view().running,false);assert.equal(app.sessions.get('preset-http-a').loop.running,false);
+   app.server.closeAllConnections();await app.close();app=createConsole({port:0});await app.listen();root='http://127.0.0.1:'+app.server.address().port;
+   const state=await fetch(root+'/api/guild/mutual?account=preset-http-a').then(r=>r.json());assert.deepEqual(state.preset,preset);assert.equal(state.running,false);assert.equal(app.sessions.get('preset-http-a').client,null);
+  }finally{app.server.closeAllConnections();await app.close();}
  });
  await check('HTTP任务与盟友材料读取可用，不修改挂机/配置，暂停停止任务',async()=>{
   const f=guildMutualFixture();fs.writeFileSync(path.join(dir,'accounts.json'),JSON.stringify({version:1,activeId:'http',accounts:[{id:'http',label:'互助验证',url:'ws://127.0.0.1:1',login:{},automation:{enabled:false,paused:true}}]}));saveAutomationSettings('http',defaultSettings(),{revision:0});const {createConsole}=await import('../src/server.mjs');const app=createConsole({port:0});await app.listen();const root='http://127.0.0.1:'+app.server.address().port;

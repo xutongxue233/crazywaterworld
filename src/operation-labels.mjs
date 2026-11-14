@@ -31,6 +31,7 @@ export const operationLabels = {
   '/api/guild': '查看联盟', '/api/guild/welfare': '领取联盟福利礼包',
   '/api/guild/aid/claim': '领取我的求助物资', '/api/logs/clear': '清空运行日志',
   '/api/guild/mutual': '查看单次互助状态', '/api/guild/mutual/options': '读取互助盟友与材料',
+  '/api/guild/mutual/preset': '保存单次互助预设',
   '/api/loop/control': '保存挂机控制', '/api/pirates/advance': '读取海盗首杀推进状态', '/api/pirates/advance/start': '开启海盗首杀推进', '/api/pirates/advance/stop': '停止海盗首杀推进',
   '/api/guild/mutual/start': '开启单次联盟互助', '/api/guild/mutual/stop': '停止单次联盟互助',
   '/api/dailies/single': '完成单项日常',

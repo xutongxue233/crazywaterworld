@@ -23,6 +23,7 @@ import { residentFilter, resourceReserve, worldPreferenceEnabled, worldActionAll
 import { readWeekOrder } from './activities.mjs';
 import { RESOURCE, displayMaterial } from './config.mjs';
 import { captureFarmMaterialState, farmInventory, settleFarmMaterialState } from './farm-planting.mjs';
+import { runFactoryProductionBatch, confirmFactoryProductionBeforeHarvest } from './factory-production.mjs';
 
 // 与客户端FactoryUtil一致：活动工坊只使用服务器limitTimeItem开放窗口。
 export function factoryRecipeAvailability(recipe, festivals, now) {
@@ -839,19 +840,21 @@ export function planWorld(survey, {
       }
       const customRank = row => productionNeeded(row.itemId) ? detailedNeeds.get(row.itemId).priority : Infinity;
       const compareCustom = (a, b) => customRank(a) - customRank(b)
+        || a.produceTime - b.produceTime
         || (settings.factory.demandFirst ? (detailedNeeds.get(b.itemId)?.num ?? 0) - (detailedNeeds.get(a.itemId)?.num ?? 0) : 0)
-        || projectedStock(a.itemId) - projectedStock(b.itemId) || a.produceTime - b.produceTime;
+        || projectedStock(a.itemId) - projectedStock(b.itemId);
       const best = cand.sort(settings ? compareCustom : (a, b2) => (weeklyGap.get(b2.itemId) ?? 0) - (weeklyGap.get(a.itemId) ?? 0)
         || (cargoGap.get(b2.itemId) ?? 0) - (cargoGap.get(a.itemId) ?? 0)
         || (demand.get(b2.itemId) ?? 0) - (demand.get(a.itemId) ?? 0)
         || constructionGap(b2.itemId) - constructionGap(a.itemId)
-        || projectedStock(a.itemId) - projectedStock(b2.itemId)
-        || a.produceTime - b2.produceTime)[0];
+        || a.produceTime - b2.produceTime
+        || projectedStock(a.itemId) - projectedStock(b2.itemId))[0];
       for (const [id, n] of best.costItem ?? []) reserve(id, n);
       const need = demand.get(best.itemId) ?? 0;
       const weeklyNeed = weeklyGap.get(best.itemId) ?? 0;
       const cargoNeed = cargoGap.get(best.itemId) ?? 0;
       const buildNeed = constructionGap(best.itemId);
+      const forDemand = !settings || productionNeeded(best.itemId);
       const projected = projectedStock(best.itemId);
       // The account may already be at its storage limit. Only run a dependent
       // job after enough resident deliveries have actually freed that stock.
@@ -876,8 +879,8 @@ export function planWorld(survey, {
       credit(best.itemId, 1);
       const displayFactory = buildingName(b);
       const displayProduct = name(best.itemId);
-      const reason = weeklyNeed ? `周订单缺 ${weeklyNeed} 件` + (needsConfirmedBorrow ? '，居民交单后补回' : '') : cargoNeed ? `贸易港缺 ${cargoNeed} 件`
-        : need ? `居民订单缺 ${need} 件` : buildNeed ? `${buildMaterials.get(best.itemId).name}建造缺 ${buildNeed} 件` : `补库存，排入后预计共 ${projected + 1} 件（含待收和在产）`;
+      const reason = forDemand && weeklyNeed ? `周订单缺 ${weeklyNeed} 件` + (needsConfirmedBorrow ? '，居民交单后补回' : '') : forDemand && cargoNeed ? `贸易港缺 ${cargoNeed} 件`
+        : forDemand && need ? `居民订单缺 ${need} 件` : forDemand && buildNeed ? `${buildMaterials.get(best.itemId).name}建造缺 ${buildNeed} 件` : `补库存，排入后预计共 ${projected + 1} 件（含待收和在产）`;
       actions.push({
         kind: 'startProduce',
         request: 'StartFactoryProduceRequest',
@@ -886,6 +889,7 @@ export function planWorld(survey, {
         eligibilityKey:factoryRecipeAvailability(best,survey.festivals,survey.serverNow??now).signature+':'+b.level,
         costs: (best.costItem ?? []).map(([id, num]) => ({ id, num: Number(num) })),
         ...(needsConfirmedBorrow ? { needsConfirmedBorrow } : {}),
+        demandDriven: settings ? forDemand : !!(need || weeklyNeed || cargoNeed || buildNeed),
         displayFactory, displayProduct,
         label: `${displayFactory}安排生产${displayProduct} 1 件，耗时 ${durationText(best.produceTime)}。${reason}`,
       });
@@ -1233,7 +1237,24 @@ export async function runWorld(client, protocol, plan, {
   const blocked = new Set();
   const failedRecipes = new Set();
   const confirmedBorrow = new Map();
-  for (const step of plan.actions) {
+  const checkFactoryStep = step => {
+    const recipe = rowsOf(config, 'BuildingProduceCfg').find(row => row.itemId === step.body.productId);
+    const gate = factoryRecipeAvailability(recipe, client.festivals, Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000));
+    if (recipe && !gate.allowed) throw new AutomationSkip(gate.reason);
+    const failures = factoryFailures.get(client), failure = failures?.get(JSON.stringify([step.request, step.body]));
+    if (failure && failure.signature === step.eligibilityKey && Date.now() < failure.until) {
+      throw new AutomationSkip('前次生产被明确拒绝，等待条件变化：' + failure.reason);
+    }
+    if (failure) failures.delete(JSON.stringify([step.request, step.body]));
+  };
+  const rememberFactoryFailure = (step, error) => {
+    if (!error?.prompt || error.request !== step.request) return;
+    const failures = factoryFailures.get(client) ?? new Map(); factoryFailures.set(client, failures);
+    failures.set(JSON.stringify([step.request, step.body]), { signature: step.eligibilityKey,
+      until: /limited item not available/i.test(error.message) ? Infinity : Date.now() + 300000, reason: error.message });
+  };
+  for (let stepIndex = 0; stepIndex < plan.actions.length; stepIndex++) {
+    const step = plan.actions[stepIndex];
     if (!enabled(step.kind)) continue;
     const currentSettings = getSettings?.() ?? settings;
     if (!step.manualCheck && !worldActionAllowed(currentSettings, step, config)) {
@@ -1244,6 +1265,34 @@ export async function runWorld(client, protocol, plan, {
     const resident = step.kind === 'finishOrder' || step.kind === 'denyOrder';
     const recipe = step.kind === 'startProduce' ? JSON.stringify(step.body) : null;
     if (recipe && failedRecipes.has(recipe)) continue;
+    // The wire request has no quantity field. Share preflight and settlement
+    // within one factory, but keep each write serial for Prompt attribution.
+    if (step.request === 'StartFactoryProduceRequest' && !step.response && config && exactAutomationId(player?.playerId)
+      && exactAutomationId(player?.worldId) && paramOf(config, SLOTS_PARAM) > 0
+      && protocol.OnWaterRequest && protocol.OnWaterResponse && protocol.AllItemRequest && protocol.AllItemResponse
+      && (!beforeStep || (afterStep && cancelStep))) {
+      const batch = [step];
+      for (let next = stepIndex + 1; next < plan.actions.length; next++) {
+        const candidate = plan.actions[next];
+        if (candidate.request !== step.request || candidate.response || candidate.body.buildingId !== step.body.buildingId) break;
+        batch.push(candidate);
+      }
+      const result = await runFactoryProductionBatch(client, protocol, batch, {
+        config, player, settings, getSettings, enabled, beforeStep, afterStep, cancelStep, window,
+        checkStep(action) {
+          if (action.needsConfirmedBorrow > (confirmedBorrow.get(action.body.productId) ?? 0)) throw new AutomationSkip('尚未确认居民订单已释放相应库存，稍后复查补产');
+          if (failedRecipes.has(JSON.stringify(action.body)) || rejected.has(stepKey(action))) throw new AutomationSkip('前次生产未确认或已被拒绝，暂不重复提交');
+          checkFactoryStep(action);
+        },
+      });
+      stepIndex += batch.length - 1;
+      for (const entry of result.results) {
+        if (entry.failureError) rememberFactoryFailure(entry.step, entry.failureError);
+        delete entry.failureError;
+        results.push(entry); onStep?.(entry);
+      }
+      continue;
+    }
     let entry;
     if (step.needsConfirmedBorrow > (confirmedBorrow.get(step.body?.productId) ?? 0)) {
       entry = { step, ok: false, skipped: true, error: '尚未确认居民订单已释放相应库存，稍后复查补产' };
@@ -1287,12 +1336,12 @@ export async function runWorld(client, protocol, plan, {
           }
         }
         if (['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)) {
-          const recipe=rowsOf(config,'BuildingProduceCfg').find(row=>row.itemId===step.body.productId);
-          const gate=factoryRecipeAvailability(recipe,client.festivals,Math.floor((Date.now()+(client.serverClockOffsetMs||0))/1000));
-          if(recipe&&!gate.allowed)throw new AutomationSkip(gate.reason);
-          const failures=factoryFailures.get(client),failure=failures?.get(JSON.stringify([step.request,step.body]));
-          if(failure&&failure.signature===step.eligibilityKey&&Date.now()<failure.until)throw new AutomationSkip('前次生产被明确拒绝，等待条件变化：'+failure.reason);
-          if(failure)failures.delete(JSON.stringify([step.request,step.body]));
+          checkFactoryStep(step);
+        }
+        if (step.request === 'GainFactoryProduceRequest' && player) {
+          // A harvest would erase the queue/finished baseline needed to prove
+          // a previously unknown batch. Settle it before collecting products.
+          await confirmFactoryProductionBeforeHarvest(client, protocol, step.body.buildingId, { player, enabled: () => enabled(step.kind) });
         }
         if (step.request === 'SetFactoryAutoProduceRequest') {
           if (!currentSettings?.factory.cooperateNative) throw new Error('原生生产协同已关闭');
@@ -1344,10 +1393,7 @@ export async function runWorld(client, protocol, plan, {
         // A later read/settlement failure cannot prove the completed write was unsent.
         const notSent = !dispatched || (writePending && error.notSent === true);
         if (prepared && (notSent || error.prompt && error.request === actual.request)) await cancelAction?.(actual, ticket, { notSent, error });
-        if(['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)&&error.prompt&&error.request===step.request){
-          const failures=factoryFailures.get(client)??new Map();factoryFailures.set(client,failures);
-          failures.set(JSON.stringify([step.request,step.body]),{signature:step.eligibilityKey,until:/limited item not available/i.test(error.message)?Infinity:Date.now()+300000,reason:error.message});
-        }
+        if (['StartFactoryProduceRequest','SetFactoryAutoProduceRequest'].includes(step.request)) rememberFactoryFailure(step, error);
         if(step.request==='SetFactoryAutoProduceRequest'&&(notSent||error.prompt&&error.request===step.request))nativeTargetChecks.get(client)?.delete(step.body.buildingId);
         if (recipe && error.code !== 'AUTOMATION_SKIP') failedRecipes.add(recipe);
         // Each plot has independent prerequisites. A failed build must not

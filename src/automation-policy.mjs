@@ -179,14 +179,14 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
       if (planting && !costs.size) throw new AutomationSkip('无法确认播种种子消耗');
       if (exploring && !costs.size) throw new AutomationSkip('无法确认探宝材料消耗');
       // Legacy callers without detailed settings still share resource barriers.
-      if (!settings && !costs.size) return null;
+      if (!settings && !costs.size && !step.factoryBatch) return null;
       if (!enabled()) throw new AutomationSkip('操作已暂停');
       if (!worldPreferenceEnabled(settings, step.kind)) throw new AutomationSkip('对应设置已关闭');
       if (settings && step.setting) {
         const [group, key] = step.setting.split('.');
         if (!settings[group]?.[key] || (step.scope === 'base' && !settings.loop.world)) throw new AutomationSkip('对应设置已关闭');
       }
-      const account = player && costs.size ? goldAccountKey(player) : null;
+      const account = player && (costs.size || step.factoryBatch) ? goldAccountKey(player) : null;
       let actualGold, materialStock, museumDetails;
       const nextBalances = new Map();
       if (costs.size) {
@@ -254,6 +254,7 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
         for (const [id, cost] of costs) nextBalances.set(id, balances.get(id) - cost);
       }
       const counters = actionCounters(step);
+      if (step.factoryBatch && materialStock) step.factoryBatch.checkedStock = new Map(materialStock);
       let ticket = null;
       if (settings && Object.values(counters).some(Boolean)) {
         if (!ledger) throw new AutomationSkip('无法记录当日用量，已跳过本次消费');
@@ -278,12 +279,39 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
       }
       for (const [id, balance] of nextBalances) remaining.set(id, balance);
       const token = ticket ?? Object.freeze({});
-      reservations.set(token, { token, ticket, gold, materials, operation, account, request: step.request, costs });
+      reservations.set(token, { token, ticket, gold, materials, operation, account, request: step.request, costs, factoryBatch: step.factoryBatch });
       return token;
     },
     async after(step, ticket, outcome) {
       const record = reservations.get(ticket);
       if (!record) return;
+      if (record.factoryBatch && record.factoryBatch === step.factoryBatch && record.factoryBatch.sealed) {
+        // Only attempted requests retain costs. A later refusal or pause must
+        // not leave the unused tail of a production batch reserved forever.
+        const used = actionCosts({ costs: record.factoryBatch.attempted.flatMap(row => row.costs ?? []) });
+        if ([...used].some(([id, amount]) => amount > (record.costs.get(id) ?? 0))) throw new Error('批次实际消耗超出预留');
+        for (const [id, amount] of record.costs) {
+          const unused = amount - (used.get(id) ?? 0);
+          if (unused && remaining.has(id)) remaining.set(id, remaining.get(id) + unused);
+        }
+        record.costs = used;
+        if (record.materials) {
+          const kept = record.materials.costs.filter(row => used.has(row.id)).map(row => ({ ...row, need: used.get(row.id) }));
+          if (!kept.length) { cancelOrderMaterialSpend(record.materials); record.materials = null; }
+          else {
+            record.materials.costs = kept;
+            record.materials.scope = new Set(kept.map(row => row.id));
+            record.materials.remaining = new Map(kept.map(row => [row.id, row.have - row.need]));
+          }
+        }
+        const stock = record.factoryBatch.settledStock;
+        if (record.operation?.confirmed && stock instanceof Map && enabled() && client.connected !== false && goldAccountKey(player) === record.account) {
+          if (record.materials) settleOrderMaterialState(player, { account: record.materials.account, handles: [record.materials] }, stock);
+          outcome.ok = true; outcome.status = 'confirmed'; delete outcome.sent;
+        } else { outcome.ok = false; outcome.status = 'unknown'; }
+        forget(record);
+        return;
+      }
       if (record?.operation && enabled() && client.connected !== false && goldAccountKey(player) === record.account) {
         if (outcome?.ok && !('sent' in outcome)) {
           confirmOrderMaterialOperation(record.materials);

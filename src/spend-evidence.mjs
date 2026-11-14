@@ -34,6 +34,41 @@ const factoryQueue = building => {
   return jobs;
 };
 const cargoAsset = asset => typeof asset?.id === 'string' && asset.id && integer(asset.num) && asset.num > 0;
+
+// Counting queue AND finished units keeps an old job maturing from proving a
+// new request, and also recognises products which finish before the next read.
+export function factoryProductionSnapshot(water, buildingId) {
+  const buildings = buildingList(water), building = buildings?.find(row => row.buildingId === buildingId);
+  const factory = building?.factory;
+  if (!integer(building?.level) || building.level < 1 || !Array.isArray(factory?.factoryQ)
+    || !Array.isArray(factory.finishedProducts)) return null;
+  const queue = factory.factoryQ, finished = factory.finishedProducts, totals = new Map();
+  if (!unique(queue, row => integer(row.idx ?? 0) ? row.idx ?? 0 : null)
+    || queue.some(row => typeof row.productId !== 'string' || !row.productId)
+    || !unique(finished, row => typeof row.id === 'string' && row.id ? row.id : null)
+    || finished.some(row => !integer(row.num))) return null;
+  for (const row of queue) totals.set(row.productId, (totals.get(row.productId) ?? 0) + 1);
+  for (const row of finished) totals.set(row.id, (totals.get(row.id) ?? 0) + row.num);
+  return { building, queue, totals };
+}
+
+export function factoryProductionOperation(water, buildingId, batch) {
+  const before = factoryProductionSnapshot(water, buildingId);
+  if (!before) throw new Error('无法完整确认排产前的队列和待收成品');
+  const baseline = new Map(before.totals);
+  const operation = { confirmed: false };
+  operation.verify = async client => {
+    if (!batch.sealed || !batch.attempted.length) return false;
+    const next = await read(client, 'OnWater'), after = factoryProductionSnapshot(next, buildingId);
+    if (!after || after.building.level !== before.building.level) return false;
+    const serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
+    if (after.building.factory.autoProductId && (next.autoProduceForever || next.autoProduceEndTime > serverNow)) return false;
+    const expected = new Map();
+    for (const step of batch.attempted) expected.set(step.body.productId, (expected.get(step.body.productId) ?? 0) + 1);
+    return [...expected].every(([id, count]) => (after.totals.get(id) ?? 0) - (baseline.get(id) ?? 0) >= count);
+  };
+  return operation;
+}
 export const petSpendSnapshot = buildings => {
   const rooms = buildings.filter(row => row.petBreed);
   if (!rooms.length || rooms.some(row => !Array.isArray(row.petBreed.breedQ) || !Array.isArray(row.petBreed.maturePets))) return null;
@@ -60,6 +95,7 @@ export function confirmPetSpend(before, after, request, body) {
 // Keep immutable pre-action evidence, never a connection or settings closure.
 // A replacement connection can therefore finish the same read-only check.
 export async function captureSpendOperation(client, step, { waterSnapshot } = {}) {
+  if (step.request === 'StartFactoryProduceRequest' && step.factoryBatch?.operation) return step.factoryBatch.operation;
   const body = structuredClone(step.body ?? {}), verify = structuredClone(step.verify ?? {});
   const request = step.request;
   const operation = { confirmed: false };

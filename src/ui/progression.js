@@ -234,16 +234,35 @@ function renderEquipment(box, data, account) {
 const guildSelections = new Map(),guildPages=new Map();
 const mutualDrafts = new Map(), mutualWidgets = new Map();
 let mutualPollSerial = 0;
+function mutualPresetValues(draft) {
+  return {target:draft.target,mode:draft.mode,memberIds:[...draft.memberIds],askEnabled:draft.askEnabled,askTarget:draft.askTarget,askItemId:draft.askItemId,checkEverySeconds:draft.checkEverySeconds};
+}
+async function saveGuildMutualDraft(account) {
+  const draft=mutualDrafts.get(account);
+  if(draft.saving)return draft.saving;
+  const repaint=()=>mutualWidgets.get(account)?.paintSaved();
+  draft.saveError='';
+  const job=(async()=>{
+    while(draft.savedVersion<draft.version&&draft.valid){
+      const version=draft.version,options=mutualPresetValues(draft);
+      try{await call('/api/guild/mutual/preset?account='+encodeURIComponent(account),{method:'POST',body:JSON.stringify(options)});draft.savedVersion=version;}
+      catch(error){draft.saveError=error.message;break;}
+    }
+  })();
+  draft.saving=job;repaint();
+  try{await job;}finally{draft.saving=null;repaint();}
+}
 function renderGuildMutual(box, state = {}, account) {
   let draft=mutualDrafts.get(account);
-  if(!draft){draft={target:20,mode:'all',memberIds:[],askEnabled:false,askTarget:20,askItemId:'',...state.options,data:null,loading:false};mutualDrafts.set(account,draft);}
+  if(!draft){draft={target:20,mode:'all',memberIds:[],askEnabled:false,askTarget:20,askItemId:'',checkEverySeconds:15,...(state.preset??state.options),data:null,loading:false,version:0,savedVersion:0,valid:true,saving:null,saveError:''};mutualDrafts.set(account,draft);}
   const root=el('section','guild-mutual-panel');root.setAttribute('aria-label','单次联盟互助');
-  const heading=el('div','title-with-help');heading.append(el('h4','','单次联盟互助'),makeHelpTip('单次联盟互助','手动开启后逐条处理，不加入常驻挂机。游戏的20次是发起求助上限；赠送目标统计本工具今日记录，不含游戏内手动赠送，未知结果会预占次数。无合适请求或缺料时15秒后再查，不自动备料。达到赠送目标后不再送，必要时等最后一份回赠。跨日、断开或重启后不自动继续。'));
+  const heading=el('div','title-with-help');heading.append(el('h4','','单次联盟互助'),makeHelpTip('单次联盟互助','手动开启后逐条处理，不加入常驻挂机。预设按账号自动保存，保存不会开始互助；刷新页面或重启后保留。游戏的20次是发起求助上限；赠送目标统计本工具今日记录，不含游戏内手动赠送，未知结果会预占次数。无合适请求、缺料或等待回赠时，按所设间隔再查，不自动备料。达到赠送目标后不再送，必要时等最后一份回赠。跨日、断开或重启后不自动继续。'));
   root.append(heading,el('p','dim','每次送1份，先收回赠。'));
   const fields=el('div','guild-mutual-fields');
   function field(title,control){const label=el('label','guild-mutual-field');label.append(el('span','',title),control);fields.append(label);return label;}
   const mode=el('select','config-select');mode.setAttribute('aria-label','互助赠送对象');mode.add(new Option('全部盟友','all'));mode.add(new Option('仅指定盟友','selected'));mode.value=draft.mode;field('赠送对象',mode);
   const target=el('input','config-input');target.type='number';target.min='0';target.max='20';target.step='1';target.required=true;target.value=draft.target;target.setAttribute('aria-label','本工具今日赠送目标');field('本工具今日赠送目标（0–20）',target);
+  const interval=el('input','config-input');interval.type='number';interval.min='1';interval.max='300';interval.step='1';interval.required=true;interval.value=draft.checkEverySeconds;interval.setAttribute('aria-label','互助等待检查间隔');field('等待检查间隔（1–300秒）',interval);
   const memberPanel=el('details','config-multi');memberPanel.hidden=draft.mode!=='selected';const summary=el('summary','','指定盟友');memberPanel.append(summary);
   const memberBody=el('div','config-multi-panel'),search=el('input','config-input');search.type='search';search.placeholder='搜索盟友名称或ID';search.setAttribute('aria-label','搜索互助盟友');const list=el('div','config-option-list');memberBody.append(search,list);memberPanel.append(memberBody);
   const ask=el('input');ask.type='checkbox';ask.checked=draft.askEnabled;ask.setAttribute('aria-label','发起同材料求助');field('发起同材料求助并循环互赠',ask);
@@ -252,16 +271,18 @@ function renderGuildMutual(box, state = {}, account) {
   const materialLabel=el('label','guild-mutual-field');materialLabel.append(el('span','','求助材料'),material);
   const askTarget=el('input','config-input');askTarget.type='number';askTarget.min='0';askTarget.max='20';askTarget.step='1';askTarget.required=true;askTarget.value=draft.askTarget;askTarget.setAttribute('aria-label','游戏今日发起求助目标');const askLabel=el('label','guild-mutual-field');askLabel.append(el('span','','游戏今日发起求助目标（含手动）'),askTarget);
   const askStatus=el('p','dim');askFields.append(materialLabel,askLabel,askStatus,el('p','dim','求助全盟可见，赠送限所选对象。'));
-  const refresh=smallButton('刷新盟友与材料'),message=el('p','bad'),status=el('p','dim');status.setAttribute('role','status');const start=smallButton('开始本次互助'),stop=smallButton('停止互助');start.setAttribute('aria-label','开始本次联盟互助');stop.setAttribute('aria-label','停止本次联盟互助');
-  const actions=el('div','bar');actions.append(start,stop,refresh);root.append(fields,memberPanel,askFields,actions,message,status);box.append(root);
+  const refresh=smallButton('刷新盟友与材料'),message=el('p','bad'),status=el('p','dim'),saved=el('p','dim');status.setAttribute('role','status');saved.setAttribute('role','status');const start=smallButton('开始本次互助'),stop=smallButton('停止互助'),save=smallButton('保存预设');start.setAttribute('aria-label','开始本次联盟互助');stop.setAttribute('aria-label','停止本次联盟互助');
+  const actions=el('div','bar');actions.append(start,stop,refresh,save);root.append(fields,memberPanel,askFields,actions,message,saved,status);box.append(root);
   let currentState=state;
+  function paintSaved(){saved.textContent=draft.saving?'正在保存预设…':draft.saveError?'预设未保存：'+draft.saveError:draft.savedVersion<draft.version?'预设尚未保存，请补全有效数值':'预设已按账号保存；保存不会开始互助。';}
+  function changed(){draft.version++;draft.valid=target.checkValidity()&&askTarget.checkValidity()&&interval.checkValidity();paintSaved();if(draft.valid)void saveGuildMutualDraft(account);}
   function paintMembers(){
     const query=search.value.trim().toLocaleLowerCase(),members=[...(draft.data?.members??[])];
     for(const id of draft.memberIds)if(!members.some(m=>m.id===id))members.push({id,name:'未在最新名单中的角色 '+id});
     clear(list);
     for(const m of members.filter(m=>(m.name+' '+m.id).toLocaleLowerCase().includes(query))){
       const label=el('label','config-option'),check=el('input');check.type='checkbox';check.checked=draft.memberIds.includes(m.id);check.disabled=!!currentState.running;
-      check.setAttribute('aria-label','互助盟友 '+m.name+' '+m.id);check.onchange=()=>{draft.memberIds=check.checked?[...new Set([...draft.memberIds,m.id])]:draft.memberIds.filter(id=>id!==m.id);paint(currentState);};
+      check.setAttribute('aria-label','互助盟友 '+m.name+' '+m.id);check.onchange=()=>{draft.memberIds=check.checked?[...new Set([...draft.memberIds,m.id])]:draft.memberIds.filter(id=>id!==m.id);changed();paint(currentState);};
       label.append(check,el('span','',m.name+' · '+m.id));list.append(label);
     }
     if(!members.length)list.append(el('p','dim',draft.loading?'正在读取盟友…':'请先读取盟友名单'));
@@ -269,9 +290,9 @@ function renderGuildMutual(box, state = {}, account) {
   function paint(data){
     const wasRunning=!!currentState.running;
     currentState=data||{};
-    if(currentState.running&&currentState.options){Object.assign(draft,currentState.options);mode.value=draft.mode;target.value=draft.target;ask.checked=draft.askEnabled;askTarget.value=draft.askTarget;material.value=draft.askItemId;}
+    if(currentState.running&&currentState.options){Object.assign(draft,currentState.options);mode.value=draft.mode;target.value=draft.target;ask.checked=draft.askEnabled;askTarget.value=draft.askTarget;material.value=draft.askItemId;interval.value=draft.checkEverySeconds;}
     memberPanel.hidden=draft.mode!=='selected';askFields.hidden=!draft.askEnabled;summary.textContent='指定盟友 · 已选 '+draft.memberIds.length+' 位';
-    for(const control of [mode,target,ask,material,askTarget])control.disabled=!!currentState.running;
+    for(const control of [mode,target,ask,material,askTarget,interval,save])control.disabled=!!currentState.running;
     for(const control of list.querySelectorAll('input'))control.disabled=!!currentState.running;
     start.disabled=!!currentState.running||draft.loading||snapshot.paused||disconnected.has(account)||(draft.mode==='selected'&&Number(target.value)>0&&!draft.memberIds.length)||(draft.askEnabled&&!draft.askItemId);
     stop.disabled=!currentState.running||currentState.stopping;refresh.disabled=draft.loading||!!currentState.running;
@@ -286,23 +307,25 @@ function renderGuildMutual(box, state = {}, account) {
     catch(error){if(account===current&&root.isConnected)message.textContent=error.message;}
     finally{draft.loading=false;if(account===current&&root.isConnected)paint(currentState);}
   }
-  mode.onchange=()=>{draft.mode=mode.value;paint(currentState);if(draft.mode==='selected'&&!draft.data)void load();};
-  target.oninput=()=>{draft.target=Number(target.value);paint(currentState);};
-  ask.onchange=()=>{draft.askEnabled=ask.checked;paint(currentState);if(ask.checked&&!draft.data)void load();};
-  askTarget.oninput=()=>{draft.askTarget=Number(askTarget.value);};material.onchange=()=>{draft.askItemId=material.value;paint(currentState);};
+  mode.onchange=()=>{draft.mode=mode.value;changed();paint(currentState);if(draft.mode==='selected'&&!draft.data)void load();};
+  target.oninput=()=>{draft.target=target.value===''?'':Number(target.value);changed();paint(currentState);};
+  interval.oninput=()=>{draft.checkEverySeconds=interval.value===''?'':Number(interval.value);changed();};
+  ask.onchange=()=>{draft.askEnabled=ask.checked;changed();paint(currentState);if(ask.checked&&!draft.data)void load();};
+  askTarget.oninput=()=>{draft.askTarget=askTarget.value===''?'':Number(askTarget.value);changed();};material.onchange=()=>{draft.askItemId=material.value;changed();paint(currentState);};
   search.oninput=paintMembers;memberPanel.ontoggle=()=>{if(memberPanel.open&&!draft.data)void load();};refresh.onclick=load;
+  save.onclick=()=>{if(target.reportValidity()&&askTarget.reportValidity()&&interval.reportValidity())changed();};
   start.onclick=async()=>{
-    if(current!==account||snapshot.paused||disconnected.has(account)||!target.reportValidity()||(ask.checked&&!askTarget.reportValidity()))return;
-    const options={target:Number(target.value),mode:draft.mode,memberIds:[...draft.memberIds],askEnabled:ask.checked,askItemId:draft.askItemId,askTarget:Number(askTarget.value)};
-    message.textContent='';paint({...currentState,running:true,reason:'正在开启'});
-    try{await call('/api/guild/mutual/start',{method:'POST',body:JSON.stringify({...options,confirm:true})});}
+    if(current!==account||snapshot.paused||disconnected.has(account)||!target.reportValidity()||!interval.reportValidity()||!askTarget.reportValidity())return;
+    const options=mutualPresetValues(draft);
+    message.textContent='';paint({...currentState,running:true,options,reason:'正在开启'});
+    try{await saveGuildMutualDraft(account);if(current!==account)return;await call('/api/guild/mutual/start',{method:'POST',body:JSON.stringify({...options,confirm:true})});}
     catch(error){if(account===current)message.textContent=error.message;}
     finally{if(account===current)await refreshGuildMutualState();}
   };
   stop.onclick=async()=>{if(account!==current)return;stop.disabled=true;try{await call('/api/guild/mutual/stop',{method:'POST',body:JSON.stringify({confirm:true})});}catch(error){message.textContent=error.message;}finally{if(account===current)await refreshGuildMutualState();}};
-  mutualWidgets.set(account,{root,paint});
+  mutualWidgets.set(account,{root,paint,paintSaved});
   if(draft.data){for(const item of draft.data.materials??[])material.add(new Option(item.name,item.id));material.value=draft.askItemId;}
-  paintMembers();paint(state);
+  paintMembers();paint(state);paintSaved();
   if((draft.mode==='selected'||draft.askEnabled)&&!draft.data)void load();
 }
 async function refreshGuildMutualState(){

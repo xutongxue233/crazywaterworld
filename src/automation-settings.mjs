@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS = {
     autoUpgrade: false, upgradeCoinValuePerDiamond: 100, upgradeMinReturnPercent: 150, upgradeMaxLevel: 2, upgradeDailyDiamondLimit: 300 },
   loop: { rounds: 0, everySeconds: 60, tasks: true, dailies: true, world: true, heroes: false },
   building: { enabled: true, collect: true, build: true, upgrade: true, finish: true, supply: false, disabledTypes: [], speedUp: true, keepBlueprints: 0, maxBuilds: 5, maxUpgrades: 2 },
-  factory: { enabled: true, gain: true, produce: true, cooperateNative: false, disabledTypes: [], keepStock: 50, demandFirst: true, demandPriority: DEMAND_SOURCES.map(([id]) => id), speedUpSources: [], speedUp: true, speedUpItems: [] },
+  factory: { enabled: true, gain: true, produce: true, cooperateNative: false, disabledTypes: [], keepStock: 50, checkEverySeconds: 30, demandFirst: true, demandPriority: DEMAND_SOURCES.map(([id]) => id), speedUpSources: [], speedUp: true, speedUpItems: [] },
   farm: { enabled: false, harvest: true, autoPlant: true, customPlant: false, crops: [], speedUp: false },
   // The new master gate preserves legacy selections; no individual task is enabled by it.
   gather: { enabled: true, fishing: false, fishBook: false, floaters: false, antiqueFloaters: false, continueWhenFull: false, diving: false, keyOpen: false, salvage: false, upgradeFishing: false, upgradeDiving: false, upgradeSalvage: false, targetLevel: 2, fishingGoldReserve: 10000 },
@@ -96,7 +96,7 @@ const constraints = {
   'radar.minDurabilityPercent':int(100), 'radar.petrolReserve':int(), 'radar.dailyPetrolLimit':int(), 'radar.checkEverySeconds':int(300,10),
   'loop.rounds': int(100000), 'loop.everySeconds': int(86400, 1),
   'building.keepBlueprints': int(), 'building.maxBuilds': int(100), 'building.maxUpgrades': int(100),
-  'building.disabledTypes': strings(), 'factory.disabledTypes': strings(), 'factory.keepStock': int(100000),
+  'building.disabledTypes': strings(), 'factory.disabledTypes': strings(), 'factory.keepStock': int(100000), 'factory.checkEverySeconds': int(300, 1),
   'factory.demandPriority': { ...strings(12), values: DEMAND_SOURCES.map(([id]) => id) },
   'factory.speedUpSources': { ...strings(12), values: DEMAND_SOURCES.map(([id]) => id) },
   'factory.speedUpItems': strings(), 'farm.crops': { kind: 'crops' }, 'gather.targetLevel': int(1000, 1), 'gather.fishingGoldReserve': int(),
@@ -409,6 +409,7 @@ export function importAutomationSettings(document, options) {
   if (plain(input?.pet)) input.pet={release:false,releaseQualities:[],...input.pet};
   if (plain(input?.forge)) input.forge={decompose:false,decomposeQualities:[],...input.forge};
   if (plain(input?.gather)) input.gather = { enabled:true, fishBook:false, antiqueFloaters: false, ...input.gather };
+  if (plain(input?.factory) && !Object.hasOwn(input.factory, 'checkEverySeconds')) input.factory = { ...input.factory, checkEverySeconds: DEFAULT_SETTINGS.factory.checkEverySeconds };
   return validateSettings(input, options);
 }
 

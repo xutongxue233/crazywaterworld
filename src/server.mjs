@@ -45,7 +45,7 @@ import { readEquipmentCrafting, startEquipmentCraft, collectEquipmentCraft } fro
 import { readLineups, applyLineup } from './lineups.mjs';
 import { pirateBoard } from './pirate-board.mjs';
 import { readGuild, readGuildMembers, claimGuildWelfare, claimMyGuildAid } from './guild.mjs';
-import { createGuildMutualTask, readMutualOptions } from './guild-mutual.mjs';
+import { createGuildMutualTask, readMutualOptions, mutualOptions, loadMutualPreset, saveMutualPreset } from './guild-mutual.mjs';
 import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
@@ -1848,6 +1848,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         },state=>{if(state.reason!==lastReason){emit(session,'info','海盗首杀 · '+state.reason+'（已首杀'+state.wins+'级，本次汽油'+state.spent+'）');lastReason=state.reason;}},payload.maxFailures??1));return;
       }
       if (route === 'GET /api/guild/mutual') { json(mutualView(scoped_(parsed).session)); return; }
+      if (route === 'POST /api/guild/mutual/preset') {
+        const {account}=scoped_(parsed);
+        json({preset:saveMutualPreset(account.id,jsonBody())});return;
+      }
       if (route === 'GET /api/guild/mutual/options') {
         const {session,account}=scoped_(parsed);
         json(await progressionJob(session,account,route,null,client=>readMutualOptions(client,loadConfigSafe(),session.player),{read:true}));return;
@@ -1856,8 +1860,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const payload=jsonBody();needConfirm(payload);const {session,account}=scoped_(parsed);
         if(route.endsWith('/stop')){json(session.mutualAid.stop());return;}
         if(session.paused)throw new Error('账号已暂停，请先恢复托管');
+        if(session.mutualAid.view().running)throw new Error('当前账号已有互助任务，请先停止或等待完成');
+        const options=mutualOptions(payload);saveMutualPreset(account.id,options);
         const generation=session.generation;
-        json(session.mutualAid.start(payload,async()=>{
+        json(session.mutualAid.start(options,async()=>{
           const client=await ensureConnected(session,account),player=session.player;
           return {client,player,config:loadConfigSafe(),ledger:usageFor(session),schedule:work=>enqueue(session,work),
             enabled:()=>!session.paused && session.generation===generation && session.client===client && session.player===player && client.connected};
@@ -2410,7 +2416,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
 
   function mutualView(session) {
     const ledger=usageFor(session),usage=ledger.snapshot();
-    return { ...session.mutualAid.view(), day:usage.day, dailyUsed:usage.counters.guildAidGifts ?? 0,
+    return { ...session.mutualAid.view(), preset:loadMutualPreset(session.id), day:usage.day, dailyUsed:usage.counters.guildAidGifts ?? 0,
       pendingGifts:ledger.pendingCounters().guildAidGifts ?? 0 };
   }
 

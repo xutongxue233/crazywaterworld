@@ -430,7 +430,8 @@ async function testHarvestOrders() {
     '农田按 v74 的 CriticalAsset.reward 读取本次实际到账产物');
 
   const realNow = Date.now;
-  let time = realNow();
+  // DispFactoryJob.finishTime 是秒级 int32，虚拟快照也使用整秒起点。
+  let time = Math.floor(realNow() / 1000) * 1000;
   const start = time;
   const fast = scenario({ finishAt: start + 5000 });
   const deliveries = [];

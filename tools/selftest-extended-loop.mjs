@@ -16,6 +16,8 @@ try {
   // accounts.mjs 的数据路径在加载时确定，因此必须先隔离再导入。
   const { runLoop } = await import('../src/loop.mjs');
   const { createUsageLedger } = await import('../src/automation-settings.mjs');
+  const { watchFleetMaintenance } = await import('../src/fleet-maintenance.mjs');
+  const { dispatchReservationReason } = await import('../src/fleet-availability.mjs');
   const { siliconFixture, siliconSettings } = await import('./fixtures/silicon.mjs');
 
   function integration({ rounds = 1, mainEveryMs = 3600000 } = {}) {
@@ -162,6 +164,35 @@ try {
     });
     await f.run();
     assert.equal(f.client.reads.length, readsAtDisable); assert.equal(dispatches(f).length, 0); f.clean();
+  });
+  await test('轮间关闭自动维修立即通过账号队列释放舰队预留', async () => {
+    const f = integration({ rounds: 2, mainEveryMs: 60000 }); f.settings.silicon.enabled = false;
+    Object.assign(f.settings.treasure, { enabled: true, autoJoin: false, follow: false, autoRepair: true,
+      fleetIds: ['1远征船'], checkEverySeconds: 300, petrolReserve: 0 });
+    f.state.fuel = 0; f.state.fleets[0].durability = 1000;
+    const maintenance = watchFleetMaintenance(f.client); let callsAtDisable;
+    f.sleepHook((ms, index) => {
+      assert.equal(f.isScheduled(), false);
+      if (index === 1) {
+        assert.equal(ms, 60000, '原维修检查与下一主轮都尚未到期');
+        assert.deepEqual(maintenance.held(), ['1远征船']);
+        assert.match(dispatchReservationReason(f.client, f.getSettings(), 'legacy', '1远征船'), /战后维修/);
+        wall += 1000; callsAtDisable = f.protocolCalls.length;
+        const next = structuredClone(f.getSettings()); next.treasure.autoRepair = false; f.setSettings(next);
+        f.client.emit('automationSettingsChanged');
+        assert.equal(f.protocolCalls.length, callsAtDisable, '设置事件不能直接发送协议');
+        assert.deepEqual(maintenance.held(), ['1远征船'], '释放应在账号队列中执行');
+      } else {
+        assert.equal(wall - base, 1000, '无需等待下一主轮或旧维修到期');
+        assert.deepEqual(maintenance.held(), [], '关闭维修后不能继续占用舰队');
+        assert.equal(dispatchReservationReason(f.client, f.getSettings(), 'legacy', '1远征船'), '');
+        assert.equal(f.protocolCalls.length, callsAtDisable, '关闭后的清理不应继续读取维修或派遣状态');
+        assert.equal(f.scheduled(), 2, '仅原主轮和设置唤醒清理各进入一次账号队列');
+        f.stop.aborted = true;
+      }
+    });
+    await f.run();
+    assert.equal(f.sleeps.length, 2); assert.equal(f.client.writes.length, 0); f.clean();
   });
   await test('最终回读期间关闭总开关阻止已排入队列的派遣', async () => {
     const f = integration(); let lists = 0;
