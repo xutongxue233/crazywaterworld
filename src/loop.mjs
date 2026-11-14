@@ -47,7 +47,7 @@ import { hasBaseWork } from './automation-settings.mjs';
 import { treasureAutomationEnabled, runTreasureLoot } from './treasure-loot.mjs';
 import {watchTreasureTravel,matchesFollowDeparture} from './treasure-follow.mjs';
 import {watchFleetMaintenance,fleetMaintenanceEnabled,fleetMaintenanceInterval,runFleetMaintenance} from './fleet-maintenance.mjs';
-import { cityWarEnabled, cityWarReservedFleets, runCityWar } from './city-war.mjs';
+import { cityWarEnabled, cityWarReservedFleets, refreshCityWarReservations, runCityWar } from './city-war.mjs';
 import { forgeEnabled, runEquipmentForge } from './equipment-forge.mjs';
 import { antiqueEnabled, runAntiqueUpgrade } from './antique-upgrade.mjs';
 import { planHeroes, runHeroPlan } from './heroes.mjs';
@@ -357,6 +357,7 @@ export async function runLoop(client, protocol, {
     let pirateChecked = false;
     const challengeOptions = { player, getSettings, state: challengeRun, ledger: usageLedger,
       enabled: () => !stop.aborted && client.connected !== false, isStageBusy, isTrialBusy, isPirateBusy,
+      prepareDispatch: () => refreshCityWarReservations(client, protocol, config, player, getSettings),
       wait: (ms, _value, { signal } = {}) => sleep(ms, signal),
       signal: typeof stop.throwIfAborted === 'function' ? stop : undefined };
     async function checkDispatch() {

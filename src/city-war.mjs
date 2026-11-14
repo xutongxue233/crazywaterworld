@@ -1,4 +1,4 @@
-import {fleetRecordReason,legacyFleetReservationReason} from './fleet-availability.mjs';
+import {fleetRecordReason,legacyFleetReservationReason,reserveDispatch} from './fleet-availability.mjs';
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
 // 按原生委任策略接管后的城战攻守。只移动本人舰队和正常维修，不宣战。
 import { exactAutomationId } from './automation-policy.mjs';
@@ -194,6 +194,19 @@ export function cityWarReservedFleets(snapshot, settings, now = snapshot?.now) {
   return p.fleetIds.filter(id => (snapshot.targets ?? []).some(target => selectedTarget(p, target) && targetRole(target) === fleetRole(p, id)));
 }
 
+// 首杀发送前只刷新城战意向，不在候选复核期间另行派遣舰队。
+export async function refreshCityWarReservations(client, protocol, config, player, getSettings) {
+  const settings = getSettings(), p = settings?.cityWar;
+  if (!p?.enabled || !p.reserveDuringWar) { reserveDispatch(client, 'cityWar', []); return; }
+  const snapshot = await readCityWar(client, protocol, config, player, p);
+  if (settings !== getSettings() || client.connected === false) {
+    throw Object.assign(new Error('城战预留检查期间设置或连接已变化，取消本次派遣'), { notSent: true });
+  }
+  // 查询可能横跨开战/结束时刻，不能沿用读取开始时的时间。
+  const ids = snapshot.reason ? p.fleetIds : cityWarReservedFleets(snapshot, settings, nowOf(client));
+  reserveDispatch(client, 'cityWar', ids, Date.now() + Math.max(60000, (p.checkEverySeconds ?? 15) * 2000));
+}
+
 export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys = {}, pendingPetrol = 0 } = {}) {
   keys=recordsInWorld(keys,snapshot.worldId);
   const p = settings?.cityWar;
@@ -214,6 +227,9 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
   plan.notes.push(...snapshot.notes);
   if (!p.enabled || snapshot.reason) return plan;
   if (!snapshot.inWindow) { plan.notes.push('当前不在服务器城战时段'); return plan; }
+  // 有对应宣战目标就保留所选攻守舰队；目标人数未知只阻止选城，不能让出舰队。
+  plan.reservedFleetIds.push(...cityWarReservedFleets(snapshot, settings));
+  plan.reservedFleetIds = [...new Set(plan.reservedFleetIds)];
   for (const id of p.fleetIds) {
     const fleet = snapshot.fleets.find(row => row.buildingId === id), native = fleet ? nativeState(fleet, snapshot, p) : null;
     if (native?.close && native.off) plan.nativeOffFleetIds.push(id);
@@ -247,8 +263,6 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
     view.reason ||= '没有符合选择的' + (view.role === 'defence' ? '本盟受宣战防守城市' : '本盟进攻宣战目标');
   }
   if (!candidates.length) { plan.notes.push('没有符合所选舰队攻守职责的本联盟有效宣战目标'); return plan; }
-  plan.reservedFleetIds.push(...cityWarReservedFleets(snapshot, settings));
-  plan.reservedFleetIds = [...new Set(plan.reservedFleetIds)];
   if (!integer(snapshot.fuel) || !integer(pendingPetrol)) { plan.notes.push('无法确认汽油及未决预算'); return plan; }
   let fuel = snapshot.fuel - pendingPetrol, spent = usage.counters.cityWarPetrol ?? 0, dispatches = usage.counters.cityWarDispatches ?? 0;
   if (![spent, dispatches].every(n => integer(n))) { plan.notes.push('城战当日用量记录异常'); return plan; }

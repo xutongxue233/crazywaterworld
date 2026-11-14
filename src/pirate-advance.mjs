@@ -1,4 +1,4 @@
-import {recordsInWorld} from './fleet-settlement.mjs';
+import {recordsInWorld, checkFleetSettlement} from './fleet-settlement.mjs';
 import { fleetRecordReason, reserveDispatch, dispatchReservationReason } from './fleet-availability.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inspectHunt, startPirateHunt } from './pirates.mjs';
@@ -18,15 +18,18 @@ export function savePirateOutcome(ledger, key, event) {
 }
 
 // 单次手动首杀与连续推进共用持久记录，防止回包延迟时其他玩法抢用同一队。
-export async function runSinglePirateHunt(client,config,player,{targetKey,fleetKey,enabled,getSettings,ledger,report}) {
+export async function runSinglePirateHunt(client,config,player,{targetKey,fleetKey,enabled,getSettings,ledger,report,prepareDispatch=async()=>{}}) {
  let ticket,key;
  const update=event=>{
   if(key) savePirateOutcome(ledger,key,event);
   report?.(event);
  };
  try{
+  if(enabled()&&client.connected!==false)await checkFleetSettlement(client,player,ledger);
   const result=await startPirateHunt(client,config,player,{targetKey,fleetKey,enabled,report:update,
-   reservationReason:fleet=>dispatchReservationReason(client,getSettings(),'pirateHunt',fleet.buildingId),beforeSend({view,target,fleet}){
+   reservationReason:fleet=>dispatchReservationReason(client,getSettings(),'pirateHunt',fleet.buildingId),async beforeSend({view,target,fleet}){
+   await prepareDispatch();
+   if(!enabled() || client.connected===false)throw Object.assign(Error('账号已暂停或断开，出征已取消'),{notSent:true});
    const settings=getSettings(),p=settings.pirateHunt;
    const reason=fleetRecordReason(ledger.keyRecords(),fleet.buildingId,String(normalize(player.worldId)))||dispatchReservationReason(client,settings,'pirateHunt',fleet.buildingId);
    if(reason)throw Error(reason);
@@ -36,6 +39,7 @@ export async function runSinglePirateHunt(client,config,player,{targetKey,fleetK
    const world=String(normalize(player.worldId));key='pirate-first:'+world+':'+target.type+':'+target.level+':'+target.uid;
    const prior=ledger.keyRecords()[key];if(prior?.confirmed&&prior.details?.outcome==='lost')ledger.releaseCompletedKey(key);
    ticket=ledger.reserve({piratePetrol:view.fuelPerFleet},{},{},{uniqueKey:key,details:{kind:'pirateFirst',world,type:target.type,level:target.level,uid:target.uid,grid:target.gridIdx,scenarioId:player.scenarioId||1,sentAt:Date.now()+(client.serverClockOffsetMs||0),buildingId:fleet.buildingId,outcome:'sent'}});
+   return ticket;
   }});
   update(result);return result;
  }catch(error){if(ticket&&(error.prompt&&error.request==='ChallengePirateRequest'||error.notSent===true))ledger.cancel(ticket);throw error;}
@@ -76,12 +80,27 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
  };
  try {
  if(!state.halted&&state.failures>=maxFailures){state.halted=true;state.reason='本次首杀连续战败 '+state.failures+' 次，达到失败停止次数，已停止推进';}
- if(state.halted){publish();return state;}
+ if(state.halted){
+  // 停止继续派遣不等于停止结算；迟到战果仍须释放城战等玩法需要的舰队。
+  await schedule(async()=>{
+   if(!live())return;
+   await checkFleetSettlement(client,player,ledger);
+   const record=active&&ledger.keyRecords()[active.key],outcome=record?.details?.outcome??active?.result;
+   if(active&&!active.counted&&['won','lost'].includes(outcome)){
+    if(outcome==='won'){state.wins++;state.failures=0;}else state.failures++;
+    active.counted=true;
+    state.reason=(outcome==='won'?'已确认首杀成功':'已确认首杀战败')+'；本次首杀推进已停止，重新开启后可继续';
+   }
+  });
+  publish();return state;
+ }
  while(!signal?.aborted) {
   reserveDispatch(client,'pirateHunt',options.fleetIds,Date.now()+Math.max(60000,options.checkEverySeconds*3000));
   if(!enabled()){state.reason='账号已暂停或断开';break;}
   if(!sameOptions(options,getSettings().pirateHunt)){state.reason='首杀参数已修改，请重新开启推进';break;}
   const result=await schedule(async()=>{
+   if(!live())return{stop:'执行条件已变化，停止推进'};
+   await checkFleetSettlement(client,player,ledger);
    if(!live())return{stop:'执行条件已变化，停止推进'};
    await prepareDispatch();
    const snap=await inspectHunt(client,config,player);
@@ -120,7 +139,9 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
    try {
     const reply=await startPirateHunt(client,config,player,{targetKey:target.targetKey,fleetKey:fleet.key,enabled:live,
      reservationReason:raw=>dispatchReservationReason(client,getSettings(),'pirateHunt',raw.buildingId),
-     beforeSend({view,target:reviewed,fleet:raw}) {
+     async beforeSend({view,target:reviewed,fleet:raw}) {
+      await prepareDispatch();
+      if(!live())throw Object.assign(Error('执行条件已变化，停止推进'),{notSent:true});
       for(const f of view.fleets)f.reason ||= fleetRecordReason(ledger.keyRecords(),f.buildingId,world) || dispatchReservationReason(client,getSettings(),'pirateHunt',f.buildingId);
       if(fuelCeiling!==null && Number.isSafeInteger(view.fuel))view.fuel=Math.min(view.fuel,fuelCeiling);
       const check=selectPirateAdvance({view},options,{spent:state.spent,pendingFuel:(ledger.pendingCounters().piratePetrol??0)+(ledger.pendingCounters().treasurePetrol??0)+(ledger.pendingCounters().cityWarPetrol??0)+(ledger.pendingCounters().radarPetrol??0)+(ledger.pendingCounters().worldBossPetrol??0)+(ledger.pendingCounters().siliconPetrol??0)});
@@ -129,6 +150,7 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
       quotedFuel=view.fuel;
       ticket=ledger.reserve({piratePetrol:view.fuelPerFleet},{},{},{uniqueKey:key,details:{kind:'pirateFirst',world,type:target.type,level:target.level,uid:target.uid,grid:reviewed.gridIdx,scenarioId:player.scenarioId||1,sentAt:Date.now()+(client.serverClockOffsetMs||0),buildingId:raw.buildingId,outcome:'sent'}});
       active={key,buildingId:raw.buildingId,sentAt:now(),result:'sent',counted:false};
+      return ticket;
      },report:event=>update(key,event)});
     state.spent+=picked.cost;fuelCeiling=quotedFuel-picked.cost;update(key,reply);
     if(reply.status==='unknown')return{stop:reply.label};

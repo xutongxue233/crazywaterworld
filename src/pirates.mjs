@@ -146,11 +146,12 @@ function huntSession(client) {
   session = { secret: randomBytes(32), revision: 0, pending: new Map() };
   huntSessions.set(client, session);
   function update(flight, status, text, finished = false) {
+    if (finished && session.pending.get(flight.uid) === flight) session.pending.delete(flight.uid);
     if (flight.result?.status === status && flight.result?.arrivalAt === flight.arrivalAt && flight.result?.ownBattle === !!flight.ownBattle && flight.result?.battleAt === flight.battleAt) return;
-    if (finished) session.pending.delete(flight.uid);
     flight.result = { status, label: flight.label + ' · ' + text, ownBattle:!!flight.ownBattle, ...(flight.battleAt ? {battleAt:flight.battleAt} : {}), ...(flight.arrivalAt ? {arrivalAt:flight.arrivalAt} : {}) };
     flight.report?.(flight.result);
   }
+  session.update = update;
   function record(record) {
     for (const flight of session.pending.values()) {
       if (record?.type === flight.type && record.maxKilledLevel >= flight.level)
@@ -206,14 +207,31 @@ function huntSession(client) {
   return session;
 }
 
-export function restorePirateFlight(client, details, report) {
+export function restorePirateFlight(client, details, report, reservationId) {
   const session = huntSession(client);
   if (session.pending.has(details.uid)) return;
   session.pending.set(details.uid, {
+    world:String(details.world), reservationId,
     uid:details.uid, type:details.type, level:details.level, grid:details.grid,
     buildingId:details.buildingId, ownMovement:false, ownBattle:false, arrivalAt:details.arrivalAt, battleAt:details.battleAt,
     endSeen:details.outcome==='ended', label:details.buildingId+' 核对海盗 '+details.level+' 级', report,
   });
+}
+
+// 持久结算和连接内占用必须指向同一次派遣；同目标重试的旧回读不能释放新任务。
+export function reconcilePirateFlights(client, records, worldId) {
+  const session = huntSessions.get(client), world = String(worldId);
+  if (!session || !worldId) return;
+  for (const flight of session.pending.values()) {
+    if (flight.world !== world || !flight.reservationId) continue;
+    const key = `pirate-first:${world}:${flight.type}:${flight.level}:${flight.uid}`;
+    const record = records?.[key], d = record?.details;
+    if (!record?.confirmed || record.expired || record.id !== flight.reservationId ||
+        d?.kind !== 'pirateFirst' || String(d.world) !== world || d.buildingId !== flight.buildingId ||
+        d.uid !== flight.uid || d.type !== flight.type || d.level !== flight.level ||
+        !['won','lost'].includes(d.outcome)) continue;
+    session.update(flight, d.outcome, d.outcome === 'won' ? '个人首杀记录已确认' : '个人战报已确认战败', true);
+  }
 }
 
 // 兼容旧版海盗战报面板：返回当前连接中尚待确认的出征。
@@ -330,10 +348,11 @@ export async function startPirateHunt(client, config, player, { targetKey, fleet
   if (session.pending.has(pirate.uid) || target.reason) throw new Error(target.reason || '该目标已经派出舰队');
   if (troop.option.reason) throw new Error(troop.option.reason);
   if (!enabled()) throw new Error('账号已暂停，出征已取消');
-  await beforeSend?.({view,target,fleet:troop.fleet});
+  const reservation = await beforeSend?.({view,target,fleet:troop.fleet});
   const held = reservationReason(troop.fleet);
   if (!enabled() || client.connected === false || held) throw Object.assign(new Error(held || '账号已暂停或断开，出征已取消'), { notSent:true });
   const flight = { uid: pirate.uid, type: pirate.type, level: pirate.level, grid: pirate.gridIdx, city: pirate.cityId,
+    world:String(normalize(player.worldId)), reservationId:reservation?.id,
     buildingId: troop.fleet.buildingId, report, label: troop.option.name + ' 讨伐' + target.name + ' ' + target.level + ' 级' };
   session.pending.set(pirate.uid, flight);
   session.revision++;
