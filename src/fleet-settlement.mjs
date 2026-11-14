@@ -1,5 +1,6 @@
 import { exactAutomationId } from './automation-policy.mjs';
 import { normalize } from './worlds.mjs';
+import { reconcilePirateFlights } from './pirates.mjs';
 
 const fleetKey = /^(?:radar-send|world-boss|pirate-first|cityWar|treasureRepair|treasureFollow|treasure|silicon|silicon-repair|silicon-retreat|silicon-speed):(\d+):/;
 const repairKinds = new Set(['cityRepair', 'treasureRepair']);
@@ -186,7 +187,8 @@ export function settleFleetSnapshot(
       continue;
     }
     if (d.kind === 'pirateFirst') {
-      if (r.confirmed && kills?.some((k) => k.type === d.type && k.maxKilledLevel >= d.level)) {
+      // 个人首杀记录本身就是权威胜利证据；不能再要求此前已经收到派遣确认。
+      if (kills?.some((k) => k.type === d.type && k.maxKilledLevel >= d.level)) {
         ledger.resolveKey(key, true, { ...d, outcome: 'won' });
         changes.push({ key, reason: '个人首杀等级已确认' });
       } else if (r.confirmed && home && d.ownBattle && integer(d.battleAt)) {
@@ -332,6 +334,7 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
   }
   const baseline = ledger.keyRecords(),
     outstanding = outstandingFleets(baseline, worldId);
+  reconcilePirateFlights(client, baseline, worldId);
   if (!outstanding.length) return [];
   const job = (async () => {
     const kinds = new Set(outstanding.map(([, record]) => record.details.kind));
@@ -375,7 +378,7 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
     const cargoIds = Array.isArray(cargo?.treasure)
       ? cargo.treasure.map((t) => exactAutomationId(t.uid))
       : null;
-    return settleFleetSnapshot(ledger, {
+    const changes = settleFleetSnapshot(ledger, {
       worldId,
       fleets: own.fleets,
       events: radarEvents(radar?.radarInfo),
@@ -386,6 +389,8 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
       now,
       baseline
     });
+    reconcilePirateFlights(client, ledger.keyRecords(), worldId);
+    return changes;
   })();
   checking.set(client, job);
   try {

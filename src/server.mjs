@@ -25,7 +25,7 @@ import { readAllianceRadar } from './alliance-radar.mjs';
 import { planRadarPreview, pendingPetrol } from './dispatch-preview.mjs';
 import { inspectHunt } from './pirates.mjs';
 import { selectPirateAdvance, runSinglePirateHunt } from './pirate-advance.mjs';
-import { fleetRecordReason, dispatchReservationReason, reserveDispatch, fleetDispatchView, dispatchLabels, bridgeFleetReservations } from './fleet-availability.mjs';
+import { fleetRecordReason, dispatchReservationReason, fleetDispatchView, dispatchLabels, bridgeFleetReservations } from './fleet-availability.mjs';
 import { watchFreeRewardClock } from './extra-free-rewards.mjs';
 import { createPirateAdvanceTask } from './pirate-advance.mjs';
 import { automationControlView, setAutomationControl } from './automation-controls.mjs';
@@ -74,7 +74,7 @@ import { rememberTournament } from './side-rewards.mjs';
 import { beijingDay, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative, nativeTaskValues, applyNativeTask, hasExtraWork, createUsageLedger, exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
 import { budgetPreview, exactAutomationId, createActionGuard, nativePreferenceEnabled, needsCargoDemand, AutomationSkip } from './automation-policy.mjs';
 import { readTreasureLoot, planTreasureLoot, treasureAutomationEnabled } from './treasure-loot.mjs';
-import { readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets } from './city-war.mjs';
+import { readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets, refreshCityWarReservations } from './city-war.mjs';
 import { readWorldOnlineReward, worldOnlineRewardKey } from './world-online-rewards.mjs';
 import { readEquipmentForge, planEquipmentForge, releaseStaleEquipmentForge, forgeEnabled } from './equipment-forge.mjs';
 import { readAntiqueUpgrade, planAntiqueUpgrade, antiqueEnabled } from './antique-upgrade.mjs';
@@ -319,10 +319,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   async function refreshFleetReservations(session,settings) {
-    const client=session.client,p=settings.cityWar;
-    if(!p.enabled||!p.reserveDuringWar){reserveDispatch(client,'cityWar',[]);return;}
-    const snapshot=await readCityWar(client,protocol,loadConfigSafe(),session.player,p);
-    reserveDispatch(client,'cityWar',snapshot.reason?p.fleetIds:cityWarReservedFleets(snapshot,settings),Date.now()+60000);
+    await refreshCityWarReservations(session.client, protocol, loadConfigSafe(), session.player,
+      () => session.preferences ?? settings);
   }
   function actionGuard(session, client) {
     const generation = session.generation;
@@ -1666,7 +1664,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             return result;
           }
           await refreshFleetReservations(session,settingsView(session).settings);
-          const result = await runSinglePirateHunt(client, config, player, { ...payload, enabled, getSettings:()=>settingsView(session).settings,ledger:usageFor(session),report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label) });
+          const result = await runSinglePirateHunt(client, config, player, { ...payload, enabled, getSettings:()=>settingsView(session).settings,ledger:usageFor(session),
+            prepareDispatch:()=>refreshFleetReservations(session,settingsView(session).settings),
+            report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label) });
           emit(session, 'info', result.label);
           return result;
         }));
