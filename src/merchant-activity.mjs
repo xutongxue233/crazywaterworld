@@ -10,6 +10,7 @@ import { recordMerchantSnapshot, recordMerchantTrade, merchantJournalSummary, re
 import { evaluateMerchantUpgrade, runMerchantUpgrade } from './merchant-upgrade.mjs';
 import { watchMerchant } from './merchant-monitor.mjs';
 import { merchantStrategyPlan } from './merchant-strategy.mjs';
+import { runMerchantReport } from './merchant-report.mjs';
 
 export { planMerchant } from './merchant-planner.mjs';
 const param = (config, key) => table(config, 'ActivityTradeCfg').find(row => row.key === key)?.value;
@@ -198,7 +199,10 @@ export async function merchantActivity(client, config, ctx) {
   }
   if (!tradingHours(config, clock(client))) return waiting(ctx, '等待游戏规定的贸易时段 ' + param(config, '海商王贸易时间'));
   const profitLimit = ctx.settings?.()?.merchant?.profitLimit ?? 0;
-  if (profitLimit > 0 && info.player.profit >= profitLimit) return waiting(ctx, '已达本期累计利润上限，领奖仍按独立开关执行');
+  const profitReached = profitLimit > 0 && info.player.profit >= profitLimit;
+  if (profitReached && (!merchantSettings(ctx.settings?.()?.merchant).autoShareIntel ||
+    info.cargo.moveEndTime > clock(client) || info.cargo.moveToCityId && info.cargo.moveToCityId !== info.cargo.cityId))
+    return waiting(ctx, '已达本期累计利润上限，领奖仍按独立开关执行');
   if (info.cargo.moveEndTime > clock(client)) {
     if (await runMerchantSpeed(client, config, ctx, event, info)) return;
     return waiting(ctx, '航行中，预计 ' + new Date(info.cargo.moveEndTime * 1000)
@@ -224,6 +228,10 @@ export async function merchantActivity(client, config, ctx) {
       }
     });
   const plan = await snapshot(info);
+  if (plan.marketSnapshot) await runMerchantReport(client, config,
+    Object.assign(Object.create(ctx), { enabled: allowed }), event, info, { market: plan.marketSnapshot });
+  if (!allowed()) return waiting(ctx, '开关、账号或活动状态已变化');
+  if (profitReached) return waiting(ctx, '已达本期累计利润上限，本港共享已检查，领奖仍按独立开关执行');
   if (plan.kind !== 'sell' && await runMerchantUpgrade(client, config, ctx, event, info,
     { market: plan.marketSnapshot, radar: plan.radarSnapshot, markets: knownMarkets(ctx.ledger, event), actionSeconds: actionInterval })) return;
   if (plan.kind === 'wait') return waiting(ctx, plan.reason);

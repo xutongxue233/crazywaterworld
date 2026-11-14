@@ -7,6 +7,7 @@ const dayOf = time => Math.floor((time + 28800) / 86400);
 const safe = value => Number.isSafeInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER;
 
 export const MERCHANT_DEFAULTS = Object.freeze({
+  autoShareIntel: true,
   quoteMaxAgeSeconds: 300,
   estimateDiscountPercent: 10,
   refreshWaitSeconds: 120,

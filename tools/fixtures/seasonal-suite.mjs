@@ -177,6 +177,22 @@ export function seasonalFixture() {
       state.beauty.gotVote = true;
       return reward;
     },
+    TradeCityReport: (b) => {
+      const market = state.markets[b.cityId];
+      market.isReport = true;
+      state.trade.guildReportNum++;
+      const report = {
+        cityId: b.cityId,
+        reportNum: state.trade.guildReportNum,
+        specGoodsId: market.specGoodsId,
+        rareGoodsId: market.rareGoodsId,
+        reportName: '离线共享测试'
+      };
+      Object.assign(state.radar.radar.find(row => row.cityId === b.cityId) ?? {}, report);
+      const body = protocol.SCTradeCityReport.decode(protocol.SCTradeCityReport.encode(report).finish());
+      client.emit('message', { name: 'SCTradeCityReport', body });
+      return {};
+    },
     TradeBuy: (b) => {
       const t = state.trade,
         quote = state.markets[b.cityId].goods.find((r) => r.goodsId === b.goodsId);
