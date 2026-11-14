@@ -25,6 +25,74 @@ const configZeroHints={
  'trials.maxSingleCost':'0 表示禁止付费扫荡。','trials.dailyDiamondBudget':'0 表示禁止付费扫荡。'
 };
 const configGroups = [
+  {id:'alliance',title:'联盟 · 募兵与互助',category:'world',fields:[
+    configField('alliance.enabled','联盟自动化总开关','switch',{help:'开启后接管联盟募兵、互助和福利任务；关闭保留本组细项。原有独立任务开关仍可在原入口管理。'}),
+    configField('alliance.recruit','自动在联盟城市募兵'),
+    configField('alliance.recruitDailyLimit','每日募兵上限','number',{help:'0 表示不额外限制，仍遵守游戏按赛季和等级配置的每日次数。'}),
+    configField('alliance.recruitProduction','募兵缺料自动备料','switch',{help:'独立于按需优先生产；仍需开启工厂生产。次数用完或上次募兵结果未知时停止下一次备料。'}),
+    configField('alliance.mutual','联盟互助总开关'),
+    configField('alliance.mutualMode','互助模式','choice',{options:[['custom','自定义'],['exchange','刷贡献互助']],when:d=>d.alliance.mutual,help:'贡献模式按当前赛季选择对应已解锁物料；先求助一次，收到并确认领取后继续同物料求助。切换模式保留自定义选择。'}),
+    configField('alliance.autoHelp','自动赠送盟友','switch',{when:d=>d.alliance.mutual,help:'关闭只停止赠送，已收到的援助仍会领取；自动求助独立。'}),
+    configField('alliance.autoAsk','自动请求援助','switch',{when:d=>d.alliance.mutual}),
+    configField('alliance.allowedMaterials','允许赠送物料','multi',{catalog:'materials',empty:'未选择，按库存与禁用物料筛选',when:d=>d.alliance.mutual&&d.alliance.mutualMode==='custom'}),
+    configField('alliance.blockedMaterials','禁止赠送物料','multi',{catalog:'materials',when:d=>d.alliance.mutual}),
+    configField('alliance.requestMaterials','主动求助物料','multi',{catalog:'materials',empty:'未选择，按当前缺料请求',when:d=>d.alliance.mutual&&d.alliance.mutualMode==='custom',help:'选定后可在当前不缺料时请求；仍遵守服务器共享的每日求助次数。'}),
+    configField('alliance.memberKeywords','盟友昵称筛选','names',{when:d=>d.alliance.mutual,help:'每行一个关键词，忽略大小写；空表示不限制。夜间补次数仍遵守筛选。'}),
+    configField('alliance.stockReserve','赠送后物料保留','number',{unit:'件',when:d=>d.alliance.mutual}),
+    configField('alliance.helpDailyLimit','每日赠送上限','number',{when:d=>d.alliance.mutual}),
+    configField('alliance.collectGifts','自动领取联盟福利'),
+    configField('alliance.autoTech','自动升级联盟科技'),
+    configField('alliance.techIds','允许升级科技','multi',{catalog:'guildTech',empty:'未选择，按可升级科技顺序检查',when:d=>d.alliance.autoTech}),
+    configField('alliance.techDailyLimit','每日科技升级上限','number',{when:d=>d.alliance.autoTech}),
+  ]},
+  {id:'guildShip',title:'联盟 · 商船',category:'world',fields:[
+    configField('guildShip.enabled','联盟商船总开关'),configField('guildShip.crew','自动成为船员'),configField('guildShip.captain','自动成为船长'),
+    configField('guildShip.mode','上船策略','choice',{options:[['redFirst','红船优先'],['mediumLarge','中船和大船，优先红船'],['full','尽量满船（20分钟后补位）'],['small','仅小船'],['mediumSmall','中船和小船']],help:'按游戏当前赛季批次和实际航程预留名额。满船补位可临时尝试两种角色；禁用物料、库存预留和服务器名额始终有效。'}),
+    configField('guildShip.coinFilter','按水姆币奖励筛选'),
+    configField('guildShip.minCoinsSmall','小船最低水姆币','number',{when:d=>d.guildShip.coinFilter}),
+    configField('guildShip.minCoinsMedium','中船最低水姆币','number',{when:d=>d.guildShip.coinFilter}),
+    configField('guildShip.minCoinsLarge','红船最低水姆币','number',{when:d=>d.guildShip.coinFilter,help:'0 表示不限制；这是船只奖励的最低数量，不是支付价格。'}),
+    configField('guildShip.rewardFilter','按奖励物品筛选'),
+    configField('guildShip.rewardItems','期望奖励物品','multi',{catalog:'materials',when:d=>d.guildShip.rewardFilter}),
+    configField('guildShip.disabledMaterials','禁止消耗物料','multi',{catalog:'materials'}),
+    configField('guildShip.produceMissing','红船缺料自动备料','switch',{help:'与工厂开关联动；只为符合当前策略的红船备料，不购买材料。'}),
+    configField('guildShip.redStartEnabled','指定红船申请船长时间'),
+    configField('guildShip.redStartTime','红船申请船长时间','time',{when:d=>d.guildShip.redStartEnabled,help:'北京时间。只控制申请船长的最早时间，满员或准备结束后由游戏服务器开船。'}),
+  ]},
+  {id:'guildFort',title:'联盟 · 工事捐赠',category:'world',fields:[
+    configField('guildFort.enabled','自动捐赠工事','switch',{gates:['alliance.enabled'],help:'同时需要联盟自动化总开关。只捐现有库存；不购买、不兑换，不创建或拆除工事。'}),
+    configField('guildFort.materials','捐赠物料','multi',{catalog:'materials',empty:'未选择，使用联盟互助允许物料；两处均为空则不捐赠'}),
+    configField('guildFort.reserve','捐赠后库存保留','number'),configField('guildFort.dailyLimit','每日捐赠上限','number',{help:'0 表示不额外限制，仍遵守游戏日上限。'}),
+  ]},
+  {id:'silicon',title:'硅矿',category:'world',fields:[
+    configField('silicon.enabled','硅矿自动化总开关','switch',{help:'按真实赛季与功能解锁条件运行。奖励由服务器自动结算；一般每10分钟检查，追击每2分钟，相关推送提前唤醒。'}),
+    configField('silicon.dailyRewardLimit','每日奖励结算次数上限','number',{help:'0 表示不额外限制；同时遵守服务端周期上限。达限停止派遣并在游戏允许撤回时撤回；首次缺少当日基线时按当前周期累计次数保守计数。'}),
+    configField('silicon.windows','占矿时段','names',{placeholder:'08:00-12:00\n18:00-23:00',help:'北京时间，每行 HH:mm-HH:mm；允许跨午夜，空表示全天。'}),
+    configField('silicon.petrolReserve','汽油保留量','number'),configField('silicon.dailyPetrolLimit','每日汽油预算','number',{help:'0 不额外限制；仍服从汽油保留量、共享占用和舰队开关。'}),
+    configField('silicon.dailyDiamondLimit','每日加速钻石预算','number',{help:'0 禁止加速花钻。还需开启全局钻石消费并满足全局日预算。'}),
+    configField('silicon.pursuitMinutes','三日奖励周期重置后追击窗口','number',{unit:'分钟',help:'按服务器三日奖励周期起点计算。只追击黑名单中已在本账号确认击败的对手，不换空矿或新对手；低等矿与只占空位时不追击。'}),
+    ...[0,1,2].flatMap(i=>{
+      const key='silicon.fleets.'+i+'.',label='舰队'+(i+1)+' · ',when=d=>d.silicon.fleets[i].enabled;
+      return [configField(key+'enabled',label+'启用'),configField(key+'id',label+'远征舰队','choice',{options:[['1远征船','远征舰队1'],['2远征船','远征舰队2'],['3远征船','远征舰队3']],when}),
+        configField(key+'tier',label+'硅矿等级','choice',{options:[['BLUE','初等'],['PURPLE','中等'],['ORANGE','高等']],when}),
+        configField(key+'emptyOnly',label+'只占空位','switch',{when,help:'启用后不攻击占领者，也不追击；初等矿始终不攻击占领者。'}),
+        configField(key+'opponentOrder',label+'对手战力排序','choice',{options:[['powerDesc','战力从高到低'],['powerAsc','战力从低到高']],when}),
+        configField(key+'maxPowerRatio',label+'敌我最高战力比例','number',{unit:'%',when}),
+        configField(key+'failureLimit',label+'同一对手每日失败上限','number',{when}),configField(key+'dailyAttackLimit',label+'每日进攻上限','number',{when,help:'0 表示不额外限制，仍受服务器每日抢占次数及失败限制。'}),
+        configField(key+'pursuit',label+'追击已击败对手','switch',{when}),
+        configField(key+'safePlayers',label+'安全玩家','names',{when,help:'完整昵称，每行一个，忽略大小写；不主动攻击这些玩家。'}),configField(key+'safeGuilds',label+'安全联盟编号','names',{when,help:'游戏显示的联盟数字编号，每行一个；矿位协议不包含联盟名称。'}),
+        configField(key+'minDurabilityPercent',label+'最低耐久','number',{unit:'%',when}),configField(key+'autoRepair',label+'自动维修','switch',{when}),
+        configField(key+'maxRepairCost',label+'单次维修汽油上限','number',{when,help:'0 表示不额外限制；关闭自动维修可禁止维修消费。'}),configField(key+'repairSpeedUp',label+'允许加速维修','switch',{when}),
+        configField(key+'marchSpeedUp',label+'允许行军加速','switch',{when}),configField(key+'marchTargetSeconds',label+'行军剩余目标','number',{unit:'秒',when})];
+    }),
+  ]},
+  {id:'rich-merchant',title:'不差钱商人',category:'daily',fields:[
+    configField('schedule.weekOrderSubmit','自动完成商人订单','switch',{help:'复用周订单任务，材料齐全后提交。缺料转交工厂按商人需求补产，生产受工厂开关和需求优先级控制。'}),configField('schedule.weekOrderFinal','领取商人最终奖励'),
+  ]},
+  {id:'hero-raid',title:'超凡英雄活动',category:'daily',fields:[
+    configField('heroRaid.enabled','超凡英雄活动总开关','switch',{help:'关闭后保留子项选择，只处理服务器确认开放的活动。'}),
+    configField('heroRaid.orders','自动完成活动订单'),configField('heroRaid.rewards','自动领取达标奖励','switch',{help:'领取订单与已达成的累计抽奖奖励。实际抽取消耗英雄副本抽卡券，没有免费抽取次数，因此不自动抽卡。'}),
+  ]},
   {id:'ad-rewards',title:'广告奖励',category:'daily',fields:[
     configField('ads.waitSeconds','广告申请后等待','number',{unit:'秒',help:'无免广告权益时默认申请并等待后领取；有权益时立即领取。默认15秒，是挂机收益、英雄招募、工厂加速、藏品招募、广告商店、节庆礼包和雪球礼包都实测成功过的时长。5秒只在藏品招募上测通，广告商店3秒被拒。等待会占用账号操作队列，挂机每轮最多处理1次；服务器返回未完成时跳过该入口并冷却5分钟。'}),
     configField('schedule.afkAd','闯关挂机广告收益','switch',{help:'每天1次。游戏只在普通领取后的60秒内提供此入口，因此需同时开启“闯关挂机收益”，普通领取后立即执行。无免广告权益时按设置的等待时间领取。'}),
@@ -60,11 +128,19 @@ const configGroups = [
     configField('merchant.refreshWaitSeconds','刷新前最多等待','number',{unit:'秒',help:'默认120秒，0关闭。仅在等待后的预计收益优于立即出航且能及时成交时等待；刷新后重新读取价格和库存。刷新时刻使用游戏配置。'}),
     configField('merchant.liquidationMinutes','活动结束前清仓窗口','number',{unit:'分钟',help:'默认120分钟，0关闭提前清仓。窗口内优先处理持货；无论此值多少，都不采购无法在交易截止前卖出的货物。'}),
     configField('merchant.maxLossPercent','清仓最大亏损率','number',{unit:'%',help:'默认0，不自动亏损卖出。大于0时，清仓可按各批次买价接受此比例以内的亏损，仍须符合来源港出售限制。'}),
-    configField('merchant.autoSpeedUp','允许使用已有指针','switch',{help:'默认关闭。按所选策略评估已有指针；必须满足收益门槛、保留数量和本程上限。不购买指针。没有有效成交样本时，周转策略回退到截止补救。'}),
-    configField('merchant.speedUpMode','指针收益策略','choice',{options:[['profit','周转增益及截止补救'],['deadline','仅补救截止']],when:d=>d.merchant?.autoSpeedUp,help:'周转策略用本期已确认成交速率估算节约时间价值；刷新前成交只采用仍有效的目标港观察，不预测刷新后的涨跌。'}),
+    configField('merchant.autoSpeedUp','允许使用商会指针','switch',{help:'默认关闭。遵守每日用量、保留数量和每程上限。购买指针必须另开购买开关及钻石预算。'}),
+    configField('merchant.speedUpMode','跑船与加速策略','choice',{options:[['deadline','稳定模式：免费跑船，临近截止才补救'],['refresh','刷新窗口加速：不卡点到港'],['arrival','刷新窗口加速：每刷新最多一程'],['profit','原有策略：周转增益及截止补救']],help:'新策略仍按本港实时报价和目的港保守估值决策。卡点模式用持久航程记录限制同一刷新周期的出航次数。'}),
+    configField('merchant.refreshWindowMinutes','刷新后加速窗口','number',{unit:'分钟',when:d=>['refresh','arrival'].includes(d.merchant.speedUpMode),help:'仅在真实配置刷新时刻之后的此窗口内加速，窗口外等待；交易截止前仍可补救。'}),
+    configField('merchant.dailyPointerLimit','每日指针使用上限','number',{unit:'根',when:d=>d.merchant.autoSpeedUp,help:'默认28，0 禁止使用；跨重启保留已用和未确认用量。'}),
+    configField('merchant.autoBuyPointers','自动购买缺少的商会指针','switch',{when:d=>d.merchant.autoSpeedUp,help:'仅补足当前有效加速方案所缺数量，受游戏日购买上限、全局钻石及本项预算限制。'}),
+    configField('merchant.pointerDailyDiamondLimit','每日购买指针钻石上限','number',{when:d=>d.merchant.autoBuyPointers,help:'0 禁止购买；还需开启全局钻石消费。'}),
+    configField('merchant.profitLimit','本期累计利润上限','number',{unit:'商会币',help:'0 表示不额外限制。50000万元对应500000000商会币；达到后停止新增买卖、升级与加速，领奖独立。不是收益保证。'}),
+    configField('merchant.firstDepartureMode','每日首趟出发','choice',{options:[['smart','自行判定：先找盈利商品'],['time','指定最早时间']]}),
+    configField('merchant.firstDepartureTime','首趟最早出发时间','time',{when:d=>d.merchant.firstDepartureMode==='time',help:'北京时间。到点后仍需满足报价、舱位、交易时段和预计成交条件。'}),
+    configField('merchant.firstDepartureWaitMinutes','首趟无盈利商情最多等待','number',{unit:'分钟',when:d=>d.merchant.firstDepartureMode==='smart',help:'默认29分钟。已有盈利路线直接执行；信息不足先等，超时后才使用已知普通港口有限寻价。'}),
     configField('merchant.speedUpMaxPerLeg','每程最多使用指针','number',{unit:'根',when:d=>d.merchant?.autoSpeedUp,help:'默认4，按整段航程累计，分轮执行也不能超过上限。指针不足时只在部分加速仍有可核验收益依据时使用。'}),
     configField('merchant.speedUpMinProfit','每根指针最低估算收益增量','number',{unit:'商会币',when:d=>d.merchant?.autoSpeedUp,help:'默认1000。只加速能产生足够预期增益的航程，无法确认有效交易机会时不使用。'}),
-    configField('merchant.keepPointers','保留指针数量','number',{unit:'根',when:d=>d.merchant?.autoSpeedUp,help:'自动加速后至少保留此数量，默认0；指针不足时等待正常航行，不购买补充。'}),
+    configField('merchant.keepPointers','保留指针数量','number',{unit:'根',when:d=>d.merchant?.autoSpeedUp,help:'自动加速后至少保留此数量，默认0。'}),
     configField('merchant.autoUpgrade','允许回本评估后升级商船','switch',{help:'默认关闭。需同时开启全局钻石消费。仅用可执行航次、已观察库存与新船增量收益保守评估；没有足够回本证据时不升级。'}),
     configField('merchant.upgradeCoinValuePerDiamond','每钻石要求的商会币价值','number',{unit:'商会币',when:d=>d.merchant?.autoUpgrade,help:'默认100，是你用于评估的价值假设，不是游戏兑换汇率。升级需同时满足下方回本比例。'}),
     configField('merchant.upgradeMinReturnPercent','升级最低预期回本比例','number',{unit:'%',when:d=>d.merchant?.autoUpgrade,help:'默认150%。保守增量收益至少达到钻石成本折算值的此比例；活动结束重置船级，不能跨期摊销。'}),
@@ -315,8 +391,9 @@ const configGroups = [
 
 function configGet(key) { return key.split('.').reduce((value, part) => value?.[part], configEditor.draft); }
 function configSet(key, value) {
-  const [group, field] = key.split('.');
-  configEditor.draft[group][field] = value;configEditor.previewSummary=null;
+  const parts = key.split('.'), field = parts.pop();
+  const target = parts.reduce((object, part) => object[part], configEditor.draft);
+  target[field] = value;configEditor.previewSummary=null;
   if (key === 'farm.autoPlant' && value) configEditor.draft.farm.customPlant = false;
   if (key === 'farm.customPlant' && value) configEditor.draft.farm.autoPlant = false;
   delete configEditor.errors[key];
@@ -576,6 +653,9 @@ function configRenderField(spec) {
     control.oninput = () => { configSet(spec.key, control.value === '' ? null : Number(control.value)); };
     line.append(control); if (spec.unit) line.append(el('span', '', spec.unit)); box.append(line);
 
+  } else if (spec.kind === 'time') {
+    control = el('input'); control.type = 'time'; control.required = true; control.id = id; control.value = configGet(spec.key);
+    control.onchange = () => configSet(spec.key, control.value); box.append(control);
   } else if (spec.kind === 'names') {
     control = el('textarea', 'config-input'); control.id = id; control.rows = 2; control.maxLength = 3600;
     control.placeholder = spec.placeholder || '每行一项'; control.value = configGet(spec.key).join('\n'); control.spellcheck = false;
@@ -1013,7 +1093,7 @@ async function configPreview() {
   configBusy(true); configUpdateState(); $('config-preview').textContent = '读取真实状态…';
   try {
     const selected=scope.startsWith('module:')?configEditor.groups.get(scope.slice(7)):null;
-    const dedicated={treasure:'world',radar:'radar','fleet-dispatch':'fleetDispatch','pirate-sweep':'pirateSweep','pirate-hunt':'pirateHunt',worldBoss:'worldBoss',cityWar:'cityWar',forge:'forge',antique:'antique',heroes:'heroes',runtime:'runtime'};
+    const dedicated={alliance:'alliance',guildShip:'guildShip',guildFort:'guildFort',silicon:'silicon','hero-raid':'heroRaid',treasure:'world',radar:'radar','fleet-dispatch':'fleetDispatch','pirate-sweep':'pirateSweep','pirate-hunt':'pirateHunt',worldBoss:'worldBoss',cityWar:'cityWar',forge:'forge',antique:'antique',heroes:'heroes',runtime:'runtime'};
     const runtime=await call('/api/loop');
     const source=selected?dedicated[selected.id]:scope;
     let data;

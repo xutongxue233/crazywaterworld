@@ -76,6 +76,12 @@ function fixture() {
 }
 async function test(name, run) { await run(); passed++; console.log('通过：' + name); }
 try {
+  await test('利润达限不升级，读取期间降低上限取消钻石消费', async () => {
+    const f = fixture(); f.settings.merchant.profitLimit = 10000;
+    assert.equal(f.evaluate().kind, 'skip'); await f.run(); assert.equal(f.sent().length, 0);
+    const g = fixture(); g.hook(name => { if (name === 'AllResourceRequest') g.settings.merchant.profitLimit = 10000; });
+    await g.run(); assert.equal(g.sent().length, 0); assert.equal(g.ledger.pendingCounters().diamonds ?? 0, 0);
+  });
   await test('真实空请求升级、利润门槛不扣商会币，船级与完整资源回读确认', async () => {
     const f = fixture(), plan = f.evaluate();
     assert.equal(plan.kind, 'upgrade'); assert.equal(plan.diamonds, 300); assert.equal(plan.remainingRounds, 2);

@@ -18,7 +18,11 @@ await test('空联盟名按游戏出生主城取名，不再使用联盟2/4；�
  const d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map});assert.equal(d.owners.find(o=>o.id===2).name,'铁锈湾');assert.equal(d.owners.find(o=>o.id===4).name,'风栖港');assert.match(d.owners.find(o=>o.id===1).name,/自定义联盟/);
 });
 await test('本日已确认耗油不重复加巨轮维修，未决费用单列',async()=>{
- const f=await commentsEighteenFixture(),d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map});assert.equal(d.fuelUsage.confirmed,12300);assert.equal(d.fuelUsage.pending,2000);assert.equal(d.fuelUsage.activities.length,5);assert.equal(d.fuelUsage.stock,99999);
+ const f=await commentsEighteenFixture(),d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map});assert.equal(d.fuelUsage.confirmed,12300);assert.equal(d.fuelUsage.pending,2000);assert.equal(d.fuelUsage.activities.length,6);assert.equal(d.fuelUsage.stock,99999);
+});
+await test('硅矿已确认和待确认汽油分别计入世界概览，不漏记或重复累计',async()=>{
+ const f=await commentsEighteenFixture(),withSilicon={...ledger,snapshot:()=>({...ledger.snapshot(),counters:{...ledger.snapshot().counters,siliconPetrol:700}}),confirmedCounters:()=>({...ledger.confirmedCounters(),siliconPetrol:500}),pendingCounters:()=>({...ledger.pendingCounters(),siliconPetrol:200})};
+ const d=await readWorldOverview(f.client,f.config,f.player,f.settings,withSilicon,{mapLoader:async()=>f.map});assert.equal(d.fuelUsage.confirmed,12800);assert.equal(d.fuelUsage.pending,2200);assert.deepEqual(d.fuelUsage.activities.find(row=>row.name==='硅矿（含维修）'),{name:'硅矿（含维修）',confirmed:500,pending:200});
 });
 await test('己方与其他行军都有起终点时间；静止舰队不生成虚构征程',async()=>{
  const f=await commentsEighteenFixture(),d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map});assert.equal(d.fleets[0].journey,null);assert(d.fleets[1].journey.from);assert.equal(d.fleets[2].journey.to,'万吨货轮');

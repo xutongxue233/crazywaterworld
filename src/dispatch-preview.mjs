@@ -1,7 +1,7 @@
 import { fleetRecordReason, dispatchReservationReason } from './fleet-availability.mjs';
 import { resourceReserve } from './automation-policy.mjs';
 
-export const pendingPetrol = ledger => ['radarPetrol','piratePetrol','treasurePetrol','cityWarPetrol','worldBossPetrol'].reduce((n,k)=>n+(ledger.pendingCounters()[k]??0),0);
+export const pendingPetrol = ledger => ['radarPetrol','piratePetrol','treasurePetrol','cityWarPetrol','worldBossPetrol','siliconPetrol'].reduce((n,k)=>n+(ledger.pendingCounters()[k]??0),0);
 export function planRadarPreview(snapshot, settings, ledger, client, {cityReservedFleetIds=null}={}) {
  const p=settings.radar, notes=[],actions=[];
  let fuel=snapshot.fuel-pendingPetrol(ledger),used=ledger.snapshot().counters.radarPetrol??0;

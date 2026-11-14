@@ -35,6 +35,58 @@ await test('作物缺口换算种子，已在田作物与种子队列扣除，�
  v.buildings.push({farm:{productId:'番茄'}});v.factories[0].factory.factoryQ.push({productId:'番茄种子'});
  need=settingDemands(v,cfg,needs,['cargo']);assert.equal(need.get('番茄').num,5);assert.equal(need.get('番茄种子').num,0);
 });
+await test('联盟补料与居民订单共享预留，移除订单来源仍保留一次水位',()=>{
+ const v={factories:[],buildings:[],have:()=>0},config={tables:{}};
+ const resident={source:'resident',requirements:[{id:'木材',num:3}]};
+ const recruit={source:'guildRecruit',requirements:[{id:'木材',num:2}],reserved:[{id:'木材',num:3}]};
+ for(const priority of [['resident','guildRecruit'],['guildRecruit','resident'],['guildRecruit']]){
+  const need=settingDemands(v,config,[resident,recruit],priority).get('木材');
+  assert.equal(need.required,5);assert.equal(need.num,5);
+  assert.equal(Object.values(need.productionBySource).reduce((a,b)=>a+b,0),need.num);
+ }
+ const ship={source:'guildShip',requirements:[{id:'木材',num:4}],reserved:[{id:'木材',num:3}]};
+ for(const priority of [['resident','guildRecruit','guildShip'],['guildShip','guildRecruit']]){
+  const need=settingDemands(v,config,[resident,recruit,ship],priority).get('木材');
+  assert.equal(need.required,9);assert.equal(need.num,9);
+ }
+ ship.reserved[0].num=5;
+ assert.equal(settingDemands(v,config,[resident,recruit,ship],['guildRecruit','resident','guildShip']).get('木材').required,11);
+ assert.equal(settingDemands(v,config,[resident,recruit],['resident']).get('木材').required,3);
+});
+await test('共享预留扣除部分已选订单与待收在产，自身缺口保留独立来源',()=>{
+ const v={factories:[],buildings:[],have:()=>3},config={tables:{}};
+ const records=[{source:'resident',requirements:[{id:'木材',num:2}]},{source:'cargo',requirements:[{id:'木材',num:1}]},
+  {source:'guildRecruit',requirements:[{id:'木材',num:2}],reserved:[{id:'木材',num:3}]}];
+ for(const priority of [['guildRecruit','resident','cargo'],['guildRecruit','resident'],['guildRecruit']]){
+  const need=settingDemands(v,config,records,priority).get('木材');
+  assert.equal(need.required,5);assert.equal(need.num,2);assert.deepEqual(need.productionBySource,{guildRecruit:2});
+  assert(need.sources.includes('guildRecruit'));assert.equal(need.priority,0);
+ }
+ v.factories=[{factory:{factoryQ:[{productId:'木材'}],finishedProducts:[{id:'木材',num:1}]}}];
+ const stocked=settingDemands(v,config,records,['guildRecruit','resident','cargo']).get('木材');
+ assert.equal(stocked.required,5);assert.equal(stocked.unfilled,1);assert.equal(stocked.num,0);
+ assert.deepEqual(stocked.productionBySource,{});
+});
+await test('独立补料递归原料只计真实缺口，共同预留不重复派生原料',()=>{
+ const v={factories:[],buildings:[],have:id=>id==='产品'?3:0};
+ const config={tables:{BuildingProduceCfg:{data:[{itemId:'产品',costItem:[['木材',2]]}]}}};
+ const records=[{source:'resident',requirements:[{id:'产品',num:3}]},
+  {source:'guildRecruit',requirements:[{id:'产品',num:2}],reserved:[{id:'产品',num:3}]},
+  {source:'guildShip',requirements:[{id:'产品',num:4}],reserved:[{id:'产品',num:3}]}];
+ const need=settingDemands(v,config,records,['guildRecruit','resident','guildShip']);
+ assert.equal(need.get('产品').required,9);assert.equal(need.get('产品').num,6);
+ assert.equal(need.get('木材').required,12);assert.equal(need.get('木材').num,12);
+ assert.deepEqual(need.get('木材').productionBySource,{guildRecruit:4,guildShip:8});
+ assert.deepEqual(need.get('木材').sources,['guildRecruit','guildShip']);
+});
+await test('省略作物订单来源时预留与自身需求合并计算种子批次',()=>{
+ const v={factories:[],buildings:[],have:()=>0};
+ const records=[{source:'resident',requirements:[{id:'番茄',num:3}]},
+  {source:'guildRecruit',requirements:[{id:'番茄',num:2}],reserved:[{id:'番茄',num:3}]}];
+ const need=settingDemands(v,cfg,records,['guildRecruit']);
+ assert.equal(need.get('番茄').required,5);assert.equal(need.get('番茄种子').required,1);
+ assert.deepEqual(need.get('番茄种子').productionBySource,{guildRecruit:1});
+});
 let nativeStep;
 await test('永久原生自动生产可以按需求切换；满队列不取消，不反复切换当前目标',()=>{
  const v=survey();v.factories=[...v.buildings];const before=structuredClone(v.buildings);

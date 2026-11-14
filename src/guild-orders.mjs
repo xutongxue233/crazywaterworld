@@ -40,6 +40,8 @@ function accountKey(player) {
   return JSON.stringify([idText(player?.playerId), idText(player?.worldId), idText(player?.guildId)]);
 }
 
+const roleKey = player => idText(player?.worldId) + ':' + idText(player?.playerId);
+
 function assets(value, name) {
   const map = new Map();
   for (const item of list(value, name)) {
@@ -128,17 +130,31 @@ export async function readGuildOrderView(client, protocol, config, { player, ena
   return { ...view, state: 'ready', canFinish: true };
 }
 
-export async function serviceGuildOrders(client, protocol, config, { player, enabled = () => false, report = () => {}, scheduler } = {}) {
+export async function serviceGuildOrders(client, protocol, config, { player, enabled = () => false, report = () => {}, scheduler, ledger, dailyLimit = 0 } = {}) {
   const finish = entry => { const result = { key, label, ...entry }; report(result); return result; };
   const skip = reason => finish({ skipped: true, reason });
   const delay = seconds => scheduler?.defer(key, scheduler.now() + seconds);
   if (!enabled()) return skip('已暂停');
+  if (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0) return skip('联盟募兵每日上限无效');
   if (scheduler && !scheduler.due(key)) return skip('等待下次检查');
   if (busy.has(client)) return skip('正在核对联盟订单');
   busy.add(client);
   try {
     await refreshOrderMaterialSpends(client,player,{enabled});
     const initial = await readGuildOrderView(client, protocol, config, { player, enabled });
+    if (ledger && initial.accountKey) {
+      for (const [savedKey, record] of Object.entries(ledger.keyRecords())) {
+        const data = record.details;
+        if (data?.kind !== 'allianceRecruit' || data.accountKey !== initial.accountKey && data.roleKey !== roleKey(player)) continue;
+        if (initial.day === data.day && initial.doneToday > data.doneToday || initial.day > data.day && record.confirmed) {
+          if (!record.confirmed) ledger.resolveKey(savedKey, true);
+          ledger.releaseCompletedKey(savedKey);
+        } else if (!record.confirmed || initial.day === data.day && initial.doneToday <= data.doneToday) {
+          delay(180); return skip('上次联盟募兵结果尚未确认，持久记录保留，不重复提交');
+        }
+      }
+    }
+    if (dailyLimit > 0 && Math.max(initial.doneToday ?? 0, ledger?.snapshot().counters.guildRecruit ?? 0) >= dailyLimit) { delay(300); return skip('已达到设置的今日募兵上限 ' + dailyLimit + ' 次'); }
     if (!initial.canFinish) { delay(180); return skip(initial.reason); }
     const saved = pending.get(initial.accountKey);
     if (saved) {
@@ -161,11 +177,18 @@ export async function serviceGuildOrders(client, protocol, config, { player, ena
     if (now(client) >= current.nextRefreshTime || dayOf(now(client)) !== current.day) return skip('订单已到刷新时间，下一轮重新核对');
     if (!protocol.FinishGuildOrderRequest || !protocol.FinishGuildOrderResponse) throw new Error('本地协议缺少联盟订单提交');
     const pendingOrder={ day: current.day, doneToday: current.doneToday, confirmed:false };
-    const debit = beginOrderMaterialSpend(player, current.requirements, '联盟订单',{operation:{onConfirmed:()=>{pendingOrder.confirmed=true;},verify:async(next,{player:actor,enabled:active})=>{
+    const uniqueKey = 'allianceRecruit:' + idText(player.worldId) + ':' + idText(player.playerId) + ':' + current.day + ':' + current.doneToday;
+    const ticket = ledger?.reserve({ guildRecruit: 1 }, dailyLimit > 0 ? { guildRecruit: dailyLimit } : {}, { guildRecruit: current.doneToday },
+      { uniqueKey, details: { kind: 'allianceRecruit', accountKey: current.accountKey, roleKey: roleKey(player), day: current.day, doneToday: current.doneToday, orderKey: current.orderKey } });
+    if (!enabled()) { ledger?.cancel(ticket); return skip('已暂停，未发送募兵'); }
+    let debit;
+    try {
+    debit = beginOrderMaterialSpend(player, current.requirements, '联盟订单',{operation:{onConfirmed:()=>{pendingOrder.confirmed=true;},verify:async(next,{player:actor,enabled:active})=>{
       if(accountKey(actor)!==current.accountKey||dayOf(now(next))!==current.day||!active())return false;
       const reply=await request(next,protocol,'CounterInfoRequest',active);
       return active()&&accountKey(actor)===current.accountKey&&dayOf(now(next))===current.day&&countOf(reply)>current.doneToday;
     }}});
+    } catch (error) { ledger?.cancel(ticket); throw error; }
     pending.set(current.accountKey, pendingOrder);
     let reply;
     try {
@@ -177,6 +200,7 @@ export async function serviceGuildOrders(client, protocol, config, { player, ena
       if (refused) {
         pending.delete(current.accountKey);
         cancelOrderMaterialSpend(debit);
+        ledger?.cancel(ticket);
       }
       delay(180);
       return finish({ ok: false, error: error.notSent === true ? '联盟订单未发送：' + error.message : refused ? '联盟订单被拒绝：' + error.message : '联盟订单结果未确认，已暂停重复提交：' + error.message });
@@ -189,6 +213,7 @@ export async function serviceGuildOrders(client, protocol, config, { player, ena
       return finish({ ok: false, error: '服务端未返回明确的联盟订单奖励，已暂停重复提交，请核对游戏记录' });
     }
     pendingOrder.confirmed=true;
+    ledger?.confirm(ticket);
     confirmOrderMaterialOperation(debit);
     await refreshOrderMaterialSpends(client,player,{enabled});
     delay(60);

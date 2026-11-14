@@ -34,6 +34,11 @@ add('pirateHunt.enabled','海盗讨伐自动推进','世界与挑战',{help:'每
 add('antique.enabled','藏品自动养成','英雄',{help:'按游戏配置 → 英雄 → 藏品养成执行激活、升星、大师等级和套装升级；只使用现有资源，不购买或消耗钻石。'});
 add('trials.paid','试炼钻石扫荡','世界与挑战');
 add('trials.ads','试炼免广告扫荡','世界与挑战');
+for (const [key,label,group,gates] of [
+ ['alliance.enabled','联盟自动化','世界与挑战',[]],['guildShip.enabled','联盟商船','世界与挑战',['alliance.enabled']],
+ ['guildFort.enabled','联盟工事捐赠','世界与挑战',['alliance.enabled']],['silicon.enabled','硅矿自动化','世界与挑战',[]],
+ ['heroRaid.enabled','超凡英雄活动','活动',[]],
+]) add(key,label,group,{gates});
 const nativeKeys = new Set(['trialPaidSweep','trialAdSweep','diveEnhance','autoDive','salvageEnhance','autoSalvage','autoFish','fishEnhance','floaters','antiqueFloaters','cargo','farm','collect','finishUpgrade','build','buildSupply','upgrade','finishOrder','startProduce','speedUp','denyOrder','paidGold','dailyRewards','chests','gift','tasks']);
 for (const task of automationTasks) {
  if (task.key === 'stageAuto') continue;
@@ -44,6 +49,9 @@ for (const task of automationTasks) {
 }
 // 挂机页仅展示现有模块入口；其余细项仍使用原字段，在游戏配置编辑。
 const idleModules = {
+ 'alliance.enabled':['世界','alliance','联盟募兵与互助'], 'guildShip.enabled':['世界','guildShip','联盟商船'],
+ 'guildFort.enabled':['世界','guildFort','联盟工事'], 'silicon.enabled':['世界','silicon','硅矿'],
+ 'heroRaid.enabled':['日常与活动','hero-raid','超凡英雄活动'],
  'loop.world':['基地','building','基地运行'],
  'building.enabled':['基地','building','建筑'], 'factory.enabled':['基地','factory','工厂'],
  'farm.enabled':['基地','farm','农田'], 'resident.enabled':['基地','resident','居民需求'],

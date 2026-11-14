@@ -153,6 +153,24 @@ try {
     assert.ok(!planWorld(state, { config, settings }).actions.some(a => a.kind === 'startProduce'));
   });
 
+  await check('关闭需求优先后联盟独立补料保留预留，订单来源前后或省略均只补真实缺口', () => {
+    for (const source of ['guildRecruit', 'guildShip']) for (const priority of [[source, 'resident'], ['resident', source], []]) {
+      const settings = quiet(); settings.factory.produce = true; settings.factory.keepStock = 0;
+      settings.factory.demandFirst = false; settings.factory.demandPriority = priority;
+      settings.alliance.enabled = true;
+      if (source === 'guildRecruit') settings.alliance.recruit = settings.alliance.recruitProduction = true;
+      else settings.guildShip.enabled = settings.guildShip.produceMissing = true;
+      const state = survey({ 产品甲: 3, 木材: 20 }, [building('食品厂', { factory: { factoryQ: [], finishedProducts: [] } })],
+        [order(0, [{ id: '产品甲', num: 3 }])]); state.factorySlots = 5;
+      const extraDemand = [{ source, requirements: [{ id: '产品甲', num: 2 }], reserved: [{ id: '产品甲', num: 3 }] }];
+      const plan = planWorld(state, { config, settings, extraDemand });
+      assert.equal(plan.actions.filter(step => step.kind === 'startProduce').length, 2, source + ' ' + priority);
+      assert.equal(plan.demands.find(row => row.id === '产品甲').required, 5);
+      settings.alliance.enabled = false;
+      assert.equal(planWorld(state, { config, settings, extraDemand }).actions.filter(step => step.kind === 'startProduce').length, 0);
+    }
+  });
+
   await check('建筑禁用、蓝图保留、加速器共用保留量', () => {
     const settings = quiet(); settings.building.build = true;
     const plot = building('仓库', { buildingId: '2仓库', level: 0 });

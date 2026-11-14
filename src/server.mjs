@@ -11,6 +11,10 @@ import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-code
 import { initialGiftCodeCatalog } from './gift-code-catalog.mjs';
 import {runtimeProgress} from './runtime-progress.mjs';
 import {watchTreasureTravel} from './treasure-follow.mjs';
+import { watchGuildShipPushes } from './guild-ships.mjs';
+import { watchHeroRaidPushes } from './hero-raid-automation.mjs';
+import { watchSiliconMining } from './silicon-mining.mjs';
+import { previewExtended } from './extended-preview.mjs';
 import {watchFleetMaintenance,fleetMaintenanceEnabled} from './fleet-maintenance.mjs';
 import {readPirateSweeps} from './pirate-sweeps.mjs';
 import {readWorldTarget} from './world-target.mjs';
@@ -298,6 +302,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     session.loop.fishingGoldReserve = entry.settings.gather.fishingGoldReserve;
     session.loop.everyMs = entry.settings.loop.everySeconds * 1000;
     if (!session.loop.running) session.loop.rounds = entry.settings.loop.rounds;
+    session.client?.emit?.('automationSettingsChanged');
   }
 
   function settingsView(session) {
@@ -333,6 +338,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
 
   function wire(session, instance) {
     watchBasePushes(instance);
+    watchGuildShipPushes(instance);
+    watchHeroRaidPushes(instance);
+    watchSiliconMining(instance);
     instance.on('message', ({name,body}) => {
       if(name==='RecruitInfoResponse')instance.freeRecruitTimes={hero:body.hero?.freeEndTimeSeconds,antique:body.antique?.freeEndTimeSeconds};
       if(name==='RecruitStartResponse'||name==='AntiqueRecruitResponse'){
@@ -723,7 +731,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo || needsCargoDemand(session.preferences) });
     const settings = session.preferences;
     const usage = usageFor(session).snapshot();
-    const extra = settings ? await surveyBaseAutomation(instance, protocol, config, session.player, settings, survey) : null;
+    const extra = settings ? await surveyBaseAutomation(instance, protocol, config, session.player, settings, survey, { ledger: usageFor(session), enabled: () => session.client === instance && instance.connected !== false }) : null;
     const plan = planWorld(survey, { config, settings, usage, extraDemand: extra ? baseDemands(extra, config, settings) : [],
       allowSpeedUp: allowAccelerators && (!settings || session.loop.tasks.speedUp),
       ...(settings ? { enabled: kind => session.loop.tasks[worldTaskKey(kind)] === true, allowReroll: settings.resident.reroll, minOrderExp: settings.resident.minExp } : {}) });
@@ -984,7 +992,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (!config) throw new Error('缺少游戏配置表，暂时不能预览');
         const settings = validateSettings(payload.settings ?? settingsView(session).settings, { catalog: settingsCatalog(config) });
         const category = payload.category ?? 'base';
-        if (!['base', 'world', 'heroes', 'daily', 'runtime', 'cityWar', 'forge', 'antique', 'activity', 'radar', 'pirateHunt', 'fleetDispatch','worldBoss','pirateSweep'].includes(category)) throw new Error('不支持的预览分类');
+        if (!['base', 'world', 'heroes', 'daily', 'runtime', 'cityWar', 'forge', 'antique', 'activity', 'radar', 'pirateHunt', 'fleetDispatch','worldBoss','pirateSweep','alliance','guildShip','guildFort','silicon','heroRaid'].includes(category)) throw new Error('不支持的预览分类');
 
         if (category === 'runtime') {
           json({ checkedAt: new Date().toISOString(), usage: usageFor(session).snapshot(), actions: [], counts: {}, viewOnly: true, scopeLabel: '运行安排（仅查看，不执行）',
@@ -996,6 +1004,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const result = await enqueue(session, async () => {
           const client = session.client;
           const usage = usageFor(session).snapshot();
+          if (['alliance','guildShip','guildFort','silicon','heroRaid'].includes(category)) return previewExtended(category, client, protocol, config, session.player, settings, usageFor(session));
           const output = (plan, counts, scopeLabel) => ({ checkedAt: new Date().toISOString(), usage, pendingUsage:usageFor(session).pendingCounters(), counts, scopeLabel,
             actions: plan.actions.map(step => ({ label: step.label, kind: step.kind, costs: (step.costs ?? []).map(item => ({ name: displayMaterial(config, item.id), num: item.num })) })),
             notes: [...new Set(plan.notes ?? [])],
@@ -1047,7 +1056,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           if (category === 'cityWar') {
             const state = await readCityWar(client, protocol, config, session.player, settings.cityWar);
             const ledger = usageFor(session), pending = ledger.pendingCounters();
-            const plan = planCityWar(state, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) + (pending.worldBossPetrol ?? 0) });
+            const plan = planCityWar(state, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) + (pending.worldBossPetrol ?? 0) + (pending.siliconPetrol ?? 0) });
             const online = await readWorldOnlineReward(client, config, session.player);
             if (!settings.schedule.worldOnlineRewards) plan.notes.push('城战在线奖励自动领取未开启');
             else if (online.ready && worldOnlineRewardKey(session.player, online)) {
@@ -1137,7 +1146,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
               '此处预览日常任务与领奖。限时活动、挑战的开放状态可在对应页面查看。'] }, { dailyTasks: daily.tasks.length }, '日常与任务奖励');
           }
           const survey = await surveyWorld(client, protocol, { config, player: session.player, includeCargo: settings.cargo.enabled || settings.factory.demandPriority.includes('cargo') });
-          const extra = await surveyBaseAutomation(client, protocol, config, session.player, settings, survey);
+          const extra = await surveyBaseAutomation(client, protocol, config, session.player, settings, survey, { ledger: usageFor(session), enabled: () => session.client === client && client.connected !== false });
           const flags = nativeTaskValues(settings, session.loop.tasks);
           const worldPlan = planWorld(survey, { config, settings, usage, extraDemand: baseDemands(extra, config, settings),
             enabled: kind => flags[worldTaskKey(kind)] === true, allowSpeedUp: flags.speedUp, allowReroll: settings.resident.reroll, minOrderExp: settings.resident.minExp });
@@ -2052,7 +2061,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: protectCargo });
         const settings = session.preferences;
         const usage = usageFor(session).snapshot();
-        const extra = settings ? await surveyBaseAutomation(instance, protocol, config, session.player, settings, survey) : null;
+        const extra = settings ? await surveyBaseAutomation(instance, protocol, config, session.player, settings, survey, { ledger: usageFor(session), enabled: () => session.client === instance && instance.connected !== false }) : null;
         const plan = planWorld(survey, { config, settings, usage, extraDemand: extra ? baseDemands(extra, config, settings) : [],
           allowSpeedUp: allowAccelerators && (!settings || session.loop.tasks.speedUp), allowReroll: settings ? settings.resident.reroll : payload.reroll === true,
           ...(settings ? { enabled: kind => session.loop.tasks[worldTaskKey(kind)] === true, minOrderExp: settings.resident.minExp } : {}) });

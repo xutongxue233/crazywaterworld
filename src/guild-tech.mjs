@@ -65,7 +65,7 @@ export async function readGuildTech(client,config,player,{ledger}={}){
  return{state:'member',identity:who,...view,pending};
 }
 
-export async function upgradeGuildTech(client,config,player,{techId,expectedLevel,maxCost,enabled=()=>true,ledger}={}){
+export async function upgradeGuildTech(client,config,player,{techId,expectedLevel,maxCost,enabled=()=>true,ledger,counters={},limits={}}={}){
  if(!valid(techId)||techId<1||!valid(expectedLevel)||!valid(maxCost)||maxCost<1)throw Error('升级参数无效，请刷新科技列表');
  if(!ledger)throw Error('升级记录不可用，未执行');
  if(!enabled()||active.has(client))throw Error('账号已暂停或科技升级正在进行');
@@ -78,12 +78,12 @@ export async function upgradeGuildTech(client,config,player,{techId,expectedLeve
   if(row.cost>maxCost)throw Error('升级费用已变化，请刷新后确认');
   if(!enabled()||identity(player)!==who)throw Error('账号状态已变化，未执行升级');
   const key='manual-tech:'+who+':'+techId+':'+expectedLevel;
-  const ticket=ledger.reserve({},{},{},{uniqueKey:key,details:{kind:'manualGuildTech',identity:who,techId,beforeLevel:expectedLevel,cost:row.cost,itemId:row.itemId}});
+  const ticket=ledger.reserve(counters,limits,{},{uniqueKey:key,details:{kind:'manualGuildTech',identity:who,techId,beforeLevel:expectedLevel,cost:row.cost,itemId:row.itemId}});
   try{
    const reply=await client.request('UpgradeGuildTechRequest',{techId},'UpgradeGuildTechResponse');
    if(reply.tech?.techId!==techId||reply.tech?.level!==expectedLevel+1)throw Error('升级结果待确认，请稍后刷新，暂不重复提交');
    ledger.confirm(ticket);
    return{ok:true,label:row.name+'已升至'+reply.tech.level+'级',level:reply.tech.level,cost:row.cost};
-  }catch(error){if(error.prompt&&error.request==='UpgradeGuildTechRequest')ledger.cancel(ticket);throw error;}
+  }catch(error){if(error.notSent===true||error.prompt&&error.request==='UpgradeGuildTechRequest')ledger.cancel(ticket);throw error;}
  }finally{active.delete(client);}
 }

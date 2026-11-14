@@ -1,7 +1,7 @@
 import { exactAutomationId } from './automation-policy.mjs';
 import { normalize } from './worlds.mjs';
 
-const fleetKey = /^(?:radar-send|world-boss|pirate-first|cityWar|treasureRepair|treasure):(\d+):/;
+const fleetKey = /^(?:radar-send|world-boss|pirate-first|cityWar|treasureRepair|treasure|silicon|silicon-repair|silicon-retreat|silicon-speed):(\d+):/;
 const repairKinds = new Set(['cityRepair', 'treasureRepair']);
 const integer = Number.isSafeInteger;
 const dayOf = (seconds) => Math.floor((seconds + 28800) / 86400);

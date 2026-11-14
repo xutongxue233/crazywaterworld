@@ -48,6 +48,8 @@ export function isSeqNoInRange(seq, right) {
 export class GameClient extends EventEmitter {
   constructor({ url = DEFAULT_GATEWAY, protocol, login = null } = {}) {
     super();
+    // 各玩法在同一连接上注册独立推送观察器（均按连接单例）；保留有限上限以发现重复注册。
+    this.setMaxListeners(32);
     this.url = url;
     this.login = login;
     // v71 lacks this unsolicited v74 update. Reward claims read their state

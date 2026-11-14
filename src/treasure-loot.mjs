@@ -344,7 +344,7 @@ export async function runTreasureLoot(client, protocol, config, player, { getSet
     const snapshot = await readTreasureLoot(client, protocol, config, player, { preferences: getSettings().treasure });
     if (integer(petrolCeiling)) snapshot.fuel = Math.min(snapshot.fuel, petrolCeiling);
     reconcileKeys(snapshot, ledger, getSettings().treasure);
-    const pendingFuel = () => { const counters = ledger.pendingCounters?.() ?? {}; return (counters.treasurePetrol ?? 0) + (counters.cityWarPetrol ?? 0) + (counters.piratePetrol ?? 0) + (counters.radarPetrol ?? 0) + (counters.worldBossPetrol ?? 0); };
+    const pendingFuel = () => { const counters = ledger.pendingCounters?.() ?? {}; return (counters.treasurePetrol ?? 0) + (counters.cityWarPetrol ?? 0) + (counters.piratePetrol ?? 0) + (counters.radarPetrol ?? 0) + (counters.worldBossPetrol ?? 0) + (counters.siliconPetrol ?? 0); };
     const plan = planTreasureLoot(snapshot, config, getSettings(), { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingFuel: pendingFuel(), reservedFleetIds });
     onNotes?.(plan.notes);
     let remainingFuel = snapshot.fuel;

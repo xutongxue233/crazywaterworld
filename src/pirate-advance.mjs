@@ -110,7 +110,7 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
    const pending=ledger.pendingCounters();
    if(fuelCeiling!==null && Number.isSafeInteger(snap.view.fuel))snap.view.fuel=Math.min(snap.view.fuel,fuelCeiling);
    for(const f of snap.view.fleets)f.reason ||= fleetRecordReason(ledger.keyRecords(),f.buildingId,world) || dispatchReservationReason(client,getSettings(),'pirateHunt',f.buildingId);
-   const picked=selectPirateAdvance(snap,options,{spent:state.spent,pendingFuel:(pending.piratePetrol??0)+(pending.treasurePetrol??0)+(pending.cityWarPetrol??0)+(pending.radarPetrol??0)+(pending.worldBossPetrol??0)});
+   const picked=selectPirateAdvance(snap,options,{spent:state.spent,pendingFuel:(pending.piratePetrol??0)+(pending.treasurePetrol??0)+(pending.cityWarPetrol??0)+(pending.radarPetrol??0)+(pending.worldBossPetrol??0)+(pending.siliconPetrol??0)});
    if(picked.reason)return{stop:picked.reason};
    const {target,fleet}=picked;
    const key=prefix+target.type+':'+target.level+':'+target.uid;
@@ -123,7 +123,7 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
      beforeSend({view,target:reviewed,fleet:raw}) {
       for(const f of view.fleets)f.reason ||= fleetRecordReason(ledger.keyRecords(),f.buildingId,world) || dispatchReservationReason(client,getSettings(),'pirateHunt',f.buildingId);
       if(fuelCeiling!==null && Number.isSafeInteger(view.fuel))view.fuel=Math.min(view.fuel,fuelCeiling);
-      const check=selectPirateAdvance({view},options,{spent:state.spent,pendingFuel:(ledger.pendingCounters().piratePetrol??0)+(ledger.pendingCounters().treasurePetrol??0)+(ledger.pendingCounters().cityWarPetrol??0)+(ledger.pendingCounters().radarPetrol??0)+(ledger.pendingCounters().worldBossPetrol??0)});
+      const check=selectPirateAdvance({view},options,{spent:state.spent,pendingFuel:(ledger.pendingCounters().piratePetrol??0)+(ledger.pendingCounters().treasurePetrol??0)+(ledger.pendingCounters().cityWarPetrol??0)+(ledger.pendingCounters().radarPetrol??0)+(ledger.pendingCounters().worldBossPetrol??0)+(ledger.pendingCounters().siliconPetrol??0)});
       if(check.reason || check.target?.uid!==reviewed.uid || check.fleet?.buildingId!==raw.buildingId || !live())throw Error(check.reason||'首杀目标或舰队已变化');
       if(Object.values(recordsInWorld(ledger.keyRecords(),world)).some(r=>!r.expired && r.details?.buildingId===raw.buildingId && (!r.confirmed||r.details?.kind==='radarSend'&&r.details.active!==false)))throw Error('舰队还有待确认任务');
       quotedFuel=view.fuel;

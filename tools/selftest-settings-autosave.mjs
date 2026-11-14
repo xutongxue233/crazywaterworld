@@ -230,4 +230,18 @@ await test('导入校验通过后自动保存，不需要额外点击按钮', as
   assert.equal(f.posts().length, 1); assert.equal(f.view('a').settings.ads.waitSeconds, 24); assert(!f.dirty());
 });
 
+await test('三支硅矿舰队独立编辑自动保存，刷新和切号保留各自字段', async () => {
+  const f = fixture(); await f.load();
+  f.set('silicon.fleets.0.enabled', true); f.set('silicon.fleets.0.tier', 'PURPLE');
+  f.set('silicon.fleets.1.safePlayers', ['甲']); f.set('silicon.fleets.2.dailyAttackLimit', 7);
+  f.set('guildShip.redStartTime', '21:30'); await f.tick(600);
+  assert.equal(f.posts().length, 1); assert(Array.isArray(f.view('a').settings.silicon.fleets));
+  await f.load(true);
+  assert.equal(f.editor.draft.silicon.fleets[0].tier, 'PURPLE');
+  assert.deepEqual(f.editor.draft.silicon.fleets[1].safePlayers, ['甲']);
+  assert.equal(f.editor.draft.silicon.fleets[2].dailyAttackLimit, 7);
+  assert.equal(f.editor.draft.guildShip.redStartTime, '21:30');
+  assert.equal(f.view('b').settings.silicon.fleets[0].enabled, false);
+});
+
 console.log('配置自动保存专项 ' + passed + '/' + passed + ' 通过');

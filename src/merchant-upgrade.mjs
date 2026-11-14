@@ -67,6 +67,7 @@ export function evaluateMerchantUpgrade(config, event, state, market, radar, tim
     || cargo.moveEndTime > time || cargo.moveToCityId && cargo.moveToCityId !== cargo.cityId)
     return skip('商船尚未在港，暂不评估升级');
   if (!natural(player?.coins) || !natural(player.profit) || !Array.isArray(player.goods)) return skip('商船资金与利润未确认');
+  if (policy.profitLimit > 0 && player.profit >= policy.profitLimit) return skip('已达本期累计利润上限，不升级商船');
   if (player.goods.length) return skip('先完成已有批次交易，再评估新船采购收益');
   if (!positive(policy.upgradeCoinValuePerDiamond) || !positive(policy.upgradeMinReturnPercent) || policy.upgradeMinReturnPercent < 100
     || !positive(policy.upgradeMaxLevel) || !natural(policy.upgradeDailyDiamondLimit)) return skip('商船升级策略参数无效');

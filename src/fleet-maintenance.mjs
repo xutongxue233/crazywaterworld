@@ -45,7 +45,7 @@ export async function readFleetMaintenance(client,player,settings,ledger){
  let own,bag;try{[own,bag]=await Promise.all([read('MyFleets'),read('AllItem')]);}catch{snapshot.reason='舰队或汽油未同步，暂不维修';return snapshot;}
  if(!Array.isArray(own?.fleets)||!Array.isArray(bag?.items)){snapshot.reason='舰队或库存数据未完整返回';return snapshot;}
  const fuel=bag.items.filter(i=>i.itemId==='汽油');if(fuel.length>1||fuel.some(i=>!valid(i.num))){snapshot.reason='汽油数量未确认';return snapshot;}snapshot.fuel=fuel[0]?.num??0;
- const pending=ledger.pendingCounters();for(const name of ['treasurePetrol','cityWarPetrol','radarPetrol','piratePetrol','worldBossPetrol']){if(!valid(pending[name]??0)){snapshot.reason='待确认汽油记录异常';return snapshot;}snapshot.pendingFuel+=pending[name]??0;}
+ const pending=ledger.pendingCounters();for(const name of ['treasurePetrol','cityWarPetrol','radarPetrol','piratePetrol','worldBossPetrol','siliconPetrol']){if(!valid(pending[name]??0)){snapshot.reason='待确认汽油记录异常';return snapshot;}snapshot.pendingFuel+=pending[name]??0;}
  const watch=watchFleetMaintenance(client);watch.seedFleets(own.fleets);watch.seedItems(bag.items);
  for(const policy of policies){
   const matches=own.fleets.filter(f=>f.buildingId===policy.buildingId),fleet=matches[0],row={id:policy.buildingId,name:fleetName(policy.buildingId),policy,fleet,cost:null,condition:'',state:'waiting'};snapshot.rows.push(row);

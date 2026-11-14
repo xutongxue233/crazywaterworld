@@ -56,6 +56,8 @@ export function needsCargoDemand(settings) {
 
 export function nativePreferenceEnabled(settings, key) {
   if (!settings) return true;
+  if (settings.alliance?.enabled && ['guildOrders', 'guildAidHelp', 'guildWelfare'].includes(key)) return false;
+  if (settings.alliance?.enabled && settings.alliance.mutual && key === 'guildAidCollect') return false;
   if (gatherTasks.has(key) && settings.gather.enabled === false) return false;
   const map = {
     stageAuto: () => settings.progression?.enabled !== false && (settings.progression?.mainline ?? settings.schedule?.stageAuto) === true,

@@ -6,8 +6,10 @@ import { PROTO_BUNDLE as BUNDLE, readProtocolSource } from '../src/protocol-sour
 
 const WIRE_CALL = /t\.uint32\((\d+)\)\.([A-Za-z0-9_]+)\(e\.([A-Za-z0-9_.]+)/g;
 const CASE_SCALAR = /case (\d+):o\.([A-Za-z0-9_]+)=t\.([A-Za-z0-9_]+)\(\)/g;
-const CASE_ARRAY = /case (?<num>\d+):o\.(?<field>[A-Za-z0-9_]+)&&o\.\k<field>\.length\|\|\(o\.\k<field>=\[\]\),o\.\k<field>\.push\(tf\.protocol\.(?<type>[A-Za-z0-9_]+)\.decode/g;
-const CASE_MSG = /case (\d+):o\.([A-Za-z0-9_]+)=tf\.protocol\.([A-Za-z0-9_]+)\.decode/g;
+// The protocol namespace alias changes between minified releases (for example
+// tf -> tk); match a JavaScript identifier instead of a particular build's alias.
+const CASE_ARRAY = /case (?<num>\d+):o\.(?<field>[A-Za-z0-9_]+)&&o\.\k<field>\.length\|\|\(o\.\k<field>=\[\]\),o\.\k<field>\.push\([A-Za-z_$][A-Za-z0-9_$]*\.protocol\.(?<type>[A-Za-z0-9_]+)\.decode/g;
+const CASE_MSG = /case (\d+):o\.([A-Za-z0-9_]+)=[A-Za-z_$][A-Za-z0-9_$]*\.protocol\.([A-Za-z0-9_]+)\.decode/g;
 const CASE_COND = /case (\d+):/g;
 
 const source = readProtocolSource();
@@ -39,6 +41,10 @@ function findType(name) {
 function fields(name) {
   const raw = findType(name);
   if (!raw) throw new Error(`unknown type: ${name}`);
+  return extractFields(raw);
+}
+
+function extractFields(raw) {
   // protobufjs emits `switch (i>>>3) { case N: ... }` for multi-field types but a bare
   // `i>>>3==N? ... :` ternary when the type has a single field. Normalise so one set of
   // patterns covers both.
@@ -106,4 +112,4 @@ if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].re
   }
 }
 
-export { BUNDLE, fields, findType, typeNames };
+export { BUNDLE, fields, findType, typeNames, extractFields };

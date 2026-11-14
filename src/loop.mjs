@@ -2,6 +2,11 @@ import {checkFleetSettlement} from './fleet-settlement.mjs';
 import { militaryRewards, riverActivity, edictPassActivity, compassActivity, beautyActivity } from './seasonal-activities.mjs';
 import { claimComicDrama, claimTournamentDaily, openSeasonChests } from './side-rewards.mjs';
 import { merchantActivity } from './merchant-activity.mjs';
+import { runAllianceAutomation } from './alliance-automation.mjs';
+import { serviceGuildShips, watchGuildShipPushes } from './guild-ships.mjs';
+import { serviceGuildForts } from './guild-forts.mjs';
+import { runSiliconMining, watchSiliconMining, siliconInterval } from './silicon-mining.mjs';
+import { runHeroRaidAutomation } from './hero-raid-automation.mjs';
 import { merchantMonitorSeconds, watchMerchant } from './merchant-monitor.mjs';
 import {runPirateSweeps} from './pirate-sweeps.mjs';
 import {claimGuildTitleReward} from './guild-title-rewards.mjs';
@@ -37,7 +42,7 @@ import { surveyDailies, runDailies } from './dailies.mjs';
 import { surveyWorld, planWorld, runWorldRound, displayBuilding } from './world.mjs';
 import { createActionGuard, nativePreferenceEnabled, needsCargoDemand, exactAutomationId } from './automation-policy.mjs';
 import { surveyBaseAutomation, planBaseAutomation, runBaseAutomation, baseDemands } from './base-automation.mjs';
-import { hasExtraWork } from './automation-settings.mjs';
+import { hasBaseWork } from './automation-settings.mjs';
 import { treasureAutomationEnabled, runTreasureLoot } from './treasure-loot.mjs';
 import {watchTreasureTravel,matchesFollowDeparture} from './treasure-follow.mjs';
 import {watchFleetMaintenance,fleetMaintenanceEnabled,fleetMaintenanceInterval,runFleetMaintenance} from './fleet-maintenance.mjs';
@@ -127,6 +132,11 @@ export async function runLoop(client, protocol, {
   let treasureAt = 0;
   let lastTreasureNotes = '';
   let radarAt=0;
+  let siliconAt = 0, siliconPreference = null, extendedAt = 0, extendedPreference = null;
+  const siliconNext = () => getSettings()?.silicon?.enabled ?
+    (siliconPreference === getSettings().silicon ? siliconAt : 0) : Infinity;
+  const extendedEnabled = () => getSettings()?.alliance?.enabled || getSettings()?.heroRaid?.enabled;
+  const extendedNext = () => extendedEnabled() ? (extendedPreference === getSettings() ? extendedAt : 0) : Infinity;
   let cityWarAt = 0, forgeAt = 0, antiqueAt = 0, lastCityWarNotes = '', lastForgeNotes = '', lastAntiqueNotes = '';
   let cityWarState = null, cityWarPreference = null, forgePreference = null, antiquePreference = null, cityFuelCeiling = null;
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
@@ -144,6 +154,20 @@ export async function runLoop(client, protocol, {
     ? Math.max(merchantRunAfter, merchantMonitor.nextCheckAt * 1000 - (client.serverClockOffsetMs || 0)) : Infinity;
   let followWake=null,followPending=false,followVersion=0;
   let maintenanceAt=0,maintenancePending=false,maintenanceVersion=0;
+  let siliconPending = false, siliconVersion = 0;
+  const unsubscribeSilicon = watchSiliconMining(client).subscribe(() => {
+    if (stop.aborted || !getSettings()?.silicon?.enabled) return;
+    siliconAt = 0; siliconPending = true; siliconVersion++; followWake?.();
+  });
+  const settingsWake = () => { siliconAt = 0; extendedAt = 0; siliconVersion++; siliconPending = true;
+    rewards?.clearTask('guildShip'); rewards?.clearTask('guildFort'); followWake?.(); };
+  const extendedPush = ({ name }) => {
+    if (/^SCGuildShip|^SCFort|^SCHeroRaid/.test(name) || ['SCAllActivity','SCGuildOrder','SCNewGuildAidAsk','SCGuildAidHelp','SCGuildAidRemove','SCNewGuildWelfarePack'].includes(name)) {
+      extendedAt = 0; siliconPending = true; followWake?.();
+    }
+  };
+  client.on?.('automationSettingsChanged', settingsWake); client.on?.('message', extendedPush);
+  watchGuildShipPushes(client, rewards);
   const unsubscribeFollow=travel.subscribe(fleet=>{
     const preferences=getSettings()?.treasure;
     if(stop.aborted||!client.connected||!treasureAutomationEnabled(getSettings())||!matchesFollowDeparture(fleet,preferences,exactAutomationId(player?.playerId),travel.current()))return;
@@ -160,7 +184,7 @@ export async function runLoop(client, protocol, {
   });
   // 出发推送只唤醒现有调度，不在消息回调中并发发协议或绕过舰队优先级。
   async function waitWithFollow(ms,signal){
-    if(followPending||maintenancePending||merchantPending){followPending=false;maintenancePending=false;merchantPending=false;return true;}
+    if(followPending||maintenancePending||merchantPending||siliconPending){followPending=false;maintenancePending=false;merchantPending=false;siliconPending=false;return true;}
     const controller=new AbortController(),abort=()=>controller.abort(signal?.reason);
     if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
     let wake;const changed=new Promise(resolve=>{wake=()=>resolve(true);followWake=wake;});
@@ -297,7 +321,35 @@ export async function runLoop(client, protocol, {
         if (task === 'radar') await checkRadar();
         if (task === (getSettings()?.treasure.follow?'follow':'treasure')) await checkTreasure();
         if (task === 'worldBoss'&&getSettings()?.worldBoss.enabled) await checkBoss();
+        if (task === 'silicon') await checkSilicon();
       }
+    }
+    async function checkSilicon() {
+      if (stop.aborted || siliconNext() > Date.now()) return;
+      siliconPreference = getSettings()?.silicon; const version = siliconVersion;
+      try { await runSiliconMining(client, protocol, config, player, { getSettings, ledger: usageLedger, guard,
+        enabled: () => !stop.aborted && client.connected !== false && getSettings()?.silicon?.enabled,
+        report: entry => serviceReport('world', '硅矿')({ ...entry, taskKey: 'silicon.enabled' }) }); }
+      catch (error) { phaseFailure('world', '硅矿检查', error); }
+      finally { siliconAt = version === siliconVersion ? Date.now() + siliconInterval(getSettings()) : 0; }
+    }
+    async function checkExtended() {
+      if (stop.aborted || extendedNext() > Date.now()) return;
+      extendedPreference = getSettings();
+      const active = () => !stop.aborted && client.connected !== false;
+      const report = key => entry => serviceReport('world', key)({ ...entry, taskKey: key });
+      try {
+        if (getSettings()?.alliance?.enabled) {
+          await runAllianceAutomation(client, protocol, config, player, { getSettings, ledger: usageLedger, enabled: active, report: report('alliance.enabled') });
+          const options = { player, getSettings, ledger: usageLedger, scheduler: rewards,
+            enabled: () => active() && getSettings()?.alliance?.enabled };
+          if (getSettings()?.guildShip?.enabled) await serviceGuildShips(client, protocol, config, { ...options, report: report('guildShip.enabled') });
+          if (getSettings()?.guildFort?.enabled) await serviceGuildForts(client, protocol, config, { ...options, report: report('guildFort.enabled') });
+        }
+        if (getSettings()?.heroRaid?.enabled) await runHeroRaidAutomation(client, protocol, config, player,
+          { getSettings, ledger: usageLedger, enabled: active, report: report('heroRaid.enabled') });
+      } catch (error) { phaseFailure('world', '联盟与活动自动化', error); }
+      finally { extendedAt = Date.now() + 60000; }
     }
     async function checkMaintenance(){
       if(stop.aborted||!fleetMaintenanceEnabled(getSettings())){watchFleetMaintenance(client).hold([]);onMaintenance?.({enabled:false,rows:[],reason:'现有自动维修未开启'});return;}
@@ -720,8 +772,9 @@ export async function runLoop(client, protocol, {
         const survey = await surveyWorld(client, protocol, { config, player,
           includeCargo: needsCargoDemand(settings) || (!!isEnabled && enabled('cargo') && (allowWorld('startProduce') || usesOrders)),
           includeWeekOrder: needsCargoDemand(settings) || usesOrders || allowWorld('startProduce') || allowWorld('weekFactory') || allowWorld('farm') || allowWorld('upgrade') });
-        if (settings && ((allowWorld('startProduce') && settings.factory.demandFirst) || settings.factory.speedUpSources.length > 0)) {
-          const extra = await surveyBaseAutomation(client, protocol, config, player, settings, survey);
+        if (settings && ((allowWorld('startProduce') && (settings.factory.demandFirst || settings.alliance?.enabled &&
+          (settings.alliance.recruit && settings.alliance.recruitProduction || settings.guildShip?.enabled && settings.guildShip.produceMissing))) || settings.factory.speedUpSources.length > 0)) {
+          const extra = await surveyBaseAutomation(client, protocol, config, player, settings, survey, { ledger: usageLedger, enabled: () => !stop.aborted && client.connected !== false });
           extraDemand = baseDemands(extra, config, settings);
         }
         if (isEnabled && (enabled('collect') || enabled('startProduce')))
@@ -838,10 +891,10 @@ export async function runLoop(client, protocol, {
         }
       }
       const latest = getSettings();
-      if (latest && (hasExtraWork(latest) || (latest.loop.dailies && latest.gold.enabled))) {
+      if (hasBaseWork(latest)) {
         try {
           const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: false });
-          const extra = await surveyBaseAutomation(client, protocol, config, player, latest, survey);
+          const extra = await surveyBaseAutomation(client, protocol, config, player, latest, survey, { ledger: usageLedger, enabled: () => !stop.aborted && client.connected !== false });
           const plan = planBaseAutomation(extra, config, latest, usage(), { diveCompleted });
           for(const [group,fields]of Object.entries(latest))for(const [field,value]of Object.entries(fields??{})){
             const key=group+'.'+field;if(value!==true||!['pet','museum','events','gold'].includes(group))continue;
@@ -871,6 +924,7 @@ export async function runLoop(client, protocol, {
       }
       await checkForge();
       await checkAntique();
+      await checkExtended();
       await checkDispatch();
     });
     mainRoundFinished = true;
@@ -895,11 +949,13 @@ export async function runLoop(client, protocol, {
           const radarNext=getSettings()?.radar.enabled?radarAt:Infinity;
           const maintenanceNext=fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity;
           const merchantAt = merchantNext();
-          const wakeAt = Math.min(merchantAt,maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext, antiqueNext);
+          const wakeAt = Math.min(siliconNext(), extendedNext(), merchantAt,maintenanceNext,radarNext,afkAt, factoryAt, enabled('upgrade') ? upgradeAt : Infinity, treasureNext, cityNext, forgeNext, antiqueNext);
           if (wakeAt >= nextRound) break;
           await waitWithFollow(Math.max(0, wakeAt - Date.now()), signal);
           if (Date.now() >= nextRound) break;
           if (merchantNext() <= Date.now()) await schedule(checkMerchant);
+          if (extendedNext() <= Date.now()) await schedule(checkExtended);
+          if (siliconNext() <= Date.now()) await schedule(checkDispatch);
           if (Math.min(maintenanceNext,fleetMaintenanceEnabled(getSettings())?maintenanceAt:Infinity,radarNext,cityNext,treasureNext,treasureAutomationEnabled(getSettings())?treasureAt:Infinity)<=Date.now()) await schedule(checkDispatch);
           if (forgeNext <= Date.now() && forgeEnabled(getSettings())) await schedule(checkForge);
           if (antiqueNext <= Date.now() && antiqueEnabled(getSettings())) await schedule(checkAntique);
@@ -921,6 +977,13 @@ export async function runLoop(client, protocol, {
                 const holdForOrders = enabled('startProduce') || enabled('finishOrder') || checkUpgrade;
                 const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: holdForOrders || needsCargoDemand(getSettings()),
                   includeCargo: (enabled('cargo') && holdForOrders) || needsCargoDemand(getSettings()) });
+                // 主轮后募兵/上船可能已消耗需求或达到日限；定时补产不能沿用旧需求。
+                if (getSettings() && enabled('startProduce')) {
+                  const currentSettings = getSettings();
+                  const extra = await surveyBaseAutomation(client, protocol, config, player, currentSettings, survey,
+                    { ledger: usageLedger, enabled: () => !stop.aborted && client.connected !== false });
+                  extraDemand = currentSettings === getSettings() ? baseDemands(extra, config, currentSettings) : [];
+                }
                 const orderRead = !survey.notes.some(note => note.startsWith('本轮未能读取周订单'));
                 const allow = kind => {
                   if (kind === 'gainFactory') return enabled('collect');
@@ -947,8 +1010,10 @@ export async function runLoop(client, protocol, {
         }
         while(!stop.aborted&&Date.now()<nextRound){
           const merchantAt = merchantNext();
-          const changed=await waitWithFollow(Math.max(0,Math.min(nextRound,merchantAt)-Date.now()),signal);
+          const changed=await waitWithFollow(Math.max(0,Math.min(nextRound,merchantAt,siliconNext(),extendedNext())-Date.now()),signal);
           if (merchantNext() <= Date.now()) await schedule(checkMerchant);
+          if (extendedNext() <= Date.now()) await schedule(checkExtended);
+          if (siliconNext() <= Date.now()) await schedule(checkDispatch);
           if(changed)await schedule(checkDispatch);
           else if (Date.now() >= nextRound) break;
         }
@@ -956,7 +1021,7 @@ export async function runLoop(client, protocol, {
       catch (error) { if (!stop.aborted) throw error; }
     }
   }
-  }finally{unsubscribeFollow();unsubscribeMaintenance();unsubscribeMerchant();watchFleetMaintenance(client).hold([]);followWake=null;}
+  }finally{unsubscribeFollow();unsubscribeMaintenance();unsubscribeMerchant();unsubscribeSilicon();client.off?.('automationSettingsChanged',settingsWake);client.off?.('message',extendedPush);watchFleetMaintenance(client).hold([]);followWake=null;}
 
   return { history, rejected };
 }

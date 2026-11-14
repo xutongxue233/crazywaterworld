@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { taskSettings } from './automation.mjs';
+import { EXTENDED_DEFAULTS, EXTENDED_CONSTRAINTS, SILICON_FLEET_NUMBERS, validateSiliconFleets } from './extended-settings.mjs';
 
 // 设置与登录凭据分开保存。导出只包含设置，不包含账号、凭据或用量账本。
 const dataDirectory = () => process.env.CW_DATA_DIR ? path.resolve(process.env.CW_DATA_DIR) : path.resolve(import.meta.dirname, '../data');
@@ -18,6 +19,7 @@ export const DEMAND_SOURCES = [
 ];
 
 export const DEFAULT_SETTINGS = {
+  ...EXTENDED_DEFAULTS,
   // 连接被顶号后，挂机可按当前账号的策略自动恢复连接。
   // 时间使用北京时间（HH:mm）；深夜窗口支持跨午夜配置。
   login: { autoReconnect: false, intervalSeconds: 900, jitterSeconds: 0, quietHours: true, quietStart: '02:00', quietEnd: '07:00', quietIntervalSeconds: 60, maxRetries: 5 },
@@ -26,6 +28,8 @@ export const DEFAULT_SETTINGS = {
   merchant: { quoteMaxAgeSeconds: 300, estimateDiscountPercent: 10, refreshWaitSeconds: 120, liquidationMinutes: 120,
     maxLossPercent: 0, minExpectedProfit: 1, autoSpeedUp: false, speedUpMinProfit: 1000, keepPointers: 0,
     speedUpMode: 'profit', speedUpMaxPerLeg: 4, monitorSeconds: 60,
+    refreshWindowMinutes: 8, dailyPointerLimit: 28, autoBuyPointers: false, pointerDailyDiamondLimit: 0,
+    profitLimit: 0, firstDepartureMode: 'smart', firstDepartureTime: '10:00', firstDepartureWaitMinutes: 29,
     autoUpgrade: false, upgradeCoinValuePerDiamond: 100, upgradeMinReturnPercent: 150, upgradeMaxLevel: 2, upgradeDailyDiamondLimit: 300 },
   loop: { rounds: 0, everySeconds: 60, tasks: true, dailies: true, world: true, heroes: false },
   building: { enabled: true, collect: true, build: true, upgrade: true, finish: true, supply: false, disabledTypes: [], speedUp: true, keepBlueprints: 0, maxBuilds: 5, maxUpgrades: 2 },
@@ -47,7 +51,7 @@ export const DEFAULT_SETTINGS = {
   tasks: { main: true, branch: true, achievements: true },
   progression: { enabled: true, mainline: false, trials: false, raidIds: ['1','2','3'], maxFailures: 3 },
   trials: { paid: false, ads: false, raidIds: ['1','2','3'], paidPerRaidLimit: 1, dailyDiamondBudget: 450, maxSingleCost: 50 },
-  fleetDispatch: { priority: ['cityWar','pirateHunt','worldBoss','follow','treasure','radar'] },
+  fleetDispatch: { priority: ['cityWar','pirateHunt','worldBoss','follow','treasure','radar','silicon'] },
   worldBoss: { enabled: false, fleetIds: [], minDurabilityPercent: 80, petrolReserve: 0 },
   radar: { enabled:false, fleetIds:[], types:['pirate','collect','refugee','spy','fixed'], allowMaterials:false, minDurabilityPercent:80, petrolReserve:1000, dailyPetrolLimit:10000, checkEverySeconds:30 },
   pirateSweep: { type: '1' },
@@ -69,6 +73,8 @@ export const DEFAULT_SETTINGS = {
 const int = (max = 1_000_000_000, min = 0) => ({ kind: 'number', min, max });
 const strings = (max = 300) => ({ kind: 'list', max });
 const constraints = {
+  ...EXTENDED_CONSTRAINTS,
+  ...Object.fromEntries([0, 1, 2].flatMap(index => Object.entries(SILICON_FLEET_NUMBERS).map(([key, rule]) => ['silicon.fleets.' + index + '.' + key, rule]))),
   'login.intervalSeconds': int(86400, 1), 'login.jitterSeconds': int(86400),
   'login.quietIntervalSeconds': int(86400, 1), 'login.maxRetries': int(10000, 1),
   'login.quietStart': { kind: 'time' }, 'login.quietEnd': { kind: 'time' },
@@ -76,11 +82,14 @@ const constraints = {
   'merchant.quoteMaxAgeSeconds': int(86400, 1), 'merchant.estimateDiscountPercent': int(100),
   'merchant.refreshWaitSeconds': int(3600), 'merchant.liquidationMinutes': int(1440), 'merchant.maxLossPercent': int(100),
   'merchant.minExpectedProfit': int(1000000000, 1), 'merchant.speedUpMinProfit': int(1000000000, 1), 'merchant.keepPointers': int(1000000),
-  'merchant.speedUpMode': { kind: 'choice', values: ['deadline', 'profit'] }, 'merchant.speedUpMaxPerLeg': int(100, 1),
+  'merchant.speedUpMode': { kind: 'choice', values: ['deadline', 'profit', 'refresh', 'arrival'] }, 'merchant.speedUpMaxPerLeg': int(100, 1),
+  'merchant.refreshWindowMinutes': int(30, 1), 'merchant.dailyPointerLimit': int(1000), 'merchant.pointerDailyDiamondLimit': int(100000),
+  'merchant.profitLimit': int(1000000000), 'merchant.firstDepartureMode': { kind: 'choice', values: ['smart', 'time'] },
+  'merchant.firstDepartureTime': { kind: 'time' }, 'merchant.firstDepartureWaitMinutes': int(120),
   'merchant.monitorSeconds': int(300, 10), 'merchant.upgradeCoinValuePerDiamond': int(1000000, 1),
   'merchant.upgradeMinReturnPercent': int(10000, 100), 'merchant.upgradeMaxLevel': int(5, 1), 'merchant.upgradeDailyDiamondLimit': int(100000),
   'ads.waitSeconds':int(120,5),
-  'fleetDispatch.priority': {...strings(6),values:['cityWar','pirateHunt','worldBoss','follow','treasure','radar']},
+  'fleetDispatch.priority': {...strings(7),values:['cityWar','pirateHunt','worldBoss','follow','treasure','radar','silicon']},
   'worldBoss.fleetIds': strings(10), 'worldBoss.minDurabilityPercent': int(100), 'worldBoss.petrolReserve': int(),
   'events.otherOption': int(2,1), 'radar.fleetIds': strings(10), 'radar.types': {...strings(5),values:['pirate','collect','refugee','spy','fixed']},
   'radar.minDurabilityPercent':int(100), 'radar.petrolReserve':int(), 'radar.dailyPetrolLimit':int(), 'radar.checkEverySeconds':int(300,10),
@@ -181,8 +190,14 @@ export function nativeTaskValues(settings, current) {
 }
 
 export function hasExtraWork(settings) {
+  if (settings?.alliance?.enabled || settings?.heroRaid?.enabled || settings?.silicon?.enabled) return true;
   return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled || settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) || (settings.loop.heroes && settings.heroes.enabled)
     || (settings.progression?.enabled && (settings.progression.mainline || settings.progression.trials)) || settings.pirateHunt?.enabled);
+}
+export function hasBaseWork(settings) {
+  return !!settings && ((settings.loop.world && (settings.museum.enabled || settings.museum.upgrade || settings.events.enabled ||
+    settings.pet.enabled || (settings.gather.enabled !== false && settings.gather.diving && settings.gather.keyOpen))) ||
+    (settings.loop.dailies && settings.gold.enabled));
 }
 export function settingsUiRules() {
   return { controlFields: idleControlFields, controlGroups: Object.fromEntries(automationControls.flatMap(c=>c.fields.map(path=>[path,c.idleGroup??c.group]))), mappedTasks: Object.keys(nativeFields), numbers: Object.fromEntries(Object.entries(constraints).filter(([, rule]) => rule.kind === 'number').map(([key, rule]) => [key, { min: rule.min, max: rule.max }])) };
@@ -218,6 +233,9 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
         if (!Array.isArray(value) || value.length > rule.max || value.some(v => typeof v !== 'string' || !v.trim() || v.length > 120) || new Set(value).size !== value.length) errors[name] = '选项必须为不重复的有效列表';
         else if (rule.values && value.some(v => !rule.values.includes(v))) errors[name] = '列表中含有不支持的选项';
         else output[group][key] = [...value];
+      } else if (rule?.kind === 'siliconFleets') {
+        const fleets = validateSiliconFleets(value, errors, catalog);
+        if (fleets) output[group][key] = fleets;
       } else if (rule?.kind === 'crops') {
         if (!Array.isArray(value) || value.length > 100) errors[name] = '作物列表不合法';
         else {
@@ -241,7 +259,8 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
   if (output.antique.star && !output.antique.starQualities.length) errors['antique.starQualities'] = '请选择自动升星的藏品品质';
   if (output.antique.suit && !output.antique.suitQualities.length) errors['antique.suitQualities'] = '请选择自动升级的藏品套装品质';
   if (['cityWar','pirateHunt','treasure','radar'].some(k=>!output.fleetDispatch.priority.includes(k))) errors['fleetDispatch.priority']='请保留全部任务，只调整顺序';
-  for(const key of ['worldBoss','follow'])if(!output.fleetDispatch.priority.includes(key))output.fleetDispatch.priority.push(key);
+  for(const key of ['worldBoss','follow','silicon'])if(!output.fleetDispatch.priority.includes(key))output.fleetDispatch.priority.push(key);
+  if (output.silicon.windows.some(value => !/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(value))) errors['silicon.windows'] = '时段格式为 HH:mm-HH:mm，每行一个；支持跨午夜';
   if (output.pirateHunt.fleetIds.some(value=>! /^[1-9]\d*远征船$/.test(value))) errors['pirateHunt.fleetIds']='请选择有效的海盗首杀舰队';
   if (output.pirateHunt.types.some(value=>! /^[1-9]\d*$/.test(value))) errors['pirateHunt.types']='请选择有效的海盗类型';
   if (![1,5,10,50].includes(output.eventActions.compassDrawCount)) errors['eventActions.compassDrawCount']='请选择1、5、10或50次';
@@ -272,6 +291,9 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
       'radar.fleetIds':'expeditionFleets','worldBoss.fleetIds':'expeditionFleets',
       'pirateHunt.fleetIds': 'expeditionFleets', 'pirateHunt.types': 'pirateTypes',
       'forge.buildingIds': 'forgeBuildings', 'forge.recipeIds': 'forgeRecipes',
+      'alliance.allowedMaterials': 'materials', 'alliance.blockedMaterials': 'materials',
+      'alliance.requestMaterials': 'materials', 'alliance.techIds': 'guildTech',
+      'guildShip.rewardItems': 'materials', 'guildShip.disabledMaterials': 'materials', 'guildFort.materials': 'materials',
     })) {
       const [group, key] = name.split('.');
       const allowed = new Set((catalog[collection] ?? []).map(v => String(v.value)));
@@ -298,6 +320,7 @@ export function settingsCatalog(config) {
   const factoryTypes = new Set(rows('BuildingProduceCfg').map(r => r.buildType));
   return {
     buildings, factories: buildings.filter(r => factoryTypes.has(r.value)),
+    guildTech: unique(rows('GuildTechCfg').map(r => option(r.techId, r.name || '科技 ' + r.techId))),
     materials: unique([...rows('ItemCfg').map(r => option(r.id, r.show_name || r.showName || r.name || r.id)), ...rows('ResourceCfg').map(r => option(r.id, r.show_name || r.id))]),
     crops: rows('FarmlandPlantCfg').map(r => option(r.id)),
     maps: rows('MuseumExpeditionStageCfg').map(r => option(r.stageId, r.name)),
@@ -365,6 +388,10 @@ export function importAutomationSettings(document, options) {
   if (plain(input)) for (const group of ['login', 'treasure', 'cityWar', 'forge', 'antique', 'trials', 'pirateHunt', 'radar','worldBoss','pirateSweep','eventActions','merchant','ads']) if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
   if (plain(input?.login)) input.login = { ...DEFAULT_SETTINGS.login, ...input.login };
   if (plain(input?.merchant)) input.merchant = { ...DEFAULT_SETTINGS.merchant, ...input.merchant };
+  if (plain(input)) for (const group of Object.keys(EXTENDED_DEFAULTS)) {
+    if (!Object.hasOwn(input, group)) input[group] = copy(DEFAULT_SETTINGS[group]);
+    else if (plain(input[group])) input[group] = { ...copy(DEFAULT_SETTINGS[group]), ...input[group] };
+  }
   if (plain(input?.antique)) input.antique = { ...DEFAULT_SETTINGS.antique, ...input.antique };
   if (plain(input?.treasure)) {
     input.treasure = { ...input.treasure };

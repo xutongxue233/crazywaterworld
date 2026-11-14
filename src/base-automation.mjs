@@ -10,6 +10,9 @@ import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { readOrderReservedStock } from './order-reservations.mjs';
 import { petSpendSnapshot, confirmPetSpend } from './spend-evidence.mjs';
+import { readAllianceRecruitDemand } from './alliance-automation.mjs';
+import { readGuildShips, guildShipDemands } from './guild-ships.mjs';
+import { watchHeroRaidPushes, heroRaidDemands } from './hero-raid-automation.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const quantities = list => (list ?? []).map(item => Array.isArray(item) ? { id: item[0], num: Number(item[1]) } : { id: item.id, num: Number(item.num) });
@@ -44,7 +47,7 @@ export function gameSeason(player) {
 // 这些状态由登录后的服务器推送提供，不能根据本地配置表伪造一个“正在进行”的活动或事件。
 export function watchBasePushes(client) {
   if (stateByClient.has(client)) return stateByClient.get(client);
-  const state = { choices: new Map(), raids: new Map(), choiceObserved: false, invalidChoice: false };
+  const state = { choices: new Map(), raids: watchHeroRaidPushes(client).raids, choiceObserved: false, invalidChoice: false };
   stateByClient.set(client, state);
   const reset=()=>{state.choices.clear();state.raids.clear();state.choiceObserved=false;state.invalidChoice=false;};
   client.on?.('login',reset);client.on?.('close',reset);
@@ -57,12 +60,11 @@ export function watchBasePushes(client) {
         else state.invalidChoice = true;
       }
     }
-    if (name === 'SCHeroRaidOpen' && body.raid) { const raid = normalize(body.raid); state.raids.set(raid.raidId, raid); }
   });
   return state;
 }
 
-export async function surveyBaseAutomation(client, protocol, config, player, settings, waterSurvey) {
+export async function surveyBaseAutomation(client, protocol, config, player, settings, waterSurvey, { ledger, enabled = () => true } = {}) {
   const notes = [];
   const state = watchBasePushes(client);
   if (state.invalidChoice) notes.push('部分随机事件的标识无法精确确认，已跳过');
@@ -78,12 +80,24 @@ export async function surveyBaseAutomation(client, protocol, config, player, set
     settings.museum.enabled ? get('AllHeroRequest') : null,
     settings.pet.enabled && settings.pet.advance ? get('AllPetRequest') : null,
     settings.gold.enabled ? get('ClickGoldInfoRequest') : null,
-    member && needs.has('guildRecruit') ? get('GuildOrderRequest') : null,
-    member && needs.has('guildShip') ? get('GuildShipRequest') : null,
+    member && needs.has('guildRecruit') && !settings.alliance?.enabled ? get('GuildOrderRequest') : null,
+    member && needs.has('guildShip') && !settings.guildShip?.enabled ? get('GuildShipRequest') : null,
     needs.has('refugee') ? get('RadarInfoRequest') : null,
   ]);
+  let guildRecruitDemand = [];
+  if (member && settings.alliance?.enabled && settings.alliance.recruit && settings.alliance.recruitProduction) {
+    try { guildRecruitDemand = await readAllianceRecruitDemand(client, protocol, config, player, settings, { ledger, enabled }); }
+    catch (error) { notes.push('联盟募兵补产：' + error.message); }
+  }
+  let guildShipDemand = [];
+  // 红船补料有独立开关，不依赖工厂“优先需求”或需求来源排序；仍由工厂总开关决定是否生产。
+  if (member && settings.alliance?.enabled && settings.guildShip?.enabled && settings.guildShip.produceMissing) {
+    try { guildShipDemand = guildShipDemands(await readGuildShips(client, protocol, config, { player, getSettings: () => settings, enabled }), settings, ledger); }
+    catch (error) { notes.push('联盟商船补产：' + error.message); }
+  }
   return { now: waterSurvey.serverNow ?? waterSurvey.now, player, world: waterSurvey, museum, heroes: heroes?.heroes ?? [], pets: pets?.pets ?? [], gold,
-    guildOrder, guildShip, radar, choices: [...state.choices.values()], raids: [...state.raids.values()], choiceObserved: state.choiceObserved, notes };
+    guildOrder, guildRecruitDemand, guildShip, guildShipDemand, heroRaidDemand: heroRaidDemands(client, config, player, settings, { ledger }),
+    radar, choices: [...state.choices.values()], raids: [...state.raids.values()], choiceObserved: state.choiceObserved, notes };
 }
 
 function museumFactor(stage, snapshot, config, settings) {
@@ -114,21 +128,18 @@ export function baseDemands(snapshot, config, settings) {
     const next = rows(config, 'MuseumAreaCfg').find(r => r.areaId === ex.exhibitionId && r.level === ex.level + 1);
     if (next && next.playerLevelReq <= (snapshot.player?.level ?? 0)) add('museum', next.costArr);
   }
-  add('guildRecruit', snapshot.guildOrder?.order?.requirements);
-  const self = exactAutomationId(snapshot.player?.playerId ?? snapshot.player?.id);
-  const guildShips = new Map([...(snapshot.guildShip?.ship ?? []), ...(snapshot.guildShip?.ownRun ?? [])].map(ship => [ship.shipId, ship]));
-  for (const ship of guildShips.values()) if (ship.state === 1) {
-    for (const cabin of ship.cabin ?? []) if (self && String(cabin.player?.playerId ?? '') === self) add('guildShip', cabin.order);
+  if (settings.alliance?.enabled) demands.push(...(snapshot.guildRecruitDemand ?? []));
+  else add('guildRecruit', snapshot.guildOrder?.order?.requirements);
+  if (settings.guildShip?.enabled) demands.push(...(snapshot.guildShipDemand ?? []));
+  else {
+    const self = exactAutomationId(snapshot.player?.playerId ?? snapshot.player?.id);
+    const guildShips = new Map([...(snapshot.guildShip?.ship ?? []), ...(snapshot.guildShip?.ownRun ?? [])].map(ship => [ship.shipId, ship]));
+    for (const ship of guildShips.values()) if (ship.state === 1) {
+      for (const cabin of ship.cabin ?? []) if (self && String(cabin.player?.playerId ?? '') === self) add('guildShip', cabin.order);
+    }
   }
   for (const event of snapshot.radar?.radarInfo?.events ?? []) if (!(event.startTime > 0)) add('refugee', event.refugee?.requirements);
-  for (const raid of snapshot.raids) {
-    if (!(raid.finishTime > snapshot.now) || !(raid.startTime <= snapshot.now) || !raid.order) continue;
-    const list = rows(config, 'HeroRaidOrderCfg').filter(r => r.raidId === raid.raidId);
-    if (list.at(-1)?.orderId === raid.order.gotOrderId) continue;
-    const row = list.find(r => r.orderId === raid.order.orderId);
-    const days = Math.floor((snapshot.now + 28800) / 86400) - Math.floor((raid.startTime + 28800) / 86400) + 1;
-    if (row && days >= row.unlockDay) add('heroRaid', row.orderList);
-  }
+  if (settings.heroRaid?.enabled && settings.heroRaid.orders) demands.push(...(snapshot.heroRaidDemand ?? []));
   for (const b of snapshot.world.buildings) {
     add('petAdvance', b.petServe?.upgradeRequirements);
     if (petRooms([b], config).length) for (const job of b.petBreed.breedQ ?? []) if (job.finishTime > snapshot.now) add('petFeed', job.feedRequirements);

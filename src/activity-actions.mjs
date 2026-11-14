@@ -66,7 +66,7 @@ export async function itemBalance(client, id) {
 export async function checkedAction(
   ctx,
   { scope, before, expected, label, allowed, send, inspect, matches, accept, retainEvidence = false, attemptedAt, onOutcome,
-    now = () => Math.floor(Date.now() / 1000) }
+    now = () => Math.floor(Date.now() / 1000), counters = {}, limits = {} }
 ) {
   const outcome = async data => {
     if (!onOutcome) return;
@@ -98,7 +98,7 @@ export async function checkedAction(
   delete identity.start; // 发送时刻用于回读核对，不改变动作的防重标识。
   const key = 'event-action:' + digest([scope, identity, before]);
   if (ctx.ledger.hasKey(key)) return waiting(ctx, '本次状态已处理，等待下一次更新');
-  const ticket = ctx.ledger.reserve({}, {}, {}, { uniqueKey: key, details: {
+  const ticket = ctx.ledger.reserve(counters, limits, {}, { uniqueKey: key, details: {
     scope, expected, ...(retainEvidence ? { before, attemptedAt } : {})
   } });
   if (!ctx.enabled() || !allowed()) {

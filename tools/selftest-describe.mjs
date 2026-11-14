@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fields, typeNames } from './describe.mjs';
+import { fields, typeNames, extractFields } from './describe.mjs';
 
 // The bundle ships no reflection metadata, so field layouts are recovered from the
 // generated encode/decode bodies. These expectations are the ones read by eye from the
@@ -8,6 +8,40 @@ function layout(name) {
   return fields(name).map((field) => `${field.number}:${field.name}:${field.kind}:${field.type}`);
 }
 
+// Namespace aliases are chosen by each minified build, not by the protocol.
+// Exercise both deployed aliases and valid identifiers with dollars/digits, for
+// nested messages, repeated messages, and the single-field ternary decoder.
+for (const alias of ['tf', 'tk', '$proto2', '_bundle$3']) {
+  const decoded = extractFields(`switch(i>>>3){case 1:o.order=${alias}.protocol.HeroRaidOrder.decode(t,t.uint32());break;case 2:o.raids&&o.raids.length||(o.raids=[]),o.raids.push(${alias}.protocol.DispHeroRaid.decode(t,t.uint32()));break;}`);
+  assert.deepEqual(decoded.map(({ number, name, kind, type }) => ({ number, name, kind, type })), [
+    { number: 1, name: 'order', kind: 'message', type: 'HeroRaidOrder' },
+    { number: 2, name: 'raids', kind: 'repeated', type: 'DispHeroRaid' },
+  ], 'nested/repeated namespace alias ' + alias);
+  const single = extractFields(`i>>>3==1?o.reward=${alias}.protocol.DisplayAssetPackage.decode(t,t.uint32()):t.skipType(i&7)`);
+  assert.equal(single.length, 1, 'single message namespace alias ' + alias);
+  assert.equal(single[0].kind, 'message');
+  assert.equal(single[0].type, 'DisplayAssetPackage');
+}
+
+assert.deepEqual(layout('HeroRaidOrderResponse'), [
+  '1:order:message:HeroRaidOrder',
+  '2:reward:message:DisplayAssetPackage',
+]);
+assert.deepEqual(fields('HeroRaidGotRewardResponse').filter(field => field.kind === 'message').map(({ number, name, type }) => ({ number, name, type })), [
+  { number: 1, name: 'gotInfo', type: 'HeroRaidTimes' },
+  { number: 2, name: 'reward', type: 'DisplayAssetPackage' },
+]);
+assert.deepEqual(layout('FinishGuildOrderResponse'), ['1:reward:message:DisplayAssetPackage']);
+assert.deepEqual(layout('DispHeroRaid'), [
+  '1:raidId:scalar:int32',
+  '2:passedStage:scalar:int32',
+  '3:finishTime:scalar:int32',
+  '4:gift:repeated:DispHeroGift',
+  '5:drawTimesInfo:message:HeroRaidTimes',
+  '6:order:message:HeroRaidOrder',
+  '7:startTime:scalar:int32',
+]);
+
 assert.deepEqual(layout('LoginResponse'), [
   '1:result:scalar:int32',
   '2:playerInfo:message:PlayerInfo',
@@ -15,7 +49,7 @@ assert.deepEqual(layout('LoginResponse'), [
   '4:initSeqNo:scalar:int32',
 ]);
 
-assert.deepEqual(layout('LoginRequest'), [
+assert.deepEqual(layout('LoginRequest').filter(field => !field.startsWith('10:')), [
   '1:testAccount:scalar:string',
   '4:language:scalar:string',
   '5:superToken:scalar:string',
@@ -24,6 +58,10 @@ assert.deepEqual(layout('LoginRequest'), [
   '8:worldId:scalar:int64',
   '9:systemLanguage:scalar:string',
 ]);
+// Newer bundles append this optional field; older supported bundles omit it.
+const loginRate = fields('LoginRequest').find(field => field.number === 10);
+if (loginRate) assert.deepEqual({ name: loginRate.name, kind: loginRate.kind, type: loginRate.type, optional: loginRate.optional },
+  { name: 'loginRateType', kind: 'scalar', type: 'int32', optional: true });
 
 assert.deepEqual(layout('GameWorldInfo'), [
   '1:worldId:scalar:int64',

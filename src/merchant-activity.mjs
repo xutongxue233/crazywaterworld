@@ -9,6 +9,7 @@ import { rewardData } from './missing-rewards.mjs';
 import { recordMerchantSnapshot, recordMerchantTrade, merchantJournalSummary, readMerchantJournal } from './merchant-journal.mjs';
 import { evaluateMerchantUpgrade, runMerchantUpgrade } from './merchant-upgrade.mjs';
 import { watchMerchant } from './merchant-monitor.mjs';
+import { merchantStrategyPlan } from './merchant-strategy.mjs';
 
 export { planMerchant } from './merchant-planner.mjs';
 const param = (config, key) => table(config, 'ActivityTradeCfg').find(row => row.key === key)?.value;
@@ -57,7 +58,8 @@ async function readMerchantPlan(config, event, state, time, ask, visited, option
   catch { radar = { radar: [] }; }
   const plan = planMerchant(config, event, state, marketSnapshot, radar, options.now?.() ?? time, visited, options);
   options.observed?.({ state, market: marketSnapshot, radar, plan });
-  return { ...plan, marketSnapshot, radarSnapshot: radar };
+  const strategy = merchantStrategyPlan(plan, config, event, state, merchantSettings(options.settings), options.now?.() ?? time, options.ledger);
+  return { ...strategy, marketSnapshot, radarSnapshot: radar };
 }
 
 // 复用当前连接的只读诊断；航行中不探测异地报价。
@@ -73,7 +75,7 @@ export async function readMerchantStatus(client, config, { player, ledger, setti
   const inTransit = state.cargo.moveEndTime > clock(client) || state.cargo.moveToCityId && state.cargo.moveToCityId !== state.cargo.cityId;
   const plan = inTransit ? { kind: 'wait', reason: '航行中，等待到港后读取本港报价' } :
     await readMerchantPlan(config, event, state, time, (name, body) => read(client, name, body),
-      visitedPorts(ledger, scope, marketEpoch(config, time), state), { settings: settings.merchant,
+      visitedPorts(ledger, scope, marketEpoch(config, time), state), { settings: settings.merchant, ledger,
         markets: knownMarkets(ledger, event), actionSeconds: merchantActionSeconds(settings), now: () => clock(client) });
   const upgrade = inTransit ? { eligible: false, reason: '航行中不升级' } : evaluateMerchantUpgrade(config, event, state,
     plan.marketSnapshot, plan.radarSnapshot, clock(client), { settings, markets: knownMarkets(ledger, event), actionSeconds: merchantActionSeconds(settings) });
@@ -114,7 +116,7 @@ export async function merchantProgress(config, event, state, player, time, ask, 
   if (pending) return wait('前次操作结果待确认');
   const plan = await readMerchantPlan(config, event, state, time, ask,
     visitedPorts(ledger, scope, marketEpoch(config, time), state), {
-      settings: settings?.merchant ?? settings, markets: knownMarkets(ledger, event), actionSeconds: merchantActionSeconds(settings)
+      settings: settings?.merchant ?? settings, ledger, markets: knownMarkets(ledger, event), actionSeconds: merchantActionSeconds(settings)
     });
   if (plan.kind === 'wait') return wait(plan.reason);
   if (plan.goodsId) progress.push('计划' + ({ buy: '买入', sell: '卖出', move: '走商' })[plan.kind] + '：' + goodsName(plan.goodsId));
@@ -195,6 +197,8 @@ export async function merchantActivity(client, config, ctx) {
     return ctx.report({ label: ctx.label, ok: true, status: 'confirmed', reason: '已回读确认前次操作' });
   }
   if (!tradingHours(config, clock(client))) return waiting(ctx, '等待游戏规定的贸易时段 ' + param(config, '海商王贸易时间'));
+  const profitLimit = ctx.settings?.()?.merchant?.profitLimit ?? 0;
+  if (profitLimit > 0 && info.player.profit >= profitLimit) return waiting(ctx, '已达本期累计利润上限，领奖仍按独立开关执行');
   if (info.cargo.moveEndTime > clock(client)) {
     if (await runMerchantSpeed(client, config, ctx, event, info)) return;
     return waiting(ctx, '航行中，预计 ' + new Date(info.cargo.moveEndTime * 1000)
@@ -212,7 +216,7 @@ export async function merchantActivity(client, config, ctx) {
   const actionInterval = actionSeconds();
   const snapshot = state => readMerchantPlan(config, event, state, clock(client),
     (name, body) => read(client, name, body), visitedPorts(ctx.ledger, scope, currentEpoch, state), {
-      settings: policy, markets: knownMarkets(ctx.ledger, event), now: () => clock(client), actionSeconds: actionInterval,
+      settings: policy, ledger: ctx.ledger, markets: knownMarkets(ctx.ledger, event), now: () => clock(client), actionSeconds: actionInterval,
       remember: market => rememberMarket(ctx.ledger, market),
       observed: observed => {
         recordMerchantSnapshot(ctx.ledger, { ...observed, event, time: clock(client), config, settings: ctx.settings?.(), actionSeconds: actionInterval });

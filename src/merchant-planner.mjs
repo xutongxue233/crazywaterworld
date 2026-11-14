@@ -17,6 +17,8 @@ export const MERCHANT_DEFAULTS = Object.freeze({
   speedUpMinProfit: 1000,
   keepPointers: 0,
   speedUpMode: 'profit', speedUpMaxPerLeg: 4, monitorSeconds: 60,
+  refreshWindowMinutes: 8, dailyPointerLimit: 28, autoBuyPointers: false, pointerDailyDiamondLimit: 0,
+  profitLimit: 0, firstDepartureMode: 'smart', firstDepartureTime: '10:00', firstDepartureWaitMinutes: 29,
   autoUpgrade: false, upgradeCoinValuePerDiamond: 100, upgradeMinReturnPercent: 150,
   upgradeMaxLevel: 2, upgradeDailyDiamondLimit: 300
 });
@@ -26,7 +28,9 @@ export function merchantSettings(input = {}) {
   for (const [key, fallback] of Object.entries(output)) {
     const value = input?.[key];
     if (typeof fallback === 'boolean') output[key] = typeof value === 'boolean' ? value : fallback;
-    else if (typeof fallback === 'string') output[key] = ['deadline', 'profit'].includes(value) ? value : fallback;
+    else if (key === 'speedUpMode') output[key] = ['deadline', 'profit', 'refresh', 'arrival'].includes(value) ? value : fallback;
+    else if (key === 'firstDepartureMode') output[key] = ['smart', 'time'].includes(value) ? value : fallback;
+    else if (key === 'firstDepartureTime') output[key] = typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback;
     else if (natural(value)) output[key] = value;
   }
   output.estimateDiscountPercent = Math.min(100, output.estimateDiscountPercent);

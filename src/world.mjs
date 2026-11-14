@@ -729,6 +729,11 @@ export function planWorld(survey, {
     const missing = costs.filter(item => free(item.id) < item.num);
     if (missing.length && missing.every(item => craftable.has(item.id))) buildingSupplies.push({ source: 'building', requirements: costs });
   }
+  const independentSources = settings?.alliance?.enabled ? [
+    ...(settings.alliance.recruit && settings.alliance.recruitProduction ? ['guildRecruit'] : []),
+    ...(settings.guildShip?.enabled && settings.guildShip.produceMissing ? ['guildShip'] : []),
+  ] : [];
+  const demandPriority = settings ? [...new Set([...settings.factory.demandPriority, ...independentSources])] : [];
   const detailedNeeds = settings ? settingDemands(survey, config, [
     { source: 'merchant', requirements: [...(survey.weekOrder ?? [])].map(([id, num]) => ({ id, num })) },
     { source: 'cargo', requirements: [...(survey.cargoOrder ?? [])].map(([id, num]) => ({ id, num })) },
@@ -736,7 +741,9 @@ export function planWorld(survey, {
       .map(order => ({ source: 'resident', requirements: order.requirements })),
     ...buildingSupplies,
     ...extraDemand,
-  ], settings.factory.demandPriority) : null;
+  ], demandPriority) : null;
+  const productionNeeded = id => (detailedNeeds?.get(id)?.num ?? 0) > 0 && (settings?.factory.demandFirst ||
+    detailedNeeds.get(id).sources.some(source => independentSources.includes(source)));
   if(detailedNeeds)for(const crop of rowsOf(config,'FarmlandPlantCfg')) {const need=detailedNeeds.get(crop.id),seed=detailedNeeds.get(crop.material?.[0]);if(need?.num>0 && seed?.num>0)notes.push('生产依赖：缺'+name(crop.id)+' '+need.num+' → 缺'+name(crop.material[0])+' '+seed.num+' → 种子厂按需求补产'+(settings.factory.cooperateNative?'（已允许调整原生自动目标）':'（原生协同尚未开启）'));}
   if (enabled('farm') && settings && survey.autoFarming && (settings.farm.customPlant || !settings.farm.autoPlant)) {
     actions.push({ kind: 'farm', request: 'SetAutoFarmingRequest', response: null, body: { isOn: false }, label: '暂停游戏内自动种植，应用当前种植设置' });
@@ -789,8 +796,8 @@ export function planWorld(survey, {
     if (!enabled('startProduce')) break;
     if (blockedFactory(b)) { factoryReasons.set(b.buildingId, '已在设置中禁用此工厂'); continue; }
     if (b.factory.autoProductId && (survey.autoProduceForever || survey.autoProduceEndTime > (survey.serverNow ?? now))) {
-      const desired = settings?.factory.cooperateNative && settings.factory.demandFirst ? produceRows.filter(row =>
-        row.buildType === b.type && row.unlockLevel <= b.level && (detailedNeeds.get(row.itemId)?.num ?? 0) > 0 && projectedStock(row.itemId) < survey.stockCap) : [];
+      const desired = settings?.factory.cooperateNative ? produceRows.filter(row =>
+        row.buildType === b.type && row.unlockLevel <= b.level && productionNeeded(row.itemId) && projectedStock(row.itemId) < survey.stockCap) : [];
       const choices = desired.filter(row => (row.costItem ?? []).every(([id,n]) => free(id) >= n));
       const shortages=desired.filter(row=>!choices.includes(row)).map(row=>name(row.itemId)+'：'+(row.costItem??[]).filter(([id,n])=>free(id)<n).map(([id,n])=>name(id)+'需'+n+'，可用'+free(id)+'，缺'+(n-free(id))).join('；'));
       if(shortages.length)notes.push(buildingName(b)+'原生协同等待原料：'+shortages.join('；'));
@@ -817,7 +824,7 @@ export function planWorld(survey, {
         let reason;
         if (projectedStock(id) >= survey.stockCap)
           reason = '库存、待收和在产合计已达 ' + survey.stockCap;
-        else if (settings && projectedStock(id) >= settings.factory.keepStock && !(settings.factory.demandFirst && (detailedNeeds.get(id)?.num ?? 0) > 0))
+        else if (settings && projectedStock(id) >= settings.factory.keepStock && !productionNeeded(id))
           reason = '已达到设置的备货水位 ' + settings.factory.keepStock;
         else {
           const missing = (row.costItem ?? []).filter(([item, n]) => free(item) < n);
@@ -830,7 +837,7 @@ export function planWorld(survey, {
         factoryReasons.set(b.buildingId, reasons.join('；') || unavailableRecipes.get(b.type) || '当前等级没有已解锁的生产配方');
         break;
       }
-      const customRank = row => settings?.factory.demandFirst && (detailedNeeds.get(row.itemId)?.num ?? 0) > 0 ? detailedNeeds.get(row.itemId).priority : Infinity;
+      const customRank = row => productionNeeded(row.itemId) ? detailedNeeds.get(row.itemId).priority : Infinity;
       const compareCustom = (a, b) => customRank(a) - customRank(b)
         || (settings.factory.demandFirst ? (detailedNeeds.get(b.itemId)?.num ?? 0) - (detailedNeeds.get(a.itemId)?.num ?? 0) : 0)
         || projectedStock(a.itemId) - projectedStock(b.itemId) || a.produceTime - b.produceTime;
@@ -860,9 +867,9 @@ export function planWorld(survey, {
       if (detailedNeeds?.has(best.itemId)) {
         const need = detailedNeeds.get(best.itemId);
         need.num = Math.max(0, need.num - 1);
-        const source = settings.factory.demandPriority.find(source => (need.productionBySource[source] ?? 0) > 0);
+        const source = demandPriority.find(source => (need.productionBySource[source] ?? 0) > 0);
         if (source) need.productionBySource[source]--;
-        need.priority = settings.factory.demandPriority.findIndex(source => (need.productionBySource[source] ?? 0) > 0);
+        need.priority = demandPriority.findIndex(source => (need.productionBySource[source] ?? 0) > 0);
         if (need.priority < 0) need.priority = Infinity;
       }
       if (need > 0 && !weeklyNeed && !cargoNeed) demand.set(best.itemId, need - 1);
@@ -1039,7 +1046,38 @@ export function settingDemands(survey, config, records, priority) {
     const crop = crops.get(id);
     if (crop?.produceNum > 0 && extra > 0) add(source, crop.material[0], Math.ceil(extra / crop.produceNum) * crop.material[1], new Set([...seen,id]));
   };
-  for (const source of priority) for (const record of records.filter(row => row.source === source)) for (const item of record.requirements ?? []) add(source, item.id, Number(item.num));
+  const orderedRecords = priority.flatMap(source => records.filter(row => row.source === source));
+  const reservationSources = new Set(['merchant', 'cargo', 'resident']);
+  const reservedIds = new Set(orderedRecords.flatMap(record => (record.reserved ?? [])
+    .filter(item => item.id && Number.isFinite(Number(item.num)) && Number(item.num) > 0).map(item => item.id)));
+  const coveredReserve = new Map();
+  // 招募/商船持有的是同一批订单预留，不是额外消费。先计入已选择的订单用量，
+  // 让库存优先抵扣被保护的订单，独立补料仍归属于招募/商船自身。
+  for (const record of orderedRecords) if (reservationSources.has(record.source)) for (const item of record.requirements ?? []) {
+    const count = Number(item.num);
+    if (!reservedIds.has(item.id) || !Number.isFinite(count) || count <= 0) continue;
+    add(record.source, item.id, count);
+    coveredReserve.set(item.id, (coveredReserve.get(item.id) ?? 0) + count);
+  }
+  for (const record of orderedRecords) {
+    const missingReserve = new Map();
+    for (const item of record.reserved ?? []) {
+      const count = Number(item.num), covered = coveredReserve.get(item.id) ?? 0;
+      if (!item.id || !Number.isFinite(count) || count <= covered) continue;
+      // 未选择的订单来源仍保护库存；多个消费者只补齐一次共同预留水位。
+      missingReserve.set(item.id, (missingReserve.get(item.id) ?? 0) + count - covered);
+      coveredReserve.set(item.id, count);
+    }
+    for (const item of record.requirements ?? []) {
+      if (reservationSources.has(record.source) && reservedIds.has(item.id)) continue;
+      const count = Number(item.num);
+      if (!Number.isFinite(count) || count <= 0) continue;
+      // 同一记录合并补齐的水位后再展开配方，避免作物种子分别向上取整。
+      add(record.source, item.id, count + (missingReserve.get(item.id) ?? 0));
+      missingReserve.delete(item.id);
+    }
+    for (const [id, count] of missingReserve) add(record.source, id, count);
+  }
   return result;
 }
 

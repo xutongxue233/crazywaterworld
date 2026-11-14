@@ -292,7 +292,7 @@ export async function runCityWar(client, protocol, config, player, { getSettings
     let snapshot = await read();
     snapshot.attackDura = rows(config, 'WorldParamCfg').find(row => row.paramName === '攻城战消耗耐久')?.paramValue;
     reconcile(snapshot, ledger);
-    const pending = () => { const p = ledger.pendingCounters(); return (p.cityWarPetrol ?? 0) + (p.treasurePetrol ?? 0) + (p.piratePetrol ?? 0) + (p.radarPetrol ?? 0) + (p.worldBossPetrol ?? 0); };
+    const pending = () => { const p = ledger.pendingCounters(); return (p.cityWarPetrol ?? 0) + (p.treasurePetrol ?? 0) + (p.piratePetrol ?? 0) + (p.radarPetrol ?? 0) + (p.worldBossPetrol ?? 0) + (p.siliconPetrol ?? 0); };
     const settings = getSettings();
     let plan = planCityWar(snapshot, settings, { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingPetrol: pending() });
     if (plan.nativeOffFleetIds.length) {
