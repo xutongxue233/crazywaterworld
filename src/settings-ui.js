@@ -450,6 +450,7 @@ function configUpdateState() {
   const node = $('config-state'); node.dataset.dirty = String(dirty);
   node.setAttribute('aria-busy', String(configEditor.saving));
   node.textContent = configEditor.loading ? '正在载入…' : configEditor.saving ? '正在自动保存…' : configEditor.busy ? '正在处理…' : dirty ? configEditor.saveError ? configEditor.saveError.fields?.revision ? '配置有冲突，尚未保存' : configEditor.saveError.fields ? '请修正配置，尚未保存' : configEditor.saveTimer !== null ? '保存失败，正在等待重试…' : '自动保存失败，更改仍保留' : '等待自动保存…' : configEditor.draft ? '自动保存已开启 · 配置已同步' : '尚未载入';
+  node.title = node.textContent;
   $('config-retry').hidden = !dirty || !configEditor.saveError || !!configEditor.saveError.fields || configEditor.saveTimer !== null;
   const at = configEditor.data?.savedAt;
   $('config-saved-time').textContent = at ? '上次保存：' + new Date(at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '';
@@ -1021,7 +1022,8 @@ function configSave(event, { automatic = false } = {}) {
       configUpdateVisibility();
     }
     if(displayChanged){configEditor.previewSummary=null;configRender();}
-    configRenderUsage(); configMessage(edited ? '已保存上一批修改，后续修改将继续自动保存。' : '配置已自动保存。', 'success');
+    // 常规保存仅更新常驻状态，避免成功提示条反复显隐挤动编辑中的表单。
+    configRenderUsage();
     if (!data.running) {
       const prior=loopFieldDefaults;
       if(!prior||$('loop-rounds').value===String(prior.rounds))$('loop-rounds').value=data.settings.loop.rounds;

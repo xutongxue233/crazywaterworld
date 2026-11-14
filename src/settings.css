@@ -4,7 +4,8 @@
 .config-owner { display:grid; gap:4px; min-width:0 }
 .config-owner .title-with-help { flex-wrap:nowrap }
 .config-owner strong { min-width:0; font-size:16px; font-weight:600; line-height:1.3; overflow-wrap:anywhere }
-#config-state { color:var(--muted-foreground) }
+/* 保存状态保持单行，避免窄屏文案切换改变工具栏高度。 */
+#config-state { color:var(--muted-foreground); min-height:1.5em; line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 #config-state[data-dirty=true] { color:#b45309; font-weight:500 }
 .config-actions { display:flex; gap:8px; flex:none }
 .config-intro { color:var(--muted-foreground); padding:12px 0 16px; max-width:75ch }

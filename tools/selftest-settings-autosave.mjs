@@ -103,6 +103,23 @@ await test('打开配置不写盘，连续输入只保存最终值并更新版�
   assert.equal(f.node('config-retry').hidden, true);
 });
 
+await test('连续自动保存只更新常驻状态，不显示成功横幅或重绘编辑区', async () => {
+  const f = fixture(); await f.load(); const renders = f.env.renders;
+  for (const value of [71, 72]) {
+    const gate = deferred(); f.env.onPost = () => gate.promise;
+    f.set('factory.keepStock', value);
+    assert.equal(f.node('config-message').hidden, true);
+    await f.tick(600);
+    assert.match(f.node('config-state').textContent, /正在自动保存/);
+    assert.equal(f.node('config-message').hidden, true);
+    f.env.onPost = null; gate.resolve(); await settle();
+    assert.match(f.node('config-state').textContent, /配置已同步/);
+    assert.equal(f.node('config-message').hidden, true);
+    assert.equal(f.view('a').settings.factory.keepStock, value);
+  }
+  assert.equal(f.env.renders, renders); assert.equal(f.env.focuses, 0);
+});
+
 await test('多选、顺序、开关和互斥联动一起自动保存', async () => {
   const f = fixture(); await f.load();
   f.set('treasure.followNames', ['甲', '乙']);
@@ -122,9 +139,12 @@ await test('在途保存期间继续编辑，串行保存后一批而不覆盖�
   assert.equal(f.posts().length, 1);
   f.env.onPost = null; gate.resolve(); await settle();
   assert.equal(f.editor.draft.factory.keepStock, 90); assert(f.dirty());
+  assert.equal(f.node('config-message').hidden, true);
+  assert.match(f.node('config-state').textContent, /等待自动保存/);
   await f.tick(600);
   assert.equal(f.posts().length, 2); assert.equal(f.env.maxInFlight, 1);
   assert.equal(f.posts()[1].payload.revision, 2); assert.equal(f.view('a').settings.factory.keepStock, 90);
+  assert.equal(f.node('config-message').hidden, true);
 });
 
 await test('在途保存时改回原值，仍把用户最后的值持久化', async () => {
@@ -167,6 +187,7 @@ await test('持续失败保留更改并显示重试入口，不误报已保存',
   f.set('factory.keepStock', 92); await f.tick(60000);
   assert.equal(f.posts().length, 4); assert(f.dirty()); assert.equal(f.node('config-retry').hidden, false);
   assert.match(f.node('config-state').textContent, /自动保存失败/);
+  assert.equal(f.node('config-message').hidden, false); assert.equal(f.node('config-message').dataset.kind, 'error');
   f.env.failPosts = 0; await f.save();
   assert.equal(f.view('a').settings.factory.keepStock, 92); assert(!f.dirty());
 });
@@ -177,6 +198,7 @@ await test('多页面版本冲突保留本地修改，不自动覆盖另一页�
   saveAutomationSettings('a', external.settings, { file: f.file, revision: external.revision });
   f.set('ads.waitSeconds', 22); await f.tick(10000);
   assert.equal(f.posts().length, 1); assert.match(f.node('config-state').textContent, /冲突/);
+  assert.equal(f.node('config-message').hidden, false); assert.equal(f.node('config-message').dataset.kind, 'error');
   f.set('ads.waitSeconds', 23); await f.tick(10000);
   assert.equal(f.posts().length, 1); assert.equal(await f.flush(), false);
   assert.equal(f.editor.data.revision, 1); assert.equal(f.view('a').settings.factory.keepStock, 123);
