@@ -76,6 +76,30 @@ try {
     assert.equal(nativeTaskValues(changed, {}).collect, false);
   });
 
+  await check('城战逐队攻防配置校验、旧值迁移和导入导出', () => {
+    const settings = validateSettings(defaultSettings());
+    settings.cityWar.fleetIds = ['1远征船', '2远征船'];
+    settings.cityWar.defenceFleetIds = ['2远征船'];
+    assert.deepEqual(validateSettings(settings).cityWar.defenceFleetIds, ['2远征船']);
+    assert.deepEqual(importAutomationSettings(exportAutomationSettings(settings)).cityWar, settings.cityWar);
+    const file = path.join(directory, 'city-war-roles.json');
+    saveAutomationSettings('roles', settings, { file, revision: 0 });
+    assert.deepEqual(loadAutomationSettings('roles', { file }).settings.cityWar, settings.cityWar);
+    for (const value of [['3远征船'], ['2远征船', '2远征船'], ['坏编号'], '2远征船', null, [2]]) {
+      const bad = structuredClone(settings); bad.cityWar.defenceFleetIds = value;
+      assert.throws(() => validateSettings(bad), error => !!error.fields?.['cityWar.defenceFleetIds']);
+    }
+    const old = structuredClone(settings); delete old.cityWar.defenceFleetIds;
+    fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { roles: { revision: 8, settings: old } } }));
+    const bytes = fs.readFileSync(file), loaded = loadAutomationSettings('roles', { file });
+    assert.equal(loaded.revision, 8); assert.deepEqual(fs.readFileSync(file), bytes);
+    for (const migrated of [loaded.settings, importAutomationSettings({ format: 'crazywaterword-automation', version: 1, settings: old })]) {
+      assert.deepEqual(migrated.cityWar.defenceFleetIds, []);
+      const previous = structuredClone(migrated); delete previous.cityWar.defenceFleetIds;
+      assert.deepEqual(previous, old, '旧账号保持全部舰队进攻及其他设置');
+    }
+  });
+
   await check('工厂兜底间隔默认值、边界、保存与导入严格校验', () => {
     const initial = defaultSettings(); assert.equal(initial.factory.checkEverySeconds, 30);
     const file = path.join(directory, 'factory-settings.json');

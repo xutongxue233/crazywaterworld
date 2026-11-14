@@ -20,7 +20,7 @@ export async function readWorldTarget(client,protocol,config,player,settings,led
  if(layer==='fields'){view.notes.push('资源田他人归属未同步；本工具当前没有资源田自动派遣入口，不推测可进攻条件。');return view;}
  if(layer==='fleets'){
   const own=await client.request('MyFleetsRequest',{},'MyFleetsResponse');
-  view.fleets=fleetDispatchView(client,settings,ledger,own.fleets??[],exactAutomationId(player.worldId)).filter(f=>'fleet-'+f.buildingId===key).map(f=>({name:f.buildingId,reason:[f.reason,...f.reserved.map(r=>'预留给'+r),'允许任务顺序：'+(f.intents.map(i=>i.label).join(' → ')||'无'),'当前目标格：'+(f.targetGrid??'主城')].filter(Boolean).join('；')}));return view;
+  view.fleets=fleetDispatchView(client,settings,ledger,own.fleets??[],exactAutomationId(player.worldId)).filter(f=>'fleet-'+f.buildingId===key).map(f=>({name:f.buildingId,reason:[f.reason,...f.reserved.map(r=>'预留给'+r),'允许任务顺序：'+(f.intents.map(i=>i.label+(i.key==='cityWar'?'（'+((settings.cityWar.defenceFleetIds??[]).includes(f.buildingId)?'防守':'进攻')+'）':'')).join(' → ')||'无'),'当前目标格：'+(f.targetGrid??'主城')].filter(Boolean).join('；')}));return view;
  }
  if(layer==='boss'){
   const state=await readWorldBoss(client,config,player,settings,ledger,{cityReservedFleetIds:reserved});view.fuel=state.fuel;view.cost=state.cost;view.fleets=state.fleets.map(f=>({name:f.buildingId,reason:reserved.includes(f.buildingId)?'城战时段预留':f.reason}));view.notes.push(state.reason||'今日首战尚未派遣');if(!settings.worldBoss.enabled)view.notes.push('世界Boss自动首战未开启');return view;
@@ -51,8 +51,9 @@ export async function readWorldTarget(client,protocol,config,player,settings,led
  }
  const state=await readCityWar(client,protocol,config,player,settings.cityWar),id=Number(key.replace(/^city-/,''));
  const target=state.targets.find(t=>t.id===id);
- if(!target&&!state.reason)view.notes.push('此城市不是本联盟当前有效宣战目标');
- else if(settings.cityWar.targetMode==='selected'&&!settings.cityWar.cityRefs.includes(target.ref))view.notes.push('此城市不在已保存的目标范围');
+ if(!target&&!state.reason)view.notes.push('此城市不是本联盟当前有效进攻或防守目标');
+ if(target&&settings.cityWar.targetMode==='selected'&&!settings.cityWar.cityRefs.includes(target.ref))view.notes.push('此城市不在已保存的目标范围');
+ if(target)view.notes.push('此城市为'+(target.role==='defence'?'本盟防守':'本盟进攻')+'目标，仅安排对应职责的舰队');
  state.targets=target?[target]:[];
  const plan=planCityWar(state,settings,{usage:ledger.snapshot(),keys:ledger.keyRecords(),pendingPetrol:pendingPetrol(ledger)});
  return {...view,...plan,notes:[...view.notes,...plan.notes],cost:target?.petrol??null};

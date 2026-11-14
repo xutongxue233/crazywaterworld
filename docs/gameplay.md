@@ -734,6 +734,21 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - `WorldCity` 的本盟现场数量由 `attackFleetNum + priorityAtkFleetNum` 加上 `battlePoints` 中左侧非 NPC 且属于本盟的交战点组成；已同步在途舰队从 `WorldInfoResponse.fleets` 读取：`state == 2`、`targetCityId` 为目标城、`owner.guildId` 为本盟，并按 `owner.playerId` 排除 MyFleets 已统计的本人舰队。归属或数量无法确认时不当作 0。
 - `SetFleetAutoFightRequest { buildingIds[], isOn }` 没有配套响应；关闭后回读 `MyFleetsResponse.fleets[].autoFight.isOn` 确认。城战原生委任设置 -1 按 VIP 额度等待，0 关闭后接管，N 表示原生先用 N 次再关闭。
 
+### 城战防守与逐队职责（#28）
+
+依据当前 v76 客户端 `CityMenuPop`、`SelectTroopPop`、`TroopAppointPop`、`WorldModelManager` 及配置 `TipsDescCfg` 中的城战规则：
+
+- 进攻与前往己城共同使用 `MoveFleetsToCityRequest { buildingId: string[], cityId }`。协议无攻守角色字段，服务器按城市归属处理。`CityDefenceRequest { cityId }` 只读取守军列表，不能用作派遣。选择某个 `buildingId` 即可单独派指定远征舰队，沿用该队已保存的英雄编队。
+- `SelectTroopPop._refreshPetrolCost` 对 `isMyCity(cityId)` 不计汽油，敌城才按联盟主城与目标城的距离计算。防守行军费用为0，正常维修仍按报价付费。`_isTroopIdle` 排除已在目标城市的舰队，不重复派同城。
+- 游戏允许平时前往己城；工具自动防守只覆盖服务器城战时段内 `declaration.defenceGuildIdx === ownGuildIdx` 且 `liveCity.guildIdx === ownGuildIdx` 的有效受宣战城市。同一己城受到多个联盟宣战时去重，不自动转攻失守城市。进攻保持本盟宣战与实时敌方归属双重检查。
+- `cityWar.fleetIds` 仍是统一参与名单；新增 `cityWar.defenceFleetIds` 为其子集，名单内为防守，其余为进攻，旧数据补空列表。目标选择、少队排序和城战意向预留分别按职责处理；无对应目标时等待，真实在途/未知任务仍由持久账本锁定。
+- 防守采用 `defenceFleetNum + priorityDefFleetNum` 加右侧本盟非 NPC 交战点，进攻采用左侧；防守队列是服务器原始计数，不能据此承诺已剔除所有 NPC。双方均加入本盟已同步在途和本轮计划数量；防守费用为0，因此使用地图实际距离比较远近。
+- 原生委任只有每队开关，跟随联盟集结城市，可进攻也可防守，无法分别固定职责。工具分工在接管后生效，需要立即执行分工时设 `nativeCommissionLimit=0`，先关闭所选队的原生委任并回读确认。保留 -1/N 的先原生后接管语义。
+- 无 `MoveFleetsToCityResponse`；发送后读 `MyFleetsResponse`，以目标城行军、交战/排队或外驻状态确认。0汽油仍预留派遣次数与舰队键，未知结果跨重连/换日保留；仅空闲不能视为成功。同一目标在最后读取后仍可能易帜，现有协议没有原子化锁定防守角色的能力。
+- 维修门槛沿用配置“攻城战消耗耐久”和用户比例，不将其等同所有战斗实际扣除：配置说明对城防 NPC 与对玩家舰队的消耗不同，未发现单独的防守耐久参数。
+
+验证使用虚构账号和真实协议编解码的离线夹具，未进行真实账号城战派遣。
+
 ## 16. 藏品养成协议（v76）
 
 - `AllAntiqueResponse`：字段 1 `antiques[]`（`DisplayAntique {id, star}`）、字段 2 `suits[]`（`DisplayAntiqueSuit {id, level, effectiveNum, advEffectValue}`）、字段 3 `masterLv`。

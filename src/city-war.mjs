@@ -1,6 +1,6 @@
 import {fleetRecordReason,legacyFleetReservationReason} from './fleet-availability.mjs';
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
-// 原生委任额度用尽后的城战接续。只移动本人舰队和正常维修，不宣战、不修改原生委任。
+// 按原生委任策略接管后的城战攻守。只移动本人舰队和正常维修，不宣战。
 import { exactAutomationId } from './automation-policy.mjs';
 import { loadMapAsset } from './world.mjs';
 
@@ -16,6 +16,10 @@ const rejected = new WeakMap();
 const nativeRejected = new WeakMap();
 const keyOf = (world, id) => 'cityWar:' + world + ':' + fleetNo(id);
 export const cityWarEnabled = settings => settings?.cityWar?.enabled === true;
+const fleetRole = (preferences, id) => preferences?.defenceFleetIds?.includes(id) ? 'defence' : 'attack';
+const targetRole = target => target.role ?? 'attack';
+const roleName = role => role === 'defence' ? '防守' : '进攻';
+const selectedTarget = (preferences, target) => preferences.targetMode === 'alliance' || preferences.cityRefs.includes(target.ref);
 
 function quantity(value) {
   if (integer(value)) return value;
@@ -25,15 +29,21 @@ function quantity(value) {
   return n >= 0n && n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : null;
 }
 
-export function cityPetrolCost(map, sourceCityId, targetCityId, brackets) {
+function cityDistance(map, sourceCityId, targetCityId) {
   if (![map?.width, map?.tileWidth, map?.tileHeight].every(n => typeof n === 'number' && n > 0 && Number.isFinite(n))) return null;
   const from = map.cityInfo?.[sourceCityId]?.gridIdx, to = map.cityInfo?.[targetCityId]?.gridIdx;
-  if (!integer(from) || !integer(to) || !Array.isArray(brackets) || !brackets.length) return null;
+  if (!integer(from) || !integer(to)) return null;
   const position = idx => {
     const row = Math.floor(idx / map.width), col = idx % map.width;
     return [(col + 0.5 + (row % 2) * 0.5) * map.tileWidth, -row * map.tileHeight / 2];
   };
-  const a = position(from), b = position(to), distance = Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const a = position(from), b = position(to);
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+export function cityPetrolCost(map, sourceCityId, targetCityId, brackets) {
+  const distance = cityDistance(map, sourceCityId, targetCityId);
+  if (distance === null || !Array.isArray(brackets) || !brackets.length) return null;
   const tiers = [...brackets].sort((x, y) => x.dist - y.dist);
   if (tiers.some(row => !Number.isFinite(row.dist) || row.dist < 0 || !Number.isFinite(row.cost) || row.cost < 0)) return null;
   let unit = tiers[0].cost;
@@ -88,20 +98,28 @@ export async function readCityWar(client, protocol, config, player, preferences,
     snapshot.homeCityId = home.id;
     const map = await mapLoader(scenarioId, config?.resources ?? null);
     for (const declaration of war.declarations) {
-      if (declaration.attackGuildIdx !== snapshot.guildIdx) continue;
+      const role = declaration.attackGuildIdx === snapshot.guildIdx ? 'attack'
+        : declaration.defenceGuildIdx === snapshot.guildIdx && integer(declaration.attackGuildIdx, 1) ? 'defence' : null;
+      if (!role || declaration.attackGuildIdx === declaration.defenceGuildIdx) continue;
       const live = world.cities.find(row => row.id === declaration.cityId), definition = cities.find(row => row.id === declaration.cityId);
       if (!live || !definition) { snapshot.notes.push('宣战城市' + declaration.cityId + '的状态或场景配置未取得'); continue; }
-      if (live.guildIdx === snapshot.guildIdx || live.guildIdx !== declaration.defenceGuildIdx) continue;
-      const petrol = cityPetrolCost(map, home.id, live.id, costs);
-      if (!integer(petrol, 1)) { snapshot.notes.push((definition.name || '城市' + live.id) + '的行军汽油费用未确认'); continue; }
+      if (live.guildIdx !== declaration.defenceGuildIdx || (role === 'attack' && live.guildIdx === snapshot.guildIdx)) continue;
+      // 多盟围攻同一己城仍只有一个防守目标；角色由实时归属决定，不由发包字段决定。
+      if (snapshot.targets.some(target => target.id === live.id)) continue;
+      const distance = cityDistance(map, home.id, live.id);
+      const petrol = role === 'defence' ? 0 : cityPetrolCost(map, home.id, live.id, costs);
+      if (distance === null || !integer(petrol, role === 'defence' ? 0 : 1)) { snapshot.notes.push((definition.name || '城市' + live.id) + '的行军距离或汽油费用未确认'); continue; }
       const attackers = [...new Set(war.declarations.filter(row => row.cityId === live.id).map(row => row.attackGuildIdx))];
       let alliedCount = null, countReason = '';
-      if (attackers.length !== 1 || attackers[0] !== snapshot.guildIdx) countReason = '多联盟共同进攻，无法拆分本联盟排队舰队数';
-      else if (!integer(live.attackFleetNum) || !integer(live.priorityAtkFleetNum) || !Array.isArray(live.battlePoints)) countReason = '本联盟进攻队列数据未确认';
+      const queue = role === 'defence' ? live.defenceFleetNum : live.attackFleetNum;
+      const priorityQueue = role === 'defence' ? live.priorityDefFleetNum : live.priorityAtkFleetNum;
+      // 守方队列直接采用服务器计数，不承诺已排除城防 NPC；交战点仅计本盟非 NPC。
+      if (role === 'attack' && (attackers.length !== 1 || attackers[0] !== snapshot.guildIdx)) countReason = '多联盟共同进攻，无法拆分本联盟排队舰队数';
+      else if (!integer(queue) || !integer(priorityQueue) || !Array.isArray(live.battlePoints)) countReason = roleName(role) + '队列数据未确认';
       else {
-        const fighting = live.battlePoints.filter(point => point.leftFighter && !point.leftFighter.isNpc);
-        if (fighting.some(point => point.leftFighter.guildIdx !== snapshot.guildIdx)) countReason = '进攻方身份已变化，等待重新核对';
-        else alliedCount = live.attackFleetNum + live.priorityAtkFleetNum + fighting.length;
+        const fighting = live.battlePoints.map(point => role === 'defence' ? point.rightFighter : point.leftFighter).filter(fighter => fighter && !fighter.isNpc);
+        if (fighting.some(fighter => fighter.guildIdx !== snapshot.guildIdx)) countReason = roleName(role) + '方身份已变化，等待重新核对';
+        else alliedCount = queue + priorityQueue + fighting.length;
       }
       // 已同步在途：世界地图里的本盟舰队按目标城汇总；本人的在途舰队以 MyFleets 为准，
       // 避免和世界地图重复计数。归属不明的在途舰队不能当成 0。
@@ -122,8 +140,8 @@ export async function readCityWar(client, protocol, config, player, preferences,
           (fleet.treasureLootUid ?? 0) === 0 && !(fleet.chipWar?.rewardTs > 0) &&
           (!fleet.owner || exactAutomationId(fleet.owner.playerId) === snapshot.playerId)).length;
       }
-      snapshot.targets.push({ id: live.id, ref: scenarioId + ':' + live.id, name: definition.name || '城市' + live.id,
-        owner: live.guildIdx, petrol, assemble: war.assembleCityId === live.id, alliedCount, countReason,
+      snapshot.targets.push({ id: live.id, ref: scenarioId + ':' + live.id, name: definition.name || '城市' + live.id, role,
+        owner: live.guildIdx, petrol, distance, assemble: war.assembleCityId === live.id, alliedCount, countReason,
         transitCount: transitReason ? null : transitCount, transitReason });
     }
     for (const id of preferences?.fleetIds ?? []) {
@@ -173,8 +191,7 @@ function fleetGate(fleet, snapshot, p) {
 export function cityWarReservedFleets(snapshot, settings, now = snapshot?.now) {
   const p = settings?.cityWar;
   if (!p?.enabled || !p.reserveDuringWar || snapshot?.reason || !(snapshot?.startTime <= now && now < snapshot.endTime)) return [];
-  const valid = (snapshot.targets ?? []).some(target => p.targetMode === 'alliance' || p.cityRefs.includes(target.ref));
-  return valid ? [...p.fleetIds] : [];
+  return p.fleetIds.filter(id => (snapshot.targets ?? []).some(target => selectedTarget(p, target) && targetRole(target) === fleetRole(p, id)));
 }
 
 export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys = {}, pendingPetrol = 0 } = {}) {
@@ -188,7 +205,7 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
   if (!p) return plan;
   for (const id of p.fleetIds) {
     const fleet = snapshot.fleets.find(row => row.buildingId === id), native = fleet ? nativeState(fleet, snapshot, p) : null;
-    plan.fleets.push({ name: nameOf(id), state: fleet ? stateName(fleet) : '未取得', used: fleet?.autoFight?.todayTimes ?? null,
+    plan.fleets.push({ buildingId: id, role: fleetRole(p, id), name: nameOf(id), state: fleet ? stateName(fleet) : '未取得', used: fleet?.autoFight?.todayTimes ?? null,
       limit: snapshot.nativeLimit, nativeMode: p.nativeCommissionLimit, nativeTarget: native?.target ?? null,
       durability: fleet?.durability, maxDura: fleet?.maxDura, reason: fleet ? fleetGate(fleet, snapshot, p) : '未取得舰队状态' });
   }
@@ -202,36 +219,41 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
     if (native?.close && native.off) plan.nativeOffFleetIds.push(id);
   }
   if (plan.nativeOffFleetIds.length) plan.notes.push('发送前关闭所选舰队的原生委任：' + plan.nativeOffFleetIds.map(nameOf).join('、'));
-  const selected = snapshot.targets.filter(row => p.targetMode === 'alliance' || p.cityRefs.includes(row.ref));
+  const roles = new Set(p.fleetIds.map(id => fleetRole(p, id)));
+  const selected = snapshot.targets.filter(row => selectedTarget(p, row) && roles.has(targetRole(row)));
   const fewest = p.targetPriority === 'fewestAllied';
   const targetTotal = target => integer(target.alliedCount) && integer(target.transitCount) ? target.alliedCount + target.transitCount : null;
   if (fewest) for (const target of selected) {
-    if (targetTotal(target) === null) plan.notes.push(target.name + '：' + (target.countReason || (target.transitCount == null ? target.transitReason : '') || '本联盟进攻、排队或在途数量未确认') + '，本次不按人数选择此点');
+    if (targetTotal(target) === null) plan.notes.push(target.name + '：' + (target.countReason || (target.transitCount == null ? target.transitReason : '') || '对应攻守队列、交战或在途数量未确认') + '，本次不按人数选择此点');
   }
   const candidates = selected.filter(row => !fewest || targetTotal(row) !== null);
   // 本轮已安排的舰队计入总数，但不再重复计算已同步在途舰队；在途数量已在读取时汇总。
   const assigned = new Map(candidates.map(target => [target.id, 0]));
   const totalOf = target => targetTotal(target) + (assigned.get(target.id) ?? 0);
+  // 驻防己城汽油为零，仍用实际距离区分远近；进攻保留既有费用排序。
+  const proximity = target => targetRole(target) === 'defence' ? target.distance : target.petrol;
   const originalOrder = (a, b) => p.targetMode === 'selected' ? p.cityRefs.indexOf(a.ref) - p.cityRefs.indexOf(b.ref)
-    : Number(b.assemble) - Number(a.assemble) || a.petrol - b.petrol || a.id - b.id;
+    : Number(b.assemble) - Number(a.assemble) || proximity(a) - proximity(b) || a.id - b.id;
   // 队数最少的城为基准：相差 0–9 队时就近，差 10 队及以上时优先人少的城。
-  const order = (a, b) => {
+  const order = (a, b, choices) => {
     if (!fewest) return originalOrder(a, b);
-    const ta = totalOf(a), tb = totalOf(b), min = Math.min(...candidates.map(totalOf));
+    const ta = totalOf(a), tb = totalOf(b), min = Math.min(...choices.map(totalOf));
     const bandA = ta - min <= 9 ? 0 : 1, bandB = tb - min <= 9 ? 0 : 1;
     if (bandA !== bandB) return bandA - bandB;
-    if (bandA === 0) return a.petrol - b.petrol || ta - tb || originalOrder(a, b);
-    return ta - tb || a.petrol - b.petrol || originalOrder(a, b);
+    if (bandA === 0) return proximity(a) - proximity(b) || ta - tb || originalOrder(a, b);
+    return ta - tb || proximity(a) - proximity(b) || originalOrder(a, b);
   };
-  candidates.sort(order);
-  if (!candidates.length) { plan.notes.push('没有符合选择的本联盟有效宣战目标'); return plan; }
+  for (const view of plan.fleets) if (!candidates.some(target => targetRole(target) === view.role)) {
+    view.reason ||= '没有符合选择的' + (view.role === 'defence' ? '本盟受宣战防守城市' : '本盟进攻宣战目标');
+  }
+  if (!candidates.length) { plan.notes.push('没有符合所选舰队攻守职责的本联盟有效宣战目标'); return plan; }
   plan.reservedFleetIds.push(...cityWarReservedFleets(snapshot, settings));
   plan.reservedFleetIds = [...new Set(plan.reservedFleetIds)];
   if (!integer(snapshot.fuel) || !integer(pendingPetrol)) { plan.notes.push('无法确认汽油及未决预算'); return plan; }
   let fuel = snapshot.fuel - pendingPetrol, spent = usage.counters.cityWarPetrol ?? 0, dispatches = usage.counters.cityWarDispatches ?? 0;
   if (![spent, dispatches].every(n => integer(n))) { plan.notes.push('城战当日用量记录异常'); return plan; }
   for (const view of plan.fleets) {
-    const id = p.fleetIds[plan.fleets.indexOf(view)], fleet = snapshot.fleets.find(row => row.buildingId === id);
+    const id = view.buildingId, fleet = snapshot.fleets.find(row => row.buildingId === id);
     let reason = view.reason;
     if(!reason&&Object.values(keys).some(r=>r.details?.kind==='worldBoss'&&r.details.buildingId===id&&r.details.active!==false))reason='世界Boss首战尚未结束或结果待确认';
     if (!reason && Object.entries(keys).some(([key,r])=>key.startsWith('radar-send:'+snapshot.worldId+':') && r.details?.buildingId===id && r.details.active!==false)) reason='联盟情报尚在执行或结果待确认';
@@ -242,9 +264,10 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
     if (!reason) reason = fleetRecordReason(keys,id);
     if (!reason && dispatches >= p.dailyDispatchLimit) reason = '已达今日工具接续出征上限';
     if (reason) { view.reason = reason; plan.notes.push(view.name + '：' + reason); continue; }
-    candidates.sort(order);
-    const target = candidates.find(row => row.id !== fleet.cityId);
-    if (!target) { plan.notes.push(view.name + '：已在所选目标城市'); continue; }
+    const choices = candidates.filter(target => targetRole(target) === view.role);
+    choices.sort((a, b) => order(a, b, choices));
+    const target = choices.find(row => row.id !== fleet.cityId);
+    if (!target) { view.reason = '已在所选目标城市'; plan.notes.push(view.name + '：' + view.reason); continue; }
     if (!integer(snapshot.attackDura, 1)) { plan.notes.push(view.name + '：无法确认城战耐久消耗'); continue; }
     const needsRepair = fleet.durability < Math.max(Math.ceil(fleet.maxDura * p.repairBelowPercent / 100), integer(snapshot.attackDura, 1) ? snapshot.attackDura : 1);
     let cost, request, body, kind;
@@ -256,11 +279,11 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
       if (!integer(cost, 1) || p.maxRepairCost > 0 && cost > p.maxRepairCost) { plan.notes.push(view.name + '：完整维修费用超过单次上限'); continue; }
       kind = 'cityRepair'; request = 'RepairFleetRequest'; body = { buildingId: id };
     } else { cost = target.petrol; kind = 'cityDispatch'; request = 'MoveFleetsToCityRequest'; body = { buildingId: [id], cityId: target.id }; }
-    if (fuel - cost < p.petrolReserve) { plan.notes.push(view.name + '：汽油不足或会低于保留量'); continue; }
-    if (p.dailyPetrolLimit > 0 && spent + cost > p.dailyPetrolLimit) { plan.notes.push(view.name + '：会超过今日城战汽油预算'); continue; }
-    plan.actions.push({ kind, request, body, buildingId: id, cityId: target.id, cost,
+    if (cost > 0 && fuel - cost < p.petrolReserve) { plan.notes.push(view.name + '：汽油不足或会低于保留量'); continue; }
+    if (cost > 0 && p.dailyPetrolLimit > 0 && spent + cost > p.dailyPetrolLimit) { plan.notes.push(view.name + '：会超过今日城战汽油预算'); continue; }
+    plan.actions.push({ kind, request, body, buildingId: id, cityId: target.id, role: view.role, cost,
       uniqueKey: keyOf(snapshot.worldId, id), beforeDurability: fleet.durability,
-      label: view.name + (kind === 'cityRepair' ? '维修后继续城战' : '接续进攻' + target.name), costs: [{ id: '汽油', num: cost }] });
+      label: view.name + (kind === 'cityRepair' ? '维修后继续' + roleName(view.role) : '接续' + roleName(view.role) + target.name), costs: cost ? [{ id: '汽油', num: cost }] : [] });
     fuel -= cost; spent += cost; if (kind === 'cityDispatch') { dispatches++; assigned.set(target.id, assigned.get(target.id) + 1); }
   }
   return plan;
@@ -340,7 +363,7 @@ export async function runCityWar(client, protocol, config, player, { getSettings
       fresh.fuel = Math.min(fresh.fuel, remainingFuel);
       const reviewed = planCityWar(fresh, settings, { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingPetrol: pending() });
       if (reviewed.nativeOffFleetIds.length) { plan.notes.push('原生委任状态变化，暂停本轮接续'); break; }
-      const step = reviewed.actions.find(row => row.uniqueKey === proposed.uniqueKey && row.kind === proposed.kind && row.cityId === proposed.cityId && row.cost === proposed.cost);
+      const step = reviewed.actions.find(row => row.uniqueKey === proposed.uniqueKey && row.kind === proposed.kind && row.cityId === proposed.cityId && row.role === proposed.role && row.cost === proposed.cost);
       if (!step || !canUseFleet(step.buildingId) || legacyFleetReservationReason(client,step.buildingId) || settings !== getSettings() || !enabled() || exactAutomationId(player.guildId) !== fresh.guildId) continue;
       const currentVip = rows(config, 'VipLevelCfg').find(row => row.level === player.vip?.vipLevel);
       const currentLimit = currentVip?.effects?.find(row => row[0] === '每日城战委任次数')?.[1];
@@ -350,9 +373,9 @@ export async function runCityWar(client, protocol, config, player, { getSettings
           nowOf(client) < fresh.startTime || nowOf(client) >= fresh.endTime) continue;
       const failure = rejected.get(client)?.get(step.uniqueKey);
       if (failure && failure.until > Date.now() && failure.signature === JSON.stringify(step.body)) continue;
-      const details = { kind: step.kind, buildingId: step.buildingId, cityId: step.cityId, beforeDurability: step.beforeDurability, sentAt: fresh.now };
+      const details = { kind: step.kind, buildingId: step.buildingId, cityId: step.cityId, role: step.role, beforeDurability: step.beforeDurability, sentAt: fresh.now };
       const ticket = ledger.reserve({ cityWarPetrol: step.cost, cityWarDispatches: step.kind === 'cityDispatch' ? 1 : 0, cityWarRepairs: step.kind === 'cityRepair' ? 1 : 0 },
-        { cityWarPetrol: settings.cityWar.dailyPetrolLimit || undefined, cityWarDispatches: settings.cityWar.dailyDispatchLimit }, {}, { uniqueKey: step.uniqueKey, details });
+        { cityWarPetrol: step.cost > 0 ? settings.cityWar.dailyPetrolLimit || undefined : undefined, cityWarDispatches: settings.cityWar.dailyDispatchLimit }, {}, { uniqueKey: step.uniqueKey, details });
       if (!enabled() || settings !== getSettings() || !client.connected || legacyFleetReservationReason(client,step.buildingId)) { ledger.cancel(ticket); break; }
       let entry;
       try {

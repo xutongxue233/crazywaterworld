@@ -61,7 +61,7 @@ export const DEFAULT_SETTINGS = {
     rewardItems: [], avoidNames: [], allowHostile: false, minDurabilityPercent: 80, petrolReserve: 0,
     maxProgress: 90, personalProgressLimit: 20, dailyDispatchLimit: 0, checkEverySeconds: 15, participationMode: 'untilFull', repeatAttack: true,
     autoRepair: true, maxRepairCost: 15000, dailyRepairPetrolLimit: 20000 },
-  cityWar: { enabled: false, fleetIds: [], targetMode: 'alliance', targetPriority: 'fewestAllied', cityRefs: [], autoRepair: true,
+  cityWar: { enabled: false, fleetIds: [], defenceFleetIds: [], targetMode: 'alliance', targetPriority: 'fewestAllied', cityRefs: [], autoRepair: true,
     nativeCommissionLimit: -1, repairBelowPercent: 80, petrolReserve: 0, maxRepairCost: 15000, dailyPetrolLimit: 20000,
     dailyDispatchLimit: 10, reserveDuringWar: true, checkEverySeconds: 15 },
   forge: { decompose: false, decomposeQualities: [], enabled: false, buildingIds: [], recipeIds: [], universal: false, materialReserve: 0,
@@ -122,7 +122,7 @@ const constraints = {
   'treasure.dailyDispatchLimit': int(1000), 'treasure.checkEverySeconds': int(300, 5),
   'treasure.avoidPlayerIds': strings(100), 'treasure.participationMode': { kind: 'choice', values: ['untilFull', 'always'] },
   'treasure.maxRepairCost': int(10000000), 'treasure.dailyRepairPetrolLimit': int(100000000),
-  'cityWar.fleetIds': strings(10), 'cityWar.targetMode': { kind: 'choice', values: ['alliance', 'selected'] },
+  'cityWar.fleetIds': strings(10), 'cityWar.defenceFleetIds': strings(10), 'cityWar.targetMode': { kind: 'choice', values: ['alliance', 'selected'] },
   'cityWar.targetPriority': { kind: 'choice', values: ['fewestAllied', 'original'] },
   'cityWar.cityRefs': strings(100), 'cityWar.nativeCommissionLimit': { kind: 'number', min: -1, max: 1000 },
   'cityWar.repairBelowPercent': int(100, 1), 'cityWar.petrolReserve': int(),
@@ -277,6 +277,7 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
   if (output.treasure.fleetIds.some(value => !/^[1-9]\d*远征船$/.test(value))) errors['treasure.fleetIds'] = '请选择有效的远征舰队';
   if (output.cityWar.enabled && !output.cityWar.fleetIds.length) errors['cityWar.fleetIds'] = '请明确选择参与城战接续的舰队';
   if (output.cityWar.fleetIds.some(value => !/^[1-9]\d*远征船$/.test(value))) errors['cityWar.fleetIds'] = '请选择有效的远征舰队';
+  if (output.cityWar.defenceFleetIds.some(value => !output.cityWar.fleetIds.includes(value))) errors['cityWar.defenceFleetIds'] = '防守舰队必须包含在城战参与舰队中';
   if (output.cityWar.enabled && output.cityWar.targetMode === 'selected' && !output.cityWar.cityRefs.length) errors['cityWar.cityRefs'] = '指定目标模式至少选择一座城市';
   if (output.cityWar.cityRefs.some(value => !/^[1-9]\d{0,3}:[1-9]\d{0,5}$/.test(value))) errors['cityWar.cityRefs'] = '城市选项必须包含有效场景和城市编号';
   if (output.forge.enabled && !output.forge.buildingIds.length) errors['forge.buildingIds'] = '请选择装备锻造工厂';
@@ -403,6 +404,7 @@ export function importAutomationSettings(document, options) {
   }
   if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'targetPriority')) input.cityWar = { ...input.cityWar, targetPriority: DEFAULT_SETTINGS.cityWar.targetPriority };
   if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'nativeCommissionLimit')) input.cityWar = { ...input.cityWar, nativeCommissionLimit: DEFAULT_SETTINGS.cityWar.nativeCommissionLimit };
+  if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'defenceFleetIds')) input.cityWar = { ...input.cityWar, defenceFleetIds: [] };
   if (plain(input?.schedule) && !Object.hasOwn(input.schedule, 'worldOnlineRewards')) input.schedule = { ...input.schedule, worldOnlineRewards: false };
   if (plain(input?.schedule)) input.schedule = { ...taskSettings(), ...input.schedule };
   if (plain(input?.events)) input.events = {otherOption:1,...input.events};

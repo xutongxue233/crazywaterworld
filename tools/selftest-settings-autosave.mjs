@@ -266,4 +266,46 @@ await test('三支硅矿舰队独立编辑自动保存，刷新和切号保留�
   assert.equal(f.view('b').settings.silicon.fleets[0].enabled, false);
 });
 
+await test('城战逐队职责自动保存，取消参与同时移除防守职责，新队默认进攻', async () => {
+  const f = fixture(); await f.load();
+  f.set('cityWar.fleetIds', ['1远征船', '2远征船']);
+  f.set('cityWar.defenceFleetIds', ['2远征船']); await f.tick(600);
+  assert.deepEqual(f.view('a').settings.cityWar.defenceFleetIds, ['2远征船']);
+  await f.load(true);
+  assert.deepEqual(f.editor.draft.cityWar.defenceFleetIds, ['2远征船']);
+  f.set('cityWar.fleetIds', ['1远征船', '3远征船']); await f.tick(600);
+  assert.deepEqual(f.view('a').settings.cityWar.fleetIds, ['1远征船', '3远征船']);
+  assert.deepEqual(f.view('a').settings.cityWar.defenceFleetIds, []);
+  assert.deepEqual(f.view('b').settings.cityWar.fleetIds, []);
+  f.set('cityWar.fleetIds', []); await f.tick(600);
+  assert.deepEqual(f.view('a').settings.cityWar.defenceFleetIds, []);
+});
+
+await test('城战职责控件逐队切换，参与名单变化即刷新且不改英雄编队', () => {
+  const draft = defaultSettings(), catalog = { expeditionFleets: [{ value: '1远征船', label: '远征舰队 1 队' }, { value: '2远征船', label: '远征舰队 2 队' }] };
+  draft.cityWar.fleetIds = ['1远征船', '2远征船'];
+  const node = (tag, className, textContent = '') => ({ tag, className, textContent, children: [], attributes: {}, value: '',
+    append(...items) { this.children.push(...items); }, setAttribute(key, value) { this.attributes[key] = value; } });
+  const clear = root => { root.children = []; return root; };
+  const read = key => key.split('.').reduce((value, part) => value[part], draft);
+  const writes = [];
+  const write = (key, value) => { writes.push(key); draft.cityWar.defenceFleetIds = value; root.refresh(); };
+  const render = new Function('el', 'clear', 'configGet', 'configSet', 'configEditor',
+    section('function configCityWarRoles(', 'function configMultiselect(') + '\nreturn configCityWarRoles;')(node, clear, read, write, { data: { catalog } });
+  const root = render({ key: 'cityWar.defenceFleetIds', label: '各舰队城战职责' }, 'roles');
+  const selects = () => root.children.flatMap(row => row.children).filter(child => child.tag === 'select');
+  assert.deepEqual(selects().map(select => select.value), ['attack', 'attack']);
+  assert.equal(selects()[1].attributes['aria-label'], '远征舰队 2 队城战职责');
+  selects()[1].value = 'defence'; selects()[1].onchange();
+  assert.deepEqual(draft.cityWar.defenceFleetIds, ['2远征船']);
+  assert.deepEqual(selects().map(select => select.value), ['attack', 'defence']);
+  selects()[1].value = 'attack'; selects()[1].onchange();
+  assert.deepEqual(draft.cityWar.defenceFleetIds, []);
+  draft.cityWar.fleetIds = ['2远征船']; root.refresh();
+  assert.equal(selects().length, 1); assert.equal(selects()[0].value, 'attack');
+  draft.cityWar.fleetIds = []; root.refresh();
+  assert.equal(selects().length, 0); assert.match(root.children[0].textContent, /先选择城战参与舰队/);
+  assert(writes.every(key => key === 'cityWar.defenceFleetIds'));
+});
+
 console.log('配置自动保存专项 ' + passed + '/' + passed + ' 通过');
