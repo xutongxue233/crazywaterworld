@@ -42,11 +42,10 @@ export async function readWorldTarget(client,protocol,config,player,settings,led
  if(layer==='treasure'){
   const uidText=key.replace(/^treasure-/,'');const uid=Number(uidText);if(!/^[1-9]\d*$/.test(uidText)||!Number.isSafeInteger(uid)||uid>2147483647)throw Error('巨轮标识无效');
   const state=await readTreasureLoot(client,protocol,config,player,{targetUid:uid,preferences:settings.treasure});state.targets=state.targets.filter(t=>t.uid===uid);
-  if(!state.targets.length&&state.allUids.includes(uid))view.notes.push(settings.treasure.onlyTenThousand!==false?'已开启只抢万吨货轮，此目标不是已确认的万吨货轮，保持等待':'此货轮类型未能由游戏协议与配置共同确认，保持等待');
-  const plan=planTreasureLoot(state,config,settings,{usage:ledger.snapshot(),keys:ledger.keyRecords(),pendingFuel:pendingPetrol(ledger),reservedFleetIds:reserved});
+  if(!state.targets.length&&state.allUids.includes(uid))view.notes.push('此货轮未满足当前万吨或中小货轮兜底的类型、时间和领奖条件');
   const task=settings.treasure.follow?'follow':'treasure';
-  plan.fleets.forEach((f,i)=>f.reason||=blocked(task,settings.treasure.fleetIds[i]));
-  plan.actions=plan.actions.filter(a=>!blocked(task,a.buildingId));
+  const unavailableFleets=Object.fromEntries(settings.treasure.fleetIds.map(id=>[id,blocked(task,id)]));
+  const plan=planTreasureLoot(state,config,settings,{usage:ledger.snapshot(),keys:ledger.keyRecords(),pendingFuel:pendingPetrol(ledger),reservedFleetIds:reserved,unavailableFleets});
   return {...view,...plan,notes:[...view.notes,...plan.notes],cost:state.fuelPerFleet};
  }
  const state=await readCityWar(client,protocol,config,player,settings.cityWar),id=Number(key.replace(/^city-/,''));

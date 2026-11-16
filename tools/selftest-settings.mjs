@@ -166,6 +166,86 @@ try {
     assert.throws(() => loadAutomationSettings('a', { file: broken }), /停止/); assert.equal(fs.readFileSync(broken, 'utf8'), '{bad');
   });
 
+  await check('中小货轮兜底设置校验、旧版迁移和奖励顺序持久化', () => {
+    const initial = defaultSettings();
+    assert.equal(initial.treasure.fallbackEnabled, false);
+    assert.equal(initial.treasure.onlyTenThousand, true);
+    assert.equal(initial.treasure.fallbackAfter, '21:00');
+    assert.equal(initial.treasure.fallbackTargetRewards, 3);
+    assert.deepEqual(initial.treasure.fallbackQualities, ['PURPLE', 'BLUE']);
+    const old = exportAutomationSettings(initial);
+    const fallbackFields = Object.keys(old.settings.treasure).filter(key => key.startsWith('fallback'));
+    for (const field of fallbackFields) delete old.settings.treasure[field];
+    old.settings.treasure.autoRepair = false;
+    const migrated = importAutomationSettings(old);
+    assert.equal(migrated.treasure.autoRepair, false);
+    for (const field of fallbackFields) assert.deepEqual(migrated.treasure[field], initial.treasure[field]);
+    const file = path.join(directory, 'old-treasure-settings.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 1, accounts: { old: { revision: 2, settings: old.settings } } }));
+    const bytes = fs.readFileSync(file);
+    assert.deepEqual(loadAutomationSettings('old', { file }).settings.treasure, migrated.treasure);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+    const custom = defaultSettings();
+    Object.assign(custom.treasure, { onlyTenThousand: false, fallbackEnabled: true, fallbackAfter: '23:15', fallbackTargetRewards: 2,
+      fallbackQualities: ['BLUE', 'PURPLE'], fallbackMediumRewardPriority: ['精铁', 'GOLD'], fallbackSmallRewardPriority: ['GOLD', '精铁'] });
+    assert.deepEqual(importAutomationSettings(exportAutomationSettings(custom)).treasure, custom.treasure);
+    saveAutomationSettings('custom', custom, { file, revision: 0 });
+    assert.deepEqual(loadAutomationSettings('custom', { file }).settings.treasure, custom.treasure);
+    for (const [field, value] of [['fallbackAfter', '24:00'], ['fallbackAfter', '9:00'], ['fallbackTargetRewards', 0], ['fallbackTargetRewards', 101],
+      ['fallbackQualities', []], ['fallbackQualities', ['ORANGE']], ['fallbackQualities', ['BLUE', 'BLUE']],
+      ['fallbackMediumRewardPriority', ['GOLD', 'GOLD']], ['fallbackSmallRewardPriority', [123]]]) {
+      const invalid = structuredClone(custom); invalid.treasure[field] = value;
+      assert.throws(() => validateSettings(invalid), undefined, field + ' 应拒绝无效值');
+    }
+    assert.throws(() => validateSettings(custom, { catalog: { materials: [{ value: 'GOLD' }] } }), /不存在的选项/);
+  });
+
+  await check('中小货轮优先级控件可调整、移除与添加，保留工厂设置', () => {
+    const source = fs.readFileSync(new URL('../src/settings-ui.js', import.meta.url), 'utf8');
+    const groups = new Function(source.slice(0, source.indexOf('function configGet(')) + '\nreturn configGroups;')();
+    const fields = groups.find(group => group.id === 'treasure').fields;
+    const draft = defaultSettings();
+    for (const key of ['rewardItems', 'fallbackMediumRewardPriority', 'fallbackSmallRewardPriority']) {
+      assert.equal(fields.find(field => field.key === 'treasure.' + key).catalog, 'treasureRewards');
+    }
+    assert.equal(fields.find(field => field.key === 'treasure.fallbackAfter').kind, 'time');
+    assert.equal(fields.find(field => field.key === 'treasure.fallbackAfter').when(draft), false);
+    draft.treasure.fallbackEnabled = true;
+    assert.equal(fields.find(field => field.key === 'treasure.fallbackAfter').when(draft), true);
+    draft.treasure.fallbackMediumRewardPriority = ['精铁', 'GOLD'];
+    draft.factory.speedUpSources = ['cargo'];
+    const el = (tag, className = '', text = '') => ({ tag, className, text, children: [], attrs: {}, append(...nodes) { this.children.push(...nodes); },
+      setAttribute(key, value) { this.attrs[key] = value; }, focus() {} });
+    const clear = node => { node.children = []; return node; };
+    const button = (text, onclick) => Object.assign(el('button', '', text), { onclick });
+    const editor = source.slice(source.indexOf('function configPriorityEditor('), source.indexOf('function configCropEditor('));
+    const render = new Function('spec', 'draft', 'catalog', 'el', 'clear', 'configButton', `
+      const configEditor = { data: { catalog } };
+      const configGet = key => key.split('.').reduce((value, part) => value[part], draft);
+      const configSet = (key, value) => { const [group, field] = key.split('.'); draft[group][field] = value; };
+      ${editor}
+      return configPriorityEditor(spec, 'test');`);
+    const root = render(fields.find(field => field.key === 'treasure.fallbackMediumRewardPriority'), draft,
+      { treasureRewards: ['精铁', 'GOLD', '木材'].map(value => ({ value, label: value })) }, el, clear, button);
+    const descendants = node => [node, ...node.children.flatMap(descendants)];
+    const find = label => descendants(root).find(node => node.attrs['aria-label'] === label);
+    assert.equal(descendants(root).some(node => node.type === 'checkbox'), false);
+    find('精铁下移').onclick();
+    assert.deepEqual(draft.treasure.fallbackMediumRewardPriority, ['GOLD', '精铁']);
+    find('移除GOLD').onclick();
+    assert.deepEqual(draft.treasure.fallbackMediumRewardPriority, ['精铁']);
+    const select = find('添加奖励'); select.value = '木材'; select.onchange();
+    find('添加所选奖励').onclick();
+    assert.deepEqual(draft.treasure.fallbackMediumRewardPriority, ['精铁', '木材']);
+    assert.deepEqual(draft.factory.speedUpSources, ['cargo']);
+    const factory = render(groups.find(group => group.id === 'factory').fields.find(field => field.key === 'factory.demandPriority'), draft,
+      { demandSources: [{ value: 'cargo', label: '贸易港口' }] }, el, clear, button);
+    const cargo = descendants(factory).find(node => node.attrs['aria-label'] === '贸易港口工厂加速');
+    assert.equal(cargo.checked, true);
+    cargo.checked = false; cargo.onchange();
+    assert.deepEqual(draft.factory.speedUpSources, []);
+  });
+
   await check('两版任务设置迁移保留显式开关，缺省消费任务保持关闭', () => {
     const keys = ['festivalActive', 'festivalGifts', 'snowballFree', 'weekLotterySpin', 'weekCharge', 'weekChipFree', 'weekUniqueFree', 'weekOrderFinal', 'weekOrderSubmit', 'vipDaily', 'campaignReports', 'openRankRewards',
       'guildOrders', 'radarAuto', 'radarRepair', 'equipmentCollect', 'equipmentCraft', 'museumCollect', 'museumExplore', 'petCollect', 'petBreed'];
@@ -521,11 +601,17 @@ try {
     try {
       const before = fs.readFileSync(path.join(directory, 'accounts.json'));
       const a = (await api('qa-a', '/api/settings')).body; a.settings.building.keepBlueprints = 123;
+      const rewardIds = a.catalog.treasureRewards.slice(0, 2).map(item => item.value);
+      Object.assign(a.settings.treasure, { fallbackEnabled: true, fallbackAfter: '23:10', fallbackTargetRewards: 2,
+        fallbackQualities: ['BLUE'], fallbackMediumRewardPriority: rewardIds, fallbackSmallRewardPriority: [...rewardIds].reverse() });
       const save = await api('qa-a', '/api/settings', { settings: a.settings, revision: a.revision, baseRevision: a.baseRevision }); assert.equal(save.status, 200); assert.equal(save.body.revision, 1);
+      assert.deepEqual((await api('qa-a', '/api/settings')).body.settings.treasure, a.settings.treasure);
       assert.deepEqual(fs.readFileSync(path.join(directory, 'accounts.json')), before);
       assert.equal(app.sessions.get('qa-a').client, null); assert.equal(app.sessions.get('qa-a').loop.running, false);
       assert.equal((await api('qa-b', '/api/settings')).body.settings.building.keepBlueprints, 0);
+      assert.equal((await api('qa-b', '/api/settings')).body.settings.treasure.fallbackEnabled, false);
       const exported = (await api('qa-a', '/api/settings/export')).body; assert.deepEqual(Object.keys(exported), ['format', 'version', 'settings']);
+      assert.deepEqual(exported.settings.treasure, a.settings.treasure);
       exported.settings.building.keepBlueprints = 200;
       assert.equal((await api('qa-a', '/api/settings/validate', { document: exported })).status, 200);
       assert.equal((await api('qa-a', '/api/settings')).body.settings.building.keepBlueprints, 123);

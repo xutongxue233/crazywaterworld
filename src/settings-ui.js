@@ -268,7 +268,7 @@ const configGroups = [
   ] },
   { id: 'treasure', title: '万吨巨轮', category: 'world', fields: [
     configField('treasure.enabled', '巨轮自动化总开关', 'switch', { help: '开始挂机后生效，独立于基地自动化。按所选舰队、参与模式和预算出征；耐久不足可先普通维修。不会召回、补油或修改编队。' }),
-    configField('treasure.onlyTenThousand', '只抢万吨货轮', 'switch', { help: '默认开启，只参加游戏标记为橙色品质的万吨货轮；没有符合条件的目标就等待，不抢小型或中型货轮。常规参加、跟随和旧版自动抢货轮均遵守。关闭后也可参加游戏配置已确认的小型、中型货轮，其他筛选仍有效。' }),
+    configField('treasure.onlyTenThousand', '只抢万吨货轮', 'switch', { help: '默认开启，普通规则仅参加游戏标记为橙色品质的万吨货轮。常规参加、跟随和旧版自动抢货轮均遵守。关闭后，普通规则也可参加游戏配置已确认的小型、中型货轮，其他筛选仍有效。另行开启下方中小货轮兜底后，可在设定时刻按兜底规则补足领奖次数。' }),
     configField('treasure.autoJoin', '常规自动参加', 'switch', { when:d=>!d.treasure.follow, help:'仅在未开启指定跟随时生效。开启跟随后，首次出征必须匹配名单，不使用常规自动参加兜底；已确认的跟随按反复攻占设置接续。' }),
     configField('treasure.participationMode', '参与模式', 'radio', { options: [['untilFull', '打满就停'], ['always', '每次参与']], help: '打满就停：达到游戏今日领奖上限后不再派遣或维修。每次参与：领奖已满仍可参加，但不增加奖励次数，其他限制仍有效。' }),
     configField('treasure.repeatAttack', '反复攻占', 'switch', { help: '已确认出征后，被打回或返航且回到主城空闲时，可再次参与同一货轮。跟随模式下，同一舰队首次跟随出征确认后，维修和再次攻占不再等待跟随玩家；新货轮或未首次跟随成功的舰队仍需匹配名单。请求结果未知时继续等待确认。' }),
@@ -277,6 +277,12 @@ const configGroups = [
     configField('treasure.followPlayerIds', '跟随名单', 'players', { when: d => d.treasure.follow, help: '从当前账号的盟友名单搜索多选，按选择顺序优先跟随。使用完整角色 ID 区分同名玩家；也可补充未列出的角色 ID。未列出的已选 ID 仍保留，需要时手动移除。' }),
     configField('treasure.followNames', '补充跟随昵称（可选）', 'names', { when: d => d.treasure.follow, help: '保留原有手填名单。每行一个完整昵称，角色 ID 名单优先；同名无法确认身份时跳过。', placeholder: '每行输入一位其他玩家的完整昵称' }),
     configField('treasure.rewardItems', '目标奖励', 'multi', { catalog: 'treasureRewards', empty: '不筛选奖励', help: '优先显示实际货轮奖励，也可搜索完整物品名称。“垃圾袋（任意品质）”匹配游戏配置中的各品质垃圾袋，选择“传说垃圾袋”等具体品质则仅匹配该品质。选择后只参加含任一所选奖励的货轮，同时遵守“只抢万吨货轮”；跟随模式也遵守此项。' }),
+    configField('treasure.fallbackEnabled', '中小货轮兜底', 'switch', { help: '默认关闭。开始挂机并开启巨轮自动化后，优先参加符合普通规则的货轮。到指定时刻，今日领奖未达兜底目标且该舰队没有符合普通规则的目标时，按下方顺序选择中小货轮。关闭“只抢万吨货轮”时，普通规则仍可全天参加中小货轮。兜底使用独立奖励筛选，可在未匹配跟随名单时参与，仍遵守避战、外盟权限、进度、耐久、汽油和出征上限。' }),
+    configField('treasure.fallbackAfter', '兜底开始时间', 'time', { when: d => d.treasure.fallbackEnabled, help: '按北京时间每天从此时刻检查至当天结束。请按所在区服最后一轮万吨时间设置，默认 21:00。' }),
+    configField('treasure.fallbackTargetRewards', '兜底领奖目标', 'number', { when: d => d.treasure.fallbackEnabled, unit: '次 / 天', help: '以服务器今日已领奖次数为准，最多补至游戏每日领奖上限。达到目标后停止中小货轮兜底，“每次参与”模式也遵守此目标。' }),
+    configField('treasure.fallbackQualities', '兜底货轮优先级', 'priority', { when: d => d.treasure.fallbackEnabled, options: [['PURPLE', '中型货轮'], ['BLUE', '小型货轮']], itemLabel: '货轮类型', empty: '请选择至少一种兜底货轮。', help: '按列表从上到下选择类型，可移除不参加的类型。每种类型内再按对应奖励优先级匹配。' }),
+    configField('treasure.fallbackMediumRewardPriority', '中型货轮奖励优先级', 'priority', { when: d => d.treasure.fallbackEnabled && d.treasure.fallbackQualities.includes('PURPLE'), catalog: 'treasureRewards', itemLabel: '奖励', empty: '未筛选奖励，按货轮整体进度优先。', help: '按列表从上到下匹配奖励。添加后只参加含任一所选奖励的中型货轮，清空后接受所有奖励。“垃圾袋（任意品质）”匹配各品质垃圾袋。' }),
+    configField('treasure.fallbackSmallRewardPriority', '小型货轮奖励优先级', 'priority', { when: d => d.treasure.fallbackEnabled && d.treasure.fallbackQualities.includes('BLUE'), catalog: 'treasureRewards', itemLabel: '奖励', empty: '未筛选奖励，按货轮整体进度优先。', help: '按列表从上到下匹配奖励。添加后只参加含任一所选奖励的小型货轮，清空后接受所有奖励。“垃圾袋（任意品质）”匹配各品质垃圾袋。' }),
     configField('treasure.avoidNames', '避战玩家名称', 'names', { help: '每行填写一位玩家的完整昵称，按名称完全匹配，同名玩家都会避开。只判断货轮当前守军和战斗者；历史排名中已离开的玩家不会单独触发。避战优先于跟随。', placeholder: '每行输入一位玩家的完整昵称' }),
     configField('treasure.avoidPlayerIds', '已有避战角色 ID', 'names', { when: d => d.treasure.avoidPlayerIds.length > 0, help: '保留此前保存的精确角色 ID，每行一个。可删除不再需要的条目；新玩家请在上方填写名称。', placeholder: '每行一个已有的完整角色 ID' }),
     configField('treasure.allowHostile', '允许争夺其他联盟货轮', 'switch', { help: '默认关闭，只参与无人占领或本联盟货轮。开启后可能与其他联盟交战，跟随名单也受此开关约束。' }),
@@ -794,9 +800,9 @@ function configErrors(error, { focus = true } = {}) {
 
 function configCheckForm({ focus = true } = {}) {
   for (const [key, widget] of configEditor.widgets) {
-    for (const input of widget.row.querySelectorAll('input[type=number]')) {
+    for (const input of widget.row.querySelectorAll('input[type=number], input[type=time]')) {
       if (!input.checkValidity()) {
-        configEditor.errors[key] = '请填写有效整数，并遵守输入范围。'; widget.row.hidden = false;
+        configEditor.errors[key] = input.type === 'time' ? '请填写有效的北京时间。' : '请填写有效整数，并遵守输入范围。'; widget.row.hidden = false;
         widget.control?.setAttribute('aria-invalid', 'true'); widget.error.textContent = configEditor.errors[key]; widget.error.hidden = false;
         if (focus) { configActivate(widget.spec.category); configActivateGroup(widget.spec.groupId); input.focus(); input.reportValidity(); }
         return false;
@@ -969,29 +975,37 @@ function configMultiselect(spec, id) {
 
 function configPriorityEditor(spec, id) {
   const root = el('div'); root.id = id; root.tabIndex = -1; root.setAttribute('role', 'group'); root.setAttribute('aria-label', spec.label);
-  const options = configEditor.data.catalog.demandSources ?? [];
+  const options = spec.options?.map(([value, label]) => ({ value, label })) ?? configEditor.data.catalog[spec.catalog || 'demandSources'] ?? [];
+  const factoryPriority = spec.key === 'factory.demandPriority';
+  const itemLabel = spec.itemLabel || '需求来源';
   function paint(focusKey, direction) {
     clear(root); const values = configGet(spec.key); const list = el('ol', 'config-order-list'); let focus;
     values.forEach((value, index) => {
       const label = options.find(item => item.value === value)?.label || value;
       const row = el('li', 'config-order-row'); row.append(el('span', 'config-order-num', String(index + 1)), el('span', 'config-order-name', label));
       const tools = el('div', 'config-order-tools');
-      const speed = el('label', 'config-option'); const check = el('input'); check.type = 'checkbox'; check.checked = configGet('factory.speedUpSources').includes(value); check.setAttribute('aria-label', label + '工厂加速');
-      check.onchange = () => { const current = configGet('factory.speedUpSources'); configSet('factory.speedUpSources', check.checked ? [...current, value] : current.filter(item => item !== value)); };
-      speed.append(check, el('span', '', '工厂加速'));
+      if (factoryPriority) {
+        const speed = el('label', 'config-option'); const check = el('input'); check.type = 'checkbox'; check.checked = configGet('factory.speedUpSources').includes(value); check.setAttribute('aria-label', label + '工厂加速');
+        check.onchange = () => { const current = configGet('factory.speedUpSources'); configSet('factory.speedUpSources', check.checked ? [...current, value] : current.filter(item => item !== value)); };
+        speed.append(check, el('span', '', '工厂加速')); tools.append(speed);
+      }
       const move = offset => { const next = [...values]; [next[index], next[index + offset]] = [next[index + offset], next[index]]; configSet(spec.key, next); paint(value, offset); };
       const up = configButton('上移', () => move(-1)); up.disabled = index === 0; up.setAttribute('aria-label', label + '上移');
       const down = configButton('下移', () => move(1)); down.disabled = index === values.length - 1; down.setAttribute('aria-label', label + '下移');
-      const remove = configButton('移除', () => { configSet(spec.key, values.filter(item => item !== value)); configSet('factory.speedUpSources', configGet('factory.speedUpSources').filter(item => item !== value)); paint(); }, 'remove'); remove.setAttribute('aria-label', '移除' + label);
-      tools.append(speed, up, down, remove); row.append(tools); list.append(row);
+      const remove = configButton('移除', () => {
+        configSet(spec.key, values.filter(item => item !== value));
+        if (factoryPriority) configSet('factory.speedUpSources', configGet('factory.speedUpSources').filter(item => item !== value));
+        paint();
+      }, 'remove'); remove.setAttribute('aria-label', '移除' + label);
+      tools.append(up, down, remove); row.append(tools); list.append(row);
       if (value === focusKey) focus = direction === -1 ? up : down;
     });
-    if (!values.length) list.append(el('li', 'config-empty', '尚未选择需求来源。当前只按备货水位生产。'));
-    const add = el('div', 'config-add'); const select = el('select', 'config-select'); select.setAttribute('aria-label', '添加需求来源');
+    if (!values.length) list.append(el('li', 'config-empty', spec.empty || '尚未选择需求来源。当前只按备货水位生产。'));
+    const add = el('div', 'config-add'); const select = el('select', 'config-select'); select.setAttribute('aria-label', '添加' + itemLabel);
     const available = options.filter(item => !values.includes(item.value));
-    const blank = el('option', '', available.length ? '选择要添加的需求来源' : '已添加全部来源'); blank.value = ''; select.append(blank);
+    const blank = el('option', '', available.length ? '选择要添加的' + itemLabel : '已添加全部' + itemLabel); blank.value = ''; select.append(blank);
     for (const item of available) { const option = el('option', '', item.label); option.value = item.value; select.append(option); }
-    const button = configButton('添加', () => { if (select.value) { configSet(spec.key, [...values, select.value]); paint(); } }); button.setAttribute('aria-label', '添加所选需求来源'); button.disabled = true;
+    const button = configButton('添加', () => { if (select.value) { configSet(spec.key, [...values, select.value]); paint(); } }); button.setAttribute('aria-label', '添加所选' + itemLabel); button.disabled = true;
     select.disabled = !available.length; select.onchange = () => { button.disabled = !select.value; };
     add.append(select, button); root.append(list, add); if (focus && !focus.disabled) focus.focus();
   }
@@ -1186,7 +1200,7 @@ async function configPreview() {
     root.append(el('p', 'config-help', (data.scopeLabel || '当前分类') + (data.viewOnly ? ' · 只读' : ' · 可排 '+data.actions.length+' 项') + ' 检查时间：' + new Date(data.checkedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })));
     if (data.treasure) {
       const state = data.treasure;
-      root.append(el('p', 'config-help', `读到 ${data.counts?.treasures ?? 0} 艘范围内货轮、${data.counts?.fleets ?? 0} 支舰队；汽油 ${state.fuel ?? '未确认'}，每队费用 ${state.fuelPerFleet ?? '未确认'}；今日领奖 ${state.todayRewardTimes ?? '未确认'} / ${state.rewardLimit ?? '未确认'}。`));
+      root.append(el('p', 'config-help', `读到 ${data.counts?.treasures ?? 0} 艘候选货轮、${data.counts?.fleets ?? 0} 支舰队，汽油 ${state.fuel ?? '未确认'}，每队费用 ${state.fuelPerFleet ?? '未确认'}，今日领奖 ${state.todayRewardTimes ?? '未确认'} / ${state.rewardLimit ?? '未确认'}。`));
       const mode = el('p', 'config-help title-with-help', '参与模式：' + (state.participationMode === 'always' ? '每次参与' : '打满就停'));
       mode.append(makeHelpTip('当前参与模式', state.participationMode === 'always' ? '领奖已满仍可参加，其他限制照常生效；不会增加游戏奖励次数。' : '领奖已满后不再派遣或维修。')); root.append(mode);
       if (state.targets?.length) root.append(table(['货轮', '本人实际进度 / 上限', '参与条件'], state.targets.map(target => [target.label,

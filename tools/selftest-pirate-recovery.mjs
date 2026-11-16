@@ -138,6 +138,21 @@ export function testPirateRecovery() {
     assert.equal(resumed.keyRecords()[key].details.outcome,'lost');
     assert.equal(resumed.confirmedCounters().piratePetrol,300);
     assert.equal(fleetRecordReason(resumed.keyRecords(),'1远征船'),'');
+    const rotated = path.join(dir, 'rotated.log');
+    fs.writeFileSync(rotated + '.1', lines.slice(0, 5).join('\n') + '\n');
+    fs.writeFileSync(rotated, lines.slice(5).join('\n') + '\n');
+    const rotationLedger = createUsageLedger(accountId, { file: path.join(dir, 'rotation.json'), now: () => at });
+    rotationLedger.reserve({ piratePetrol: 300 }, {}, {}, { uniqueKey: key, details });
+    assert.equal(recoverPirateHunts(new EventEmitter(), player, rotationLedger, accountId, rotated).length, 1);
+    assert.equal(rotationLedger.keyRecords()[key].details.outcome, 'lost');
+    assert.equal(rotationLedger.confirmedCounters().piratePetrol, 300);
+    const longLog = path.join(dir, 'long-lines.log');
+    const longLines = [...lines.slice(0, 4), line(7.005, '[MyFleetsResponse] seq=1 ' + JSON.stringify({ padding: '舰队'.repeat(20000) })), ...lines.slice(4)];
+    fs.writeFileSync(longLog, longLines.join('\n') + '\n');
+    const longLedger = createUsageLedger(accountId, { file: path.join(dir, 'long-lines.json'), now: () => at });
+    longLedger.reserve({ piratePetrol: 300 }, {}, {}, { uniqueKey: key, details });
+    assert.equal(recoverPirateHunts(new EventEmitter(), player, longLedger, accountId, longLog).length, 1);
+    assert.equal(longLedger.keyRecords()[key].details.outcome, 'lost');
   } finally {
     for (const name of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, name));
     fs.rmdirSync(dir);

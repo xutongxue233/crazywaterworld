@@ -1,4 +1,4 @@
-import { createTraceLog } from './trace-log.mjs';
+import { createTraceLog, traceJson } from './trace-log.mjs';
 import { createResourceUpdater } from './resource-updater.mjs';
 import {checkFleetSettlement,invalidateFleetReports} from './fleet-settlement.mjs';
 import { recoverPirateHunts } from './pirate-recovery.mjs';
@@ -96,12 +96,12 @@ const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
   'AchievementInfoRequest', 'EmailBoxRequest', 'AfkInfoRequest', 'OnWaterRequest', 'MyResFieldsRequest', 'MonthCardRequest',
 ].includes(name));
 // 协议帧不再进界面，但仍然要能事后查。默认只写文件，CW_DEBUG=1 时才同时打到终端。
-const TRACE_PATH = path.resolve(import.meta.dirname, '../data/protocol.log');
+const TRACE_PATH = path.join(DATA_DIR, 'protocol.log');
 const TRACE_MAX_BYTES = (() => {
   const value = Number(process.env.CW_PROTOCOL_LOG_MAX_BYTES);
   return Number.isSafeInteger(value) && value > 0 ? value : 5 * 1024 * 1024;
 })();
-const traceLog = createTraceLog(TRACE_PATH, { maxBytes: TRACE_MAX_BYTES });
+const FULL_TRACE_MESSAGE = /Fleet|Pirate|TreasureLoot|CampaignReport|DailyTaskInfo|Fishing|GainBig/;
 
 const STATE_TEXT = {
   IDLE: '未连接',
@@ -124,6 +124,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   // 保留测试/嵌入调用方注入延迟的能力；正常运行时由当前账号的登录设置决定。
   const injectedRecoveryDelay = typeof recoveryDelayMs === 'function' ? recoveryDelayMs : null;
   const protocol = loadProtocol();
+  const traceLog = createTraceLog(TRACE_PATH, { maxBytes: TRACE_MAX_BYTES });
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
@@ -171,6 +172,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     const display = describeLogError(message, extra);
     const detail = [extra?.diagnostic, display.detail].filter(Boolean).join('\n');
     const entry = { id: ++logId, t: Date.now(), level, category: classifyLog(display.message, extra), message: display.message, detail: detail || undefined, extra, account: session?.id ?? null };
+    trace(session, 'business', { level, category: entry.category, message, detail, extra });
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
@@ -185,10 +187,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   // 协议层细节（帧、序号、字节数、原始 JSON）只落盘，不进运行记录。
-  function trace(session, line) {
-    const text = `${new Date().toISOString()} [${session.id.slice(0, 8)}] ${line}\n`;
-    if (process.env.CW_DEBUG === '1') process.stdout.write(text);
-    traceLog.write(text);
+  function trace(session, line, data) {
+    try {
+      const detail = data === undefined ? '' : ' ' + traceJson(data);
+      const text = `${new Date().toISOString()} [${session?.id.slice(0, 8) ?? 'system'}] ${line}${detail}\n`;
+      traceLog.write(text);
+      if (process.env.CW_DEBUG === '1') process.stdout.write(text);
+    } catch { /* 诊断记录失败不得影响请求、调度与网页日志。 */ }
   }
 
   function enqueue(session, work, label) {
@@ -439,9 +444,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         }))));
       }
     });
-    instance.on('state', ({ state }) => emit(session, 'state', STATE_TEXT[state] ?? state));
-    instance.on('frame', ({ dir, name, seq, bytes }) => trace(session, `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`));
-    instance.on('message', ({ seq, name, body }) => trace(session, `[${name}] seq=${seq} ${JSON.stringify(body).slice(0, 400)}`));
+    instance.on('state', (event) => {
+      trace(session, 'state', event);
+      emit(session, 'state', STATE_TEXT[event.state] ?? event.state);
+    });
+    instance.on('frame', ({ dir, name, seq, bytes, body }) => trace(session,
+      `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`,
+      dir === 'out' && name !== 'LoginRequest' ? body : undefined));
+    instance.on('message', ({ seq, name, body }) => {
+      try {
+        const data = traceJson(body);
+        trace(session, `[${name}] seq=${seq} ${FULL_TRACE_MESSAGE.test(name) || data.length <= 400 ? data : data.slice(0, 400) + ' [正文已截断]'}`);
+      } catch { /* 记录失败不影响回包处理。 */ }
+    });
+    instance.on('diagnostic', data => trace(session, 'diagnostic', data));
     instance.on('pong', ({ latencyMs, offsetMs }) => trace(session, `pong ${latencyMs}ms offset=${offsetMs}ms`));
     instance.on('drop', ({ name, reason }) => emit(session, reason === 'duplicate' ? 'info' : 'warn',
       reason === 'duplicate' ? '已忽略服务器重复发送的消息' : '服务器消息序号不连续，已跳过这条消息',
@@ -452,7 +468,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       instance.fatalReason = reason;
       emit(session, 'error', message);
     });
-    instance.on('error', (error) => emit(session, 'error', error.message));
+    instance.on('error', (error) => {
+      trace(session, 'error', error);
+      emit(session, 'error', error.message);
+    });
     instance.on('close', () => {
       connectionLost(session, instance);
       emit(session, 'state', '连接已断开');
@@ -1087,13 +1106,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           if (category === 'world') {
             const snapshot = await readTreasureLoot(client, protocol, config, session.player, { preferences: settings.treasure });
             const ledger = usageFor(session);
-            const pending = ledger.pendingCounters();
+            const pendingFuel = pendingPetrol(ledger);
             let reservedFleetIds = [];
             if (cityWarEnabled(settings)) {
               const war = await readCityWar(client, protocol, config, session.player, settings.cityWar);
-              reservedFleetIds = planCityWar(war, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) }).reservedFleetIds;
+              reservedFleetIds = war.reason && settings.cityWar.reserveDuringWar ? [...settings.cityWar.fleetIds]
+                : planCityWar(war, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: pendingFuel }).reservedFleetIds;
             }
-            const plan = planTreasureLoot(snapshot, config, settings, { usage, keys: ledger.keyRecords(), pendingFuel: (pending.treasurePetrol ?? 0) + (pending.cityWarPetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0), reservedFleetIds });
+            const task = settings.treasure.follow ? 'follow' : 'treasure';
+            const unavailableFleets = Object.fromEntries(settings.treasure.fleetIds.map(id => [id,
+              dispatchReservationReason(client, settings, task, id, { ignoreOwners: ['cityWar'] })]));
+            const plan = planTreasureLoot(snapshot, config, settings, { usage, keys: ledger.keyRecords(), pendingFuel, reservedFleetIds, unavailableFleets });
             return { ...output(plan, plan.counts, '万吨巨轮'), treasure: { targets: plan.targets, fleets: plan.fleets, fuel: snapshot.fuel,
               fuelPerFleet: snapshot.fuelPerFleet, todayRewardTimes: snapshot.todayRewardTimes, rewardLimit: snapshot.rewardLimit,
               participationMode: settings.treasure.participationMode, nextRefreshTime: snapshot.nextRefreshTime } };
@@ -2536,7 +2559,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         session.pirateAdvance.stop('控制台已关闭'); session.stages.stop('控制台已关闭'); session.mutualAid.stop('控制台已关闭'); for (const task of session.trials.values()) task.stop('控制台已关闭');
         session.client?.stop();
       }
-      return new Promise((resolve) => server.close(resolve));
+      return new Promise((resolve) => server.close(() => { traceLog.close().then(resolve); }));
     },
     emit,
     sessions,

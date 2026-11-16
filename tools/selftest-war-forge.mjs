@@ -112,6 +112,24 @@ await check('城战汽油按客户端错列坐标距离及场景档位计算', (
   assert.equal(cityPetrolCost(f.map, 1, 2, [{ dist: 1, cost: .4 }, { dist: 100, cost: .5 }]), 50);
   assert.equal(cityPetrolCost(f.map, 1, 99, [{ dist: 1, cost: .4 }]), null);
 });
+await check('城战读取期间新出现的首杀占用不能被旧空闲快照释放', async () => {
+  const f = warForgeFixture(), s = warForgeSettings(), usage = ledger();
+  s.cityWar.fleetIds = ['1远征船'];
+  const key = 'pirate-first:' + f.player.worldId + ':1:1:201';
+  const request = f.client.request;
+  f.client.request = async (...args) => {
+    const response = await request(...args);
+    if (args[0] === 'MyFleetsRequest' && !usage.hasKey(key)) {
+      const ticket = usage.reserve({ piratePetrol: 300 }, {}, {}, { uniqueKey: key,
+        details: { kind: 'pirateFirst', world: String(f.player.worldId), buildingId: '1远征船', outcome: 'started' } });
+      usage.confirm(ticket);
+    }
+    return response;
+  };
+  await warRun(f, s, usage);
+  assert.notEqual(usage.keyRecords()[key].details.active, false);
+  assert.equal(f.client.writes.length, 0);
+});
 await check('真实登录协议VIP额度动态读取，未用完不接续，不硬编码4', async () => {
   const f = warForgeFixture(), s = warForgeSettings();
   assert.equal((await warRead(f, s)).nativeLimit, 4); assert.equal((await warPlan(f, s)).actions.length, 2);

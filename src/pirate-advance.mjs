@@ -1,4 +1,4 @@
-import {recordsInWorld, checkFleetSettlement} from './fleet-settlement.mjs';
+import {recordsInWorld, checkFleetSettlement, settleFleetSnapshot} from './fleet-settlement.mjs';
 import { fleetRecordReason, reserveDispatch, dispatchReservationReason } from './fleet-availability.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { inspectHunt, startPirateHunt } from './pirates.mjs';
@@ -103,6 +103,7 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
    await checkFleetSettlement(client,player,ledger);
    if(!live())return{stop:'执行条件已变化，停止推进'};
    await prepareDispatch();
+   const baseline=ledger.keyRecords();
    const snap=await inspectHunt(client,config,player);
    if(!live())return{stop:'执行条件已变化，停止推进'};
    if(!Array.isArray(snap.records)||!Array.isArray(snap.ownFleets))return{stop:snap.view.reason||'首杀记录或舰队信息不完整'};
@@ -110,9 +111,12 @@ export async function runPirateAdvance({client,config,player,options,ledger,getS
     const d=record.details;
     if(d && snap.records.some(r=>r.type===d.type && r.maxKilledLevel>=d.level))update(key,{status:'won'});
    }
+   settleFleetSnapshot(ledger,{worldId:world,fleets:snap.ownFleets,kills:snap.records,
+    now:Math.floor((Date.now()+(client.serverClockOffsetMs||0))/1000),kinds:['pirateFirst'],baseline});
    if(active) {
     const record=ledger.keyRecords()[active.key];const outcome=record?.details?.outcome??active.result;
     if(outcome==='unknown'){state.halted=true;return{stop:'出征或战果未确认，已停止并保留派遣记录'};}
+    if(record?.details?.active===false&&!['won','lost'].includes(outcome)){state.halted=true;return{stop:'舰队已归队，首杀战果仍待确认，已停止推进并保留派遣记录'};}
     const fleet=snap.ownFleets.find(f=>f.buildingId===active.buildingId);
     if(outcome==='won'||outcome==='lost') {
      if(!active.counted){if(outcome==='won'){state.wins++;state.failures=0;}else state.failures++;active.counted=true;}

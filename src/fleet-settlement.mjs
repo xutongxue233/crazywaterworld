@@ -1,6 +1,7 @@
 import { exactAutomationId } from './automation-policy.mjs';
 import { normalize } from './worlds.mjs';
 import { reconcilePirateFlights } from './pirates.mjs';
+import { emitDiagnostic } from './trace-log.mjs';
 
 const fleetKey = /^(?:radar-send|world-boss|pirate-first|cityWar|treasureRepair|treasureFollow|treasure|silicon|silicon-repair|silicon-retreat|silicon-speed):(\d+):/;
 const repairKinds = new Set(['cityRepair', 'treasureRepair']);
@@ -17,11 +18,17 @@ export function recordsInWorld(records, worldId) {
     const d = record.details;
     // 早期的货轮和城战用键保存舰队编号。只恢复键能够确定的身份。
     const cargo = /^treasure:(\d+):(\d+):([1-9]\d*)$/.exec(key);
+    const pirate = /^pirate-first:(\d+):(\d+):(\d+):(\d+)$/.exec(key);
     const slot = /^(cityWar|treasureRepair):(\d+):([1-9]\d*)$/.exec(key);
     if (cargo && (!d?.kind || !d.buildingId || !d.uid))
       selected[key] = {
         ...record,
         details: { kind: 'treasureDispatch', uid: cargo[2], buildingId: cargo[3] + '远征船', ...d }
+      };
+    else if (pirate && !d?.kind)
+      selected[key] = {
+        ...record,
+        details: { kind: 'pirateFirst', world: pirate[1], type: Number(pirate[2]), level: Number(pirate[3]), ...d }
       };
     else if (slot && (!d?.kind || !d.buildingId))
       selected[key] = {
@@ -112,7 +119,7 @@ export function outstandingFleets(records, worldId) {
 }
 
 function personalBattleMatches(details, report) {
-  const at = normalize(report.createTime);
+  const at = normalize(report?.createTime);
   if (!integer(at)) return false;
   if (details.kind === 'worldBoss')
     return (
@@ -187,9 +194,11 @@ export function settleFleetSnapshot(
       continue;
     }
     if (d.kind === 'pirateFirst') {
+      let outcome = d.outcome;
       // 个人首杀记录本身就是权威胜利证据；不能再要求此前已经收到派遣确认。
       if (kills?.some((k) => k.type === d.type && k.maxKilledLevel >= d.level)) {
         ledger.resolveKey(key, true, { ...d, outcome: 'won' });
+        outcome = 'won';
         changes.push({ key, reason: '个人首杀等级已确认' });
       } else if (r.confirmed && home && d.ownBattle && integer(d.battleAt)) {
         const matches = (reports ?? []).filter((report) => personalBattleMatches(d, report));
@@ -211,10 +220,19 @@ export function settleFleetSnapshot(
             outcome: 'lost',
             reportId: exactAutomationId(matches[0].uid)
           });
+          outcome = 'lost';
           changes.push({ key, reason: '个人战报确认首杀战败并返航' });
         }
       }
-      // 单靠空闲或全服广播不能核销未知首杀。首杀模块另行核实参战格、目标和个人战报。
+      // 本人舰队归队可以解除占用，战果、目标防重和未知汽油仍保存在原记录中。
+      // 未确认出征的请求先保留原有 15 分钟战果等待窗口，避免发送后状态尚未同步就释放。
+      const sentAt = d.sentAt ?? ledger.reservationTime?.(key);
+      const timedOut = Number.isFinite(sentAt) && integer(now) && now * 1000 - sentAt >= 900000;
+      if (home && d.active !== false && !['won', 'lost'].includes(outcome) && (r.confirmed || timedOut)) {
+        const reason = r.confirmed ? '首杀舰队已归队，战果继续待核对' : '首杀请求超过等待窗口且舰队已归队';
+        ledger.updateKeyDetails(key, { ...d, active: false, releaseReason: reason, releasedAt: now });
+        changes.push({ key, reason });
+      }
       continue;
     }
     if (d.kind === 'treasureDispatch') {
@@ -270,7 +288,7 @@ export function settleFleetSnapshot(
   return changes;
 }
 
-// 缺少终态时才读取个人战报。首杀的同一战斗时间若对应多份战报，继续保留占用。
+// 战报分轮读取。首杀必须读完整列表后才能确认同一战斗时间只有一份战报。
 const reportCache = new WeakMap();
 export function invalidateFleetReports(client) {
   reportCache.delete(client);
@@ -278,45 +296,59 @@ export function invalidateFleetReports(client) {
 async function completionReports(client, worldId, records) {
   const signature = JSON.stringify([worldId, ...records.map((r) => [r.id, r.details.battleAt])]);
   const previous = reportCache.get(client);
-  if (previous?.signature === signature && Date.now() - previous.at < 60000) return previous.reports;
-  const found = new Map();
-  let total = null,
-    received = 0,
-    complete = false;
-  for (let pageNo = 0; pageNo < 200; pageNo++) {
-    const page = await client.request('CampaignReportsRequest', { pageNo }, 'CampaignReportsResponse', 8000);
-    if (
-      !Array.isArray(page?.reports) ||
-      !integer(page.total) ||
-      page.total < 0 ||
-      (total !== null && total !== page.total)
-    )
-      break;
-    total = page.total;
-    received += page.reports.length;
-    for (const report of page.reports)
-      if (records.some((r) => personalBattleMatches(r.details, report))) {
-        const id = exactAutomationId(report.uid);
-        if (id) found.set(id, report);
-        else if (report.type === 5) found.set('boss:' + report.worldBoss.bossId, report);
-      }
-    if (received >= total) {
-      complete = true;
+  if (previous?.signature === signature && previous.finishedAt !== null && Date.now() - previous.finishedAt < 60000)
+    return previous.reports;
+  const scan = previous?.signature === signature && previous.finishedAt === null ? previous : {
+    signature, total: null, received: 0, pageNo: 0, found: new Map(), seenIds: new Set(),
+    consistent: true, complete: false, finishedAt: null, reports: []
+  };
+  reportCache.set(client, scan);
+  const deadline = Date.now() + 8000;
+  for (let count = 0; count < 2 && scan.pageNo < 200 && Date.now() < deadline; count++) {
+    const page = await client.request('CampaignReportsRequest', { pageNo: scan.pageNo }, 'CampaignReportsResponse',
+      Math.max(1, deadline - Date.now()));
+    // 收到新战报推送时整次扫描作废，避免把前后两个列表拼成唯一战报证据。
+    if (reportCache.get(client) !== scan) return [];
+    if (!Array.isArray(page?.reports) || !integer(page.total) || page.total < 0) {
+      scan.finishedAt = Date.now();
       break;
     }
-    if (!page.reports.length) break;
+    if (scan.total !== null && scan.total !== page.total) {
+      reportCache.delete(client);
+      return [];
+    }
+    scan.total = page.total;
+    scan.received += page.reports.length;
+    scan.pageNo++;
+    for (const report of page.reports) {
+      const id = exactAutomationId(report?.uid);
+      if (!id || scan.seenIds.has(id)) scan.consistent = false;
+      else scan.seenIds.add(id);
+      if (records.some((r) => personalBattleMatches(r.details, report))) {
+        if (id) scan.found.set(id, report);
+        else if (report.type === 5) scan.found.set('boss:' + report.worldBoss.bossId, report);
+      }
+    }
+    if (scan.received >= scan.total) {
+      scan.complete = scan.consistent && scan.seenIds.size === scan.total;
+      scan.finishedAt = Date.now();
+      break;
+    }
     if (
+      !page.reports.length ||
       records.every(
         (r) =>
           r.details.kind === 'worldBoss' &&
-          [...found.values()].some((rep) => personalBattleMatches(r.details, rep))
+          [...scan.found.values()].some((rep) => personalBattleMatches(r.details, rep))
       )
-    )
+    ) {
+      scan.finishedAt = Date.now();
       break;
+    }
   }
-  const reports = [...found.values()].filter((r) => r.type === 5 || complete);
-  reportCache.set(client, { signature, reports, at: Date.now() });
-  return reports;
+  if (scan.pageNo >= 200) scan.finishedAt = Date.now();
+  scan.reports = [...scan.found.values()].filter((r) => r.type === 5 || scan.complete);
+  return scan.reports;
 }
 
 const checking = new WeakMap();
@@ -338,10 +370,12 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
   if (!outstanding.length) return [];
   const job = (async () => {
     const kinds = new Set(outstanding.map(([, record]) => record.details.kind));
+    const readErrors = [];
     const read = async (name) => {
       try {
         return await client.request(name + 'Request', {}, name + 'Response', 8000);
-      } catch {
+      } catch (error) {
+        readErrors.push({ request: name + 'Request', error: error.message });
         return null;
       }
     };
@@ -351,8 +385,27 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
       kinds.has('pirateFirst') ? read('PirateKillRecord') : null,
       kinds.has('treasureDispatch') ? read('TreasureLootList') : null
     ]);
-    if (!Array.isArray(own?.fleets) || !sameOwner() || client.connected === false) return [];
+    if (!Array.isArray(own?.fleets) || !sameOwner() || client.connected === false) {
+      emitDiagnostic(client, 'fleet-settlement', { worldId, readErrors, changes: [],
+        reason: !Array.isArray(own?.fleets) ? '未取得完整本人舰队列表' : '账号、区服或连接已变化' });
+      return [];
+    }
     const now = Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
+    const cargoIds = Array.isArray(cargo?.treasure)
+      ? cargo.treasure.map((t) => exactAutomationId(t.uid))
+      : null;
+    const snapshot = {
+      worldId,
+      fleets: own.fleets,
+      events: radarEvents(radar?.radarInfo),
+      kills: pirate?.records,
+      cargoUids:
+        cargoIds && cargoIds.every(Boolean) && new Set(cargoIds).size === cargoIds.length ? cargoIds : null,
+      now,
+      baseline
+    };
+    // 先按本人归队状态释放舰队，再补读战果，历史战报分页不能延长舰队占用。
+    const changes = settleFleetSnapshot(ledger, snapshot);
     let reports;
     const needReport = outstanding
       .map(([, r]) => r)
@@ -370,26 +423,28 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
     if (needReport.length) {
       try {
         reports = await completionReports(client, worldId, needReport);
-      } catch {
-        /* 读不到战报时保留原占用。 */
+      } catch (error) {
+        readErrors.push({ request: 'CampaignReportsRequest', error: error.message });
       }
     }
-    if (!sameOwner() || client.connected === false) return [];
-    const cargoIds = Array.isArray(cargo?.treasure)
-      ? cargo.treasure.map((t) => exactAutomationId(t.uid))
-      : null;
-    const changes = settleFleetSnapshot(ledger, {
-      worldId,
-      fleets: own.fleets,
-      events: radarEvents(radar?.radarInfo),
-      kills: pirate?.records,
-      cargoUids:
-        cargoIds && cargoIds.every(Boolean) && new Set(cargoIds).size === cargoIds.length ? cargoIds : null,
-      reports,
-      now,
-      baseline
+    if (!sameOwner() || client.connected === false) return changes;
+    if (reports?.length) changes.push(...settleFleetSnapshot(ledger, { ...snapshot, reports }));
+    const current = ledger.keyRecords();
+    reconcilePirateFlights(client, current, worldId);
+    const scan = needReport.length ? reportCache.get(client) : null;
+    emitDiagnostic(client, 'fleet-settlement', {
+        worldId, now, readErrors, changes,
+        reportScan: scan ? { pageNo: scan.pageNo, total: scan.total, received: scan.received,
+          uniqueReports: scan.seenIds.size, consistent: scan.consistent, complete: scan.complete,
+          finishedAt: scan.finishedAt } : null,
+        records: outstanding.map(([key, before]) => ({ key, before, after: current[key] ?? null })),
+        fleets: own.fleets.map(f => ({ buildingId: f.buildingId, state: f.state, curGridIdx: f.curGridIdx,
+          targetGridIdx: f.targetGridIdx, treasureLootUid: exactAutomationId(f.treasureLootUid),
+          chipWarRewardTs: f.chipWar?.rewardTs })),
+        kills: pirate?.records,
+        reports: reports?.map(r => ({ uid: exactAutomationId(r.uid), type: r.type, createTime: normalize(r.createTime),
+          scenarioId: r.scenarioId, pirate: r.pirate, worldBoss: r.worldBoss, win: r.win }))
     });
-    reconcilePirateFlights(client, ledger.keyRecords(), worldId);
     return changes;
   })();
   checking.set(client, job);

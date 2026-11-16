@@ -9,6 +9,9 @@ import { loadProtocol } from '../src/proto.mjs';
 import { readTreasureLoot, planTreasureLoot, runTreasureLoot, treasureDispatchKey } from '../src/treasure-loot.mjs';
 import { runLoop } from '../src/loop.mjs';
 import { treasureFixture, treasureSettings } from './fixtures/treasure-loot.mjs';
+import { treasureCycleFixture, treasureCycleSettings } from './fixtures/treasure-cycle.mjs';
+import { readWorldTarget } from '../src/world-target.mjs';
+import { reserveDispatch } from '../src/fleet-availability.mjs';
 
 const parent = path.join(os.tmpdir(),'cw-treasure-test-runs');
 fs.mkdirSync(parent, { recursive: true });
@@ -25,6 +28,23 @@ async function preview(fixture, settings, options) {
 }
 async function run(fixture, settings, usage = ledger(), options = {}) {
   return runTreasureLoot(fixture.client, fixture.protocol, fixture.config, fixture.player, { getSettings: () => settings, ledger: usage, ...options });
+}
+
+function fallbackFixture() {
+  const f = treasureFixture(), settings = treasureSettings();
+  Object.assign(f.protocol.Color, { BLUE: 3, PURPLE: 4 });
+  f.state.targets = [
+    { ...structuredClone(f.state.targets[1]), uid: 81, color: 4, reward: { asset: [{ id: '精铁', num: 10 }] } },
+    { ...structuredClone(f.state.targets[1]), uid: 82, color: 4, reward: { asset: [{ id: '徽章经验', num: 10 }] } },
+    { ...structuredClone(f.state.targets[1]), uid: 83, color: 3, reward: { asset: [{ id: 'GOLD', num: 10 }] } },
+  ];
+  Object.assign(settings.treasure, { fallbackEnabled: true, fallbackAfter: '00:00' });
+  return { ...f, settings };
+}
+
+async function fallbackPreview(f, options) {
+  const snapshot = await readTreasureLoot(f.client, f.protocol, f.config, f.player, { preferences: f.settings.treasure });
+  return planTreasureLoot(snapshot, f.config, f.settings, options);
 }
 
 try {
@@ -137,6 +157,186 @@ try {
     s.treasure.rewardItems = ['紫芯片宝箱']; p = await preview(f, s); assert.ok(p.actions.every(a => a.body.uid === 71));
     s.treasure.maxProgress = 20; assert.equal((await preview(f, s)).actions.length, 0);
     s.treasure.fleetIds = []; assert.equal((await preview(f, s)).actions.length, 0);
+  });
+
+  await check('兜底按北京时间到点启用，默认关闭且午夜重新等待', async () => {
+    const f = fallbackFixture(); f.settings.treasure.fallbackAfter = '21:00';
+    const day = Math.floor((Date.now() / 1000 + 28800) / 86400) * 86400 - 28800;
+    for (const [minute, count] of [[1259, 0], [1260, 2], [1439, 2], [1440, 0]]) {
+      f.client.serverClockOffsetMs = (day + minute * 60) * 1000 - Date.now();
+      assert.equal((await fallbackPreview(f)).actions.length, count);
+    }
+    f.settings.treasure.fallbackAfter = '00:00'; f.settings.treasure.fallbackEnabled = false;
+    assert.equal((await fallbackPreview(f)).actions.length, 0);
+    assert.equal(f.client.writes.length, 0);
+  });
+
+  await check('中小船与各自奖励按用户顺序匹配，万吨继续优先', async () => {
+    const f = fallbackFixture(), p = f.settings.treasure;
+    p.fallbackMediumRewardPriority = ['徽章经验', '精铁'];
+    assert.deepEqual((await fallbackPreview(f)).actions.map(a => a.targetUid), [82, 81]);
+    p.fallbackQualities = ['BLUE', 'PURPLE'];
+    assert.deepEqual((await fallbackPreview(f)).actions.map(a => a.targetUid), [83, 82]);
+    p.fallbackSmallRewardPriority = ['不存在的奖励']; p.fallbackMediumRewardPriority = ['精铁'];
+    assert.deepEqual((await fallbackPreview(f)).actions.map(a => a.targetUid), [81]);
+    f.state.targets.push({ ...structuredClone(f.state.targets[0]), uid: 90, color: 5 });
+    assert.deepEqual((await fallbackPreview(f)).actions.map(a => a.targetUid), [90, 90]);
+    p.repeatAttack = false;
+    const keys = { [treasureDispatchKey(f.player.worldId, 90, '1远征船')]: { confirmed: true, details: { kind: 'treasureDispatch', buildingId: '1远征船', uid: 90 } } };
+    assert.deepEqual((await fallbackPreview(f, { keys })).actions.map(a => a.targetUid), [81, 90]);
+  });
+
+  await check('显式兜底使用独立奖励规则并在跟随无目标时接续', async () => {
+    const f = fallbackFixture();
+    Object.assign(f.settings.treasure, { follow: true, autoJoin: false, followNames: ['未出现的盟友'], rewardItems: ['橙装材料自选包'], fallbackMediumRewardPriority: ['精铁'] });
+    const result = await run(f, f.settings);
+    assert.deepEqual(f.client.writes.map(a => a.body.uid), [81, 83]);
+    assert(result.results.every(r => r.step.mode === 'fallback' && r.status === 'confirmed'));
+    assert.match(result.results[0].step.label, /中型货轮/);
+    assert.match(result.results[1].step.label, /小型货轮/);
+  });
+
+  await check('关闭只抢万吨后保留普通中小船规则，兜底时间和名额只约束兜底', async () => {
+    const f = fallbackFixture(), p = f.settings.treasure;
+    Object.assign(p, { onlyTenThousand: false, participationMode: 'always', fallbackTargetRewards: 1 });
+    f.state.stats.todayRewardTimes = 3;
+    let plan = await fallbackPreview(f);
+    assert.equal(plan.actions.length, 2);
+    assert(plan.actions.every(action => action.mode === 'auto'));
+    f.state.stats.todayRewardTimes = 0; p.rewardItems = ['GOLD'];
+    plan = await fallbackPreview(f);
+    assert.deepEqual(plan.actions.map(action => action.targetUid), [83, 83]);
+    assert(plan.actions.every(action => action.mode === 'auto'));
+    p.rewardItems = ['未出现的奖励'];
+    plan = await fallbackPreview(f);
+    assert.equal(plan.actions.length, 1);
+    assert.equal(plan.actions[0].mode, 'fallback');
+  });
+
+  await check('兜底奖励排序复用垃圾袋任意品质匹配，并受硅矿未知汽油约束', async () => {
+    const f = fallbackFixture();
+    f.config.tables.TreasureLootCfg.data.find(type => type.quality === 'PURPLE').rewardLib = [2005];
+    f.config.tables.TreasureLootRewardCfg = { data: [{ libId: 2005, reward: ['史诗补给材料', 2] }] };
+    f.config.tables.ItemCfg = { data: [{ id: '展示补给材料' }, { id: '史诗补给材料', type: '补给材料' }] };
+    f.state.targets[1].reward.asset = [{ id: '史诗补给材料', num: 2 }];
+    f.settings.treasure.fallbackMediumRewardPriority = ['展示补给材料', '精铁'];
+    assert.deepEqual((await fallbackPreview(f)).actions.map(action => action.targetUid), [82, 81]);
+    const usage = ledger(); usage.reserve({ siliconPetrol: f.state.fuel }, {}, {}, { uniqueKey: 'silicon-pending' });
+    await run(f, f.settings, usage);
+    assert.equal(f.client.writes.length, 0);
+  });
+
+  await check('兜底按服务端已领奖次数补足，包含在途和未知结果且满额即停', async () => {
+    const f = fallbackFixture(); f.state.stats.todayRewardTimes = 2;
+    assert.equal((await fallbackPreview(f)).actions.length, 1);
+    f.settings.treasure.participationMode = 'always'; f.state.stats.todayRewardTimes = 3;
+    assert.equal((await fallbackPreview(f)).actions.length, 0);
+    f.state.stats.todayRewardTimes = 0; f.settings.treasure.fallbackTargetRewards = 1;
+    assert.equal((await fallbackPreview(f)).actions.length, 1);
+    f.state.fleets[2].treasureLootUid = 83; f.state.fleets[2].state = 2;
+    assert.equal((await fallbackPreview(f)).actions.length, 0);
+    f.state.fleets[2].treasureLootUid = 0; f.state.fleets[2].state = 1;
+    const keys = { [treasureDispatchKey(f.player.worldId, 83, '3远征船')]: { confirmed: false, details: { kind: 'treasureDispatch', buildingId: '3远征船', uid: '83' } } };
+    assert.equal((await fallbackPreview(f, { keys })).actions.length, 0);
+    f.settings.treasure.fallbackTargetRewards = 100; f.settings.treasure.fleetIds.push('3远征船');
+    assert.equal((await fallbackPreview(f)).actions.length, 3);
+    f.state.stats.todayRewardTimes = 2;
+    assert.equal((await fallbackPreview(f)).actions.length, 1);
+  });
+
+  await check('兜底遵守避战、外盟、个人进度、整体进度、汽油和派遣限制', async () => {
+    for (const condition of ['avoid', 'hostile', 'personal', 'progress', 'fuel', 'limit', 'quota', 'unknown', 'busy']) {
+      const f = fallbackFixture(); f.state.targets = [f.state.targets[0]];
+      const target = f.state.targets[0], p = f.settings.treasure;
+      p.fleetIds = ['1远征船'];
+      const options = {};
+      if (condition === 'avoid' || condition === 'hostile') {
+        target.ownerGuildIdx = condition === 'hostile' ? 8 : 7; target.ownerFleetNum = 1;
+        f.state.defenders[81] = [{ name: '避战玩家', guildIdx: target.ownerGuildIdx, isNpc: false }];
+        if (condition === 'avoid') p.avoidNames = ['避战玩家'];
+      }
+      if (condition === 'personal') f.state.ranks[81] = [{ playerId: f.player.playerId, nickname: f.player.nickname, guildIdx: 7, progress: 20 }];
+      if (condition === 'progress') target.progress = 90;
+      if (condition === 'fuel') p.petrolReserve = f.state.fuel;
+      if (condition === 'limit') { p.dailyDispatchLimit = 1; options.usage = { counters: { treasureDispatches: 1 } }; }
+      if (condition === 'quota') f.state.stats.todayRewardTimes = null;
+      if (condition === 'unknown') f.client.onRequest = name => name === 'TreasureLootRankRequest' ? {} : undefined;
+      if (condition === 'busy') f.state.fleets[0].state = 3;
+      assert.equal((await fallbackPreview(f, options)).actions.length, 0, condition);
+    }
+  });
+
+  await check('兜底发送前重查目标次数、设置和万吨优先条件', async () => {
+    for (const change of ['quota', 'off', 'orange', 'priority']) {
+      const f = fallbackFixture(); f.settings.treasure.fleetIds = ['1远征船'];
+      f.client.onRequest = name => {
+        if (name !== 'WorldInfoRequest') return;
+        if (change === 'quota') f.state.stats.todayRewardTimes = 3;
+        if (change === 'off') f.settings.treasure.fallbackEnabled = false;
+        if (change === 'orange') f.state.targets.push({ ...structuredClone(f.state.targets[0]), uid: 90, color: 5 });
+        if (change === 'priority') f.settings.treasure.fallbackQualities = ['BLUE', 'PURPLE'];
+      };
+      await run(f, f.settings);
+      assert.equal(f.client.writes.length, 0, change);
+    }
+  });
+
+  await check('兜底沿用真实协议的维修循环，满额后停止备战维修', async () => {
+    const f = treasureCycleFixture(), s = treasureCycleSettings(), usage = ledger();
+    Object.assign(s.treasure, { fallbackEnabled: true, fallbackAfter: '00:00' });
+    assert.equal(f.protocol.Color.PURPLE, 4); assert.equal(f.protocol.Color.BLUE, 3);
+    f.state.targets[0].color = f.protocol.Color.PURPLE;
+    f.state.fleets[0].durability = 1500;
+    const first = await run(f, s, usage);
+    assert.equal(first.results[0].step.kind, 'treasureRepair');
+    assert.equal(first.results[0].step.mode, 'fallback');
+    f.finishRepair('1远征船');
+    await run(f, s, usage);
+    assert.deepEqual(f.client.writes.map(row => row.name), ['RepairFleetRequest', 'TreasureLootSendFleetsRequest']);
+    f.returnFromTreasure('1远征船', 1500); f.state.stats.todayRewardTimes = 3;
+    await run(f, s, usage);
+    assert.equal(f.client.writes.length, 2);
+  });
+
+  await check('兜底未知派遣重启防重，整轮挂机与地图预览使用同一规则', async () => {
+    const f = fallbackFixture(), file = path.join(directory, 'fallback-unknown.json');
+    f.settings.treasure.fallbackTargetRewards = 1;
+    f.client.onSend = async () => ({});
+    const first = await run(f, f.settings, ledger({ file }));
+    assert.equal(first.results[0].status, 'unknown');
+    await run(f, f.settings, ledger({ file }));
+    assert.equal(f.client.writes.length, 1);
+    const g = fallbackFixture(), usage = ledger();
+    const view = await readWorldTarget(g.client, g.protocol, g.config, g.player, g.settings, usage, { layer: 'treasure', key: 'treasure-81' });
+    assert.equal(view.actions[0].mode, 'fallback'); assert.match(view.targets[0].label, /中型/);
+    assert.equal(g.client.writes.length, 0);
+    await runLoop(g.client, g.protocol, { config: g.config, player: g.player, rounds: 1, everyMs: 1, allowMutate: true,
+      getSettings: () => g.settings, usageLedger: usage, isEnabled: () => false });
+    assert.deepEqual(g.client.writes.map(row => row.body.uid), [81, 82]);
+  });
+
+  await check('旧首杀已归队记录保留战果防重同时恢复巨轮派遣', async () => {
+    const f = treasureFixture(), s = treasureSettings(), usage = ledger();
+    s.treasure.fleetIds = ['1远征船'];
+    const key = 'pirate-first:' + f.player.worldId + ':1:1:99';
+    const ticket = usage.reserve({ piratePetrol: 300 }, {}, {}, { uniqueKey: key,
+      details: { kind: 'pirateFirst', buildingId: '1远征船', outcome: 'started', sentAt: Math.floor(Date.now() / 1000) - 60 } });
+    usage.confirm(ticket);
+    await run(f, s, usage);
+    assert.equal(f.client.writes.length, 1);
+    assert.equal(usage.keyRecords()[key].details.active, false);
+    assert.equal(usage.keyRecords()[key].details.outcome, 'started');
+    assert.equal(usage.snapshot().counters.piratePetrol, 300);
+  });
+
+  await check('前一舰队被首杀预留时继续派遣其他空闲舰队，诊断监听异常不影响任务', async () => {
+    const f = treasureFixture(), s = treasureSettings();
+    f.client.on('diagnostic', () => { throw new Error('日志监听器异常'); });
+    await run(f, s, ledger(), { canUseFleet: id => id !== '1远征船' });
+    assert.deepEqual(f.client.writes.map(row => row.body.fleetBuildingIds), [['2远征船']]);
+    const fallback = fallbackFixture(); fallback.state.stats.todayRewardTimes = 2;
+    await run(fallback, fallback.settings, ledger(), { canUseFleet: id => id !== '1远征船' });
+    assert.deepEqual(fallback.client.writes.map(row => row.body.fleetBuildingIds), [['2远征船']]);
   });
 
   await check('跟随当前占领者，精确ID优先且不跟历史排名、同名歧义或自己', async () => {
@@ -391,6 +591,14 @@ try {
       assert.deepEqual(f.client.writes, []); assert.equal(session.loop.running, false);
       assert.deepEqual(fs.readFileSync(path.join(directory, 'accounts.json')), original);
       assert.deepEqual(Object.keys(exportAutomationSettings(s)), ['format', 'version', 'settings']);
+      Object.assign(s.treasure, { fallbackEnabled: true, fallbackAfter: '00:00', fallbackTargetRewards: 1, fleetIds: ['1远征船', '2远征船'] });
+      f.state.targets = [{ ...f.state.targets[1], color: 4 }];
+      reserveDispatch(f.client, 'pirateHunt', ['1远征船']);
+      const fallback = await api('巨轮甲', '/api/settings/preview', { settings: s, category: 'world' });
+      assert.equal(fallback.status, 200);
+      assert.equal(fallback.body.actions.length, 1);
+      assert.match(fallback.body.actions[0].label, /远征舰队 2 队兜底参加中型货轮/);
+      assert.deepEqual(f.client.writes, []);
       session.paused = true;
       assert.equal((await api('巨轮甲', '/api/settings/preview', { settings: s, category: 'world' })).status, 400);
     } finally { await app.close(); }

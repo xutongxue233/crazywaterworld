@@ -38,34 +38,12 @@ function readPrefix(text) {
   }
 }
 
-// 按时间定位一个有限窗口，避免在每次登录时从头加载整个协议文件。
+// 日志按文件上限轮转，顺序读取可保留完整长行和同一毫秒内的协议顺序。
 function traceWindow(file, from, until) {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const size = fs.fstatSync(fd).size;
-    let lo = 0,
-      hi = size;
-    const sample = Buffer.alloc(4096);
-    while (hi - lo > 65536) {
-      const mid = lo + Math.floor((hi - lo) / 2);
-      const n = fs.readSync(fd, sample, 0, sample.length, mid);
-      const line = sample.toString('utf8', 0, n).split('\n')[1];
-      const stamp = Date.parse(line?.slice(0, 24));
-      if (!Number.isFinite(stamp)) return [];
-      if (stamp < from) lo = mid;
-      else hi = mid;
-    }
-    const buffer = Buffer.alloc(Math.min(size - lo, 8 * 1024 * 1024));
-    const n = fs.readSync(fd, buffer, 0, buffer.length, lo);
-    const lines = buffer.toString('utf8', 0, n).split('\n');
-    if (lo) lines.shift();
-    return lines.filter((line) => {
-      const time = Date.parse(line.slice(0, 24));
-      return time >= from && time <= until;
-    });
-  } finally {
-    fs.closeSync(fd);
-  }
+  return fs.readFileSync(file, 'utf8').split('\n').filter((line) => {
+    const time = Date.parse(line.slice(0, 24));
+    return time >= from && time <= until;
+  });
 }
 
 export function replayPirateReceipt(lines, { accountId, player, record, sentAt, offset = 0 }) {
@@ -177,6 +155,8 @@ export function recoverPirateHunts(client, player, ledger, accountId, tracePath)
   const world = String(normalize(player.worldId)),
     offset = client.serverClockOffsetMs || 0,
     results = [];
+  const traceFiles = tracePath ? [tracePath, tracePath + '.1'].filter(file => fs.existsSync(file))
+    .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs) : [];
   for (const [key, record] of Object.entries(ledger.keyRecords())) {
     const d = record.details;
     if (
@@ -188,9 +168,11 @@ export function recoverPirateHunts(client, player, ledger, accountId, tracePath)
       continue;
     const sentAt = d.sentAt ?? ledger.reservationTime(key);
     if (!Number.isFinite(sentAt)) continue;
-    if (tracePath && fs.existsSync(tracePath)) {
+    if (traceFiles.length) {
       const from = sentAt - offset;
-      const proof = replayPirateReceipt(traceWindow(tracePath, from - 2 * SECOND, from + WINDOW), {
+      const lines = [...new Set(traceFiles.flatMap(file => traceWindow(file, from - 2 * SECOND, from + WINDOW)))];
+      lines.sort((a, b) => Date.parse(a.slice(0, 24)) - Date.parse(b.slice(0, 24)));
+      const proof = replayPirateReceipt(lines, {
         accountId,
         player,
         record,
@@ -205,7 +187,7 @@ export function recoverPirateHunts(client, player, ledger, accountId, tracePath)
     }
     // 重连时仍在途的新版派遣继续监听本人舰队和个人记录，不发起新挑战。
     const age = Date.now() + offset - sentAt;
-    if (age >= 0 && age <= WINDOW && Number.isSafeInteger(d.grid) && d.grid >= 0)
+    if (d.active !== false && age >= 0 && age <= WINDOW && Number.isSafeInteger(d.grid) && d.grid >= 0)
       restorePirateFlight(client, d, (event) => savePirateOutcome(ledger, key, event), record.id);
   }
   reconcilePirateFlights(client, ledger.keyRecords(), world);

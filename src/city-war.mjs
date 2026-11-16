@@ -271,7 +271,6 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
     let reason = view.reason;
     if(!reason&&Object.values(keys).some(r=>r.details?.kind==='worldBoss'&&r.details.buildingId===id&&r.details.active!==false))reason='世界Boss首战尚未结束或结果待确认';
     if (!reason && Object.entries(keys).some(([key,r])=>key.startsWith('radar-send:'+snapshot.worldId+':') && r.details?.buildingId===id && r.details.active!==false)) reason='联盟情报尚在执行或结果待确认';
-    if (!reason && Object.entries(keys).some(([key,r])=>key.startsWith('pirate-first:'+snapshot.worldId+':') && r.details?.buildingId===id && !['won','lost'].includes(r.details?.outcome))) reason='海盗首杀结果待确认，暂不接续出战或维修';
     if (!reason && Object.hasOwn(keys, keyOf(snapshot.worldId, id))) reason = '前次城战任务尚在执行或待确认';
     if (!reason && Object.entries(keys).some(([key, record]) => key.startsWith('treasure:' + snapshot.worldId + ':') && key.endsWith(':' + fleetNo(id)) && !record.confirmed && !record.expired)) reason = '巨轮派遣结果待确认，暂不接续出战或维修';
     if (!reason && keys['treasureRepair:' + snapshot.worldId + ':' + fleetNo(id)]?.confirmed === false) reason = '巨轮维修结果待确认，暂不接续出战或维修';
@@ -303,8 +302,8 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
   return plan;
 }
 
-function reconcile(snapshot,ledger){
- if(!snapshot.reason)settleFleetSnapshot(ledger,{worldId:snapshot.worldId,fleets:snapshot.fleets,now:snapshot.now,kinds:['cityRepair','cityDispatch']});
+function reconcile(snapshot,ledger,baseline){
+ if(!snapshot.reason)settleFleetSnapshot(ledger,{worldId:snapshot.worldId,fleets:snapshot.fleets,now:snapshot.now,kinds:['cityRepair','cityDispatch','pirateFirst'],baseline});
 }
 
 async function disableNativeCommission(client, protocol, ids) {
@@ -325,10 +324,14 @@ export async function runCityWar(client, protocol, config, player, { getSettings
   active.add(client);
   const results = [];
   try {
-    const read = () => readCityWar(client, protocol, config, player, getSettings()?.cityWar, { mapLoader });
+    const read = async () => {
+      const baseline = ledger.keyRecords();
+      const snapshot = await readCityWar(client, protocol, config, player, getSettings()?.cityWar, { mapLoader });
+      reconcile(snapshot, ledger, baseline);
+      return snapshot;
+    };
     let snapshot = await read();
     snapshot.attackDura = rows(config, 'WorldParamCfg').find(row => row.paramName === '攻城战消耗耐久')?.paramValue;
-    reconcile(snapshot, ledger);
     const pending = () => { const p = ledger.pendingCounters(); return (p.cityWarPetrol ?? 0) + (p.treasurePetrol ?? 0) + (p.piratePetrol ?? 0) + (p.radarPetrol ?? 0) + (p.worldBossPetrol ?? 0) + (p.siliconPetrol ?? 0); };
     const settings = getSettings();
     let plan = planCityWar(snapshot, settings, { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingPetrol: pending() });
@@ -353,7 +356,6 @@ export async function runCityWar(client, protocol, config, player, { getSettings
         const closedNote = '已关闭原生委任：' + ids.map(nameOf).join('、');
         snapshot = await read();
         snapshot.attackDura = rows(config, 'WorldParamCfg').find(row => row.paramName === '攻城战消耗耐久')?.paramValue;
-        reconcile(snapshot, ledger);
         plan = planCityWar(snapshot, settings, { usage: ledger.snapshot(), keys: ledger.keyRecords(), pendingPetrol: pending() });
         plan.notes.unshift(closedNote);
         if (plan.nativeOffFleetIds.length) {
@@ -394,8 +396,9 @@ export async function runCityWar(client, protocol, config, player, { getSettings
       let entry;
       try {
         await client.sendWatch(step.request, step.body, { window: 600 });
+        const baseline = ledger.keyRecords();
         const after = await client.request('MyFleetsRequest', {}, 'MyFleetsResponse', 8000);
-        reconcile({ ...fresh, now: nowOf(client), fleets: after.fleets ?? [], reason: '' }, ledger);
+        reconcile({ ...fresh, now: nowOf(client), fleets: after.fleets ?? [], reason: '' }, ledger, baseline);
         const record = ledger.keyRecords()[step.uniqueKey];
         const confirmed = !record || record.confirmed;
         entry = { step, ok: confirmed, sent: true, status: confirmed ? 'confirmed' : 'unknown',

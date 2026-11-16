@@ -60,7 +60,9 @@ export const DEFAULT_SETTINGS = {
   treasure: { enabled: false, autoJoin: true, onlyTenThousand: true, follow: false, fleetIds: [], followNames: [], followPlayerIds: [], avoidPlayerIds: [],
     rewardItems: [], avoidNames: [], allowHostile: false, minDurabilityPercent: 80, petrolReserve: 0,
     maxProgress: 90, personalProgressLimit: 20, dailyDispatchLimit: 0, checkEverySeconds: 15, participationMode: 'untilFull', repeatAttack: true,
-    autoRepair: true, maxRepairCost: 15000, dailyRepairPetrolLimit: 20000 },
+    autoRepair: true, maxRepairCost: 15000, dailyRepairPetrolLimit: 20000,
+    fallbackEnabled: false, fallbackAfter: '21:00', fallbackTargetRewards: 3,
+    fallbackQualities: ['PURPLE', 'BLUE'], fallbackMediumRewardPriority: [], fallbackSmallRewardPriority: [] },
   cityWar: { enabled: false, fleetIds: [], defenceFleetIds: [], targetMode: 'alliance', targetPriority: 'fewestAllied', cityRefs: [], autoRepair: true,
     nativeCommissionLimit: -1, repairBelowPercent: 80, petrolReserve: 0, maxRepairCost: 15000, dailyPetrolLimit: 20000,
     dailyDispatchLimit: 10, reserveDuringWar: true, checkEverySeconds: 15 },
@@ -122,6 +124,9 @@ const constraints = {
   'treasure.dailyDispatchLimit': int(1000), 'treasure.checkEverySeconds': int(300, 5),
   'treasure.avoidPlayerIds': strings(100), 'treasure.participationMode': { kind: 'choice', values: ['untilFull', 'always'] },
   'treasure.maxRepairCost': int(10000000), 'treasure.dailyRepairPetrolLimit': int(100000000),
+  'treasure.fallbackAfter': { kind: 'time' }, 'treasure.fallbackTargetRewards': int(100, 1),
+  'treasure.fallbackQualities': { ...strings(2), values: ['PURPLE', 'BLUE'] },
+  'treasure.fallbackMediumRewardPriority': strings(100), 'treasure.fallbackSmallRewardPriority': strings(100),
   'cityWar.fleetIds': strings(10), 'cityWar.defenceFleetIds': strings(10), 'cityWar.targetMode': { kind: 'choice', values: ['alliance', 'selected'] },
   'cityWar.targetPriority': { kind: 'choice', values: ['fewestAllied', 'original'] },
   'cityWar.cityRefs': strings(100), 'cityWar.nativeCommissionLimit': { kind: 'number', min: -1, max: 1000 },
@@ -271,6 +276,7 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
   if (output.pet.enabled && output.pet.breed && !output.pet.species.length) errors['pet.species'] = '启用自动培育前，请选择培育种类';
   if (output.treasure.enabled && !output.treasure.autoJoin && !output.treasure.follow) errors['treasure.autoJoin'] = '请至少开启自动参加或跟随指定玩家';
   if (output.treasure.enabled && !output.treasure.fleetIds.length) errors['treasure.fleetIds'] = '请明确选择参与巨轮的舰队，空名单不会派遣';
+  if (output.treasure.fallbackEnabled && !output.treasure.fallbackQualities.length) errors['treasure.fallbackQualities'] = '开启兜底前，请至少选择一种货轮';
   if (output.treasure.follow && !output.treasure.followNames.length && !output.treasure.followPlayerIds.length && !errors['treasure.followNames'] && !errors['treasure.followPlayerIds']) errors['treasure.followNames'] = '开启跟随前，请添加玩家完整昵称或角色ID';
   for (const field of ['followNames', 'avoidNames']) if (output.treasure[field].some(value => value !== value.trim() || value.length > 40 || /[\r\n\u0000-\u001f]/.test(value))) errors['treasure.' + field] = '请输入不重复的完整昵称，每项不超过40字符，不含首尾空格或换行';
   for (const field of ['followPlayerIds', 'avoidPlayerIds']) if (output.treasure[field].some(value => !/^[1-9]\d{0,18}$/.test(value) || BigInt(value) > (1n << 63n) - 1n)) errors['treasure.' + field] = '角色ID必须为完整的正整数文本，不能使用科学计数法';
@@ -289,6 +295,7 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
       'resident.blockedMaterials': 'materials', 'museum.factorMaterials': 'materials', 'museum.maps': 'maps',
       'heroes.heroIds': 'heroes', 'pet.species': 'petSpecies',
       'treasure.fleetIds': 'expeditionFleets', 'treasure.rewardItems': 'materials',
+      'treasure.fallbackMediumRewardPriority': 'materials', 'treasure.fallbackSmallRewardPriority': 'materials',
       'cityWar.fleetIds': 'expeditionFleets', 'cityWar.cityRefs': 'cityTargets',
       'radar.fleetIds':'expeditionFleets','worldBoss.fleetIds':'expeditionFleets',
       'pirateHunt.fleetIds': 'expeditionFleets', 'pirateHunt.types': 'pirateTypes',
@@ -398,7 +405,8 @@ export function importAutomationSettings(document, options) {
   if (plain(input?.antique)) input.antique = { ...DEFAULT_SETTINGS.antique, ...input.antique };
   if (plain(input?.treasure)) {
     input.treasure = { ...input.treasure };
-    for (const key of ['onlyTenThousand', 'avoidPlayerIds', 'participationMode', 'repeatAttack', 'autoRepair', 'maxRepairCost', 'dailyRepairPetrolLimit', 'personalProgressLimit']) {
+    for (const key of ['onlyTenThousand', 'avoidPlayerIds', 'participationMode', 'repeatAttack', 'autoRepair', 'maxRepairCost', 'dailyRepairPetrolLimit', 'personalProgressLimit',
+      'fallbackEnabled', 'fallbackAfter', 'fallbackTargetRewards', 'fallbackQualities', 'fallbackMediumRewardPriority', 'fallbackSmallRewardPriority']) {
       if (!Object.hasOwn(input.treasure, key)) input.treasure[key] = copy(DEFAULT_SETTINGS.treasure[key]);
     }
   }

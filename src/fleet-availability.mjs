@@ -18,6 +18,7 @@ export function bridgeFleetReservations(client, getSettings, ledger, worldId) {
 export function fleetRecordReason(records,buildingId,worldId){
  for(const [key,r]of Object.entries(recordsInWorld(records??{},worldId))){
   if(r.expired||r.details?.buildingId!==buildingId)continue;
+  if(r.details.kind==='pirateFirst'&&r.details.active===false)continue;
   if(!r.confirmed)return '舰队有结果待确认的任务';
   if(r.details.kind==='worldBoss'&&r.details.active!==false)return '舰队的世界Boss首战尚未结束';
   if(r.details.kind==='siliconDispatch'&&r.details.active!==false)return '舰队的硅矿任务尚未结束';

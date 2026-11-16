@@ -5,6 +5,7 @@ import os from 'node:os';
 import { createUsageLedger } from '../src/automation-settings.mjs';
 import {
   checkFleetSettlement,
+  invalidateFleetReports,
   settleFleetSnapshot,
   radarEvents,
   recordsInWorld
@@ -242,7 +243,9 @@ await test('货轮确认保留一次参与键，首杀不能只按返航推断�
     true
   );
   settle(l, [home(id)], { kills: [{ type: 3, maxKilledLevel: 21 }] });
-  assert(fleetRecordReason(l.keyRecords(), id, world));
+  assert.equal(fleetRecordReason(l.keyRecords(), id, world), '');
+  assert.equal(l.keyRecords()[pk].details.outcome, 'started');
+  assert.equal(l.keyRecords()[pk].details.active, false);
   settle(l, [home(id)], { kills: [{ type: 3, maxKilledLevel: 22 }] });
   assert.equal(l.keyRecords()[pk].details.outcome, 'won');
 });
@@ -336,5 +339,166 @@ await test('未确认的货轮请求仅在目标已消失且舰队到家时解�
   assert.equal(fleetRecordReason(l.keyRecords(), id, world), '');
   assert.equal(l.pendingCounters().treasurePetrol, 500);
   assert(l.hasKey(key));
+});
+await test('旧首杀缺少战报仍能释放已归队舰队，保留未知结果和汽油防重', async () => {
+  for (const confirmed of [true, false]) {
+    const l = make(), id = '1远征船', key = 'pirate-first:' + world + ':3:22:701';
+    const details = { world, buildingId: id, outcome: confirmed ? 'started' : 'unknown', sentAt: (now - 901) * 1000 };
+    add(l, key, details, confirmed, { piratePetrol: 300 });
+    const events = [];
+    const client = {
+      connected: true,
+      serverClockOffsetMs: now * 1000 - Date.now(),
+      emit: (name, event) => events.push({ name, event }),
+      request: async (name) => {
+        if (name === 'MyFleetsRequest') return { fleets: [home(id)] };
+        if (name === 'PirateKillRecordRequest') return { records: [{ type: 3, maxKilledLevel: 21 }] };
+        assert.fail('不应补造战报或发出写请求 ' + name);
+      }
+    };
+    await checkFleetSettlement(client, { worldId: world }, l);
+    assert.equal(l.keyRecords()[key].details.active, false);
+    assert.equal(l.keyRecords()[key].details.outcome, details.outcome);
+    assert.equal(l.keyRecords()[key].confirmed, confirmed);
+    assert.equal(fleetRecordReason(l.keyRecords(), id, world), '');
+    assert.equal(l.snapshot().counters.piratePetrol, 300);
+    assert.equal(l.pendingCounters().piratePetrol ?? 0, confirmed ? 0 : 300);
+    assert.equal(l.confirmedCounters().piratePetrol ?? 0, confirmed ? 300 : 0);
+    assert.throws(() => l.reserve({ piratePetrol: 300 }, {}, {}, { uniqueKey: key, details }), /重复发送/);
+    const reopened = createUsageLedger('sample', { file: path.join(dir, seq + '.json') });
+    assert.equal(fleetRecordReason(reopened.keyRecords(), id, world), '');
+    assert(reopened.hasKey(key));
+    assert.equal(events[0].name, 'diagnostic');
+    assert.equal(events[0].event.event, 'fleet-settlement');
+    assert.equal(events[0].event.changes.length, 1);
+    // 舰队随后参与其他任务，旧首杀不能再次锁住它。
+    settle(l, [{ ...home(id), state: 2, targetGridIdx: 999 }]);
+    assert.equal(l.keyRecords()[key].details.active, false);
+  }
+});
+await test('刚发送首杀、非归队状态、重复舰队和迟到快照均不能提前解除占用', () => {
+  for (const confirmed of [true, false]) {
+    const l = make(), id = '2远征船', key = 'pirate-first:' + world + ':3:22:701';
+    const details = { kind: 'pirateFirst', world, buildingId: id, outcome: 'started', sentAt: (now - 901) * 1000 };
+    add(l, key, details, confirmed, { piratePetrol: 300 });
+    const baseline = l.keyRecords();
+    for (const fleet of [
+      { ...home(id), state: 2 }, { ...home(id), state: 3 }, { ...home(id), state: 4 },
+      { ...home(id), state: 5 }, { ...home(id), curGridIdx: 4 },
+      { ...home(id), curGridIdx: undefined }, { ...home(id), treasureLootUid: 1 },
+      { ...home(id), chipWar: { rewardTs: 1 } }, home('3远征船')
+    ]) settle(l, [fleet]);
+    settle(l, [home(id), home(id)]);
+    settle(l, [home(id)], { baseline: { [key]: { ...baseline[key], id: 'old-record' } } });
+    assert.notEqual(l.keyRecords()[key].details.active, false);
+    assert(fleetRecordReason(l.keyRecords(), id, world));
+    if (!confirmed) {
+      l.updateKeyDetails(key, { ...details, sentAt: now * 1000 });
+      settle(l, [home(id)]);
+      assert.notEqual(l.keyRecords()[key].details.active, false);
+      assert.equal(l.pendingCounters().piratePetrol, 300);
+    }
+  }
+});
+function pagedPirateReports(reports) {
+  const ledger = make(), id = '1远征船', key = 'pirate-first:' + world + ':3:22:701';
+  add(ledger, key, { kind: 'pirateFirst', world, buildingId: id, type: 3, level: 22,
+    scenarioId: 1, ownBattle: true, battleAt: now - 10, outcome: 'started' }, true, { piratePetrol: 300 });
+  const state = { reports, calls: [], onPage: () => {} };
+  const client = {
+    connected: true,
+    serverClockOffsetMs: now * 1000 - Date.now(),
+    request: async (name, body, response, timeout) => {
+      if (name === 'MyFleetsRequest') return { fleets: [home(id)] };
+      if (name === 'PirateKillRecordRequest') return { records: [] };
+      assert.equal(name, 'CampaignReportsRequest');
+      assert.equal(ledger.keyRecords()[key].details.active, false, '开始读取战报前即已释放归队舰队');
+      assert.equal(fleetRecordReason(ledger.keyRecords(), id, world), '');
+      state.calls.push(body.pageNo);
+      state.onPage(body.pageNo, timeout);
+      return { total: state.reports.length, reports: [state.reports[body.pageNo]] };
+    }
+  };
+  return { ledger, key, client, state, check: () => checkFleetSettlement(client, { worldId: world }, ledger) };
+}
+const pirateReport = {
+  uid: 8001, type: 1, scenarioId: 1, pirate: { type: 3, level: 22 }, createTime: now - 10, win: false
+};
+const unrelatedReport = { uid: 8002, type: 1, scenarioId: 1, pirate: { type: 1, level: 1 }, createTime: now - 20, win: false };
+await test('历史战报分多轮最多两页，末页之前释放舰队但不认定唯一战果', async () => {
+  const f = pagedPirateReports([...Array.from({ length: 4 }, (_value, index) => ({ ...unrelatedReport, uid: 8100 + index })), pirateReport]);
+  await f.check();
+  assert.deepEqual(f.state.calls, [0, 1]);
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+  await f.check();
+  assert.deepEqual(f.state.calls, [0, 1, 2, 3]);
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+  await f.check();
+  assert.deepEqual(f.state.calls, [0, 1, 2, 3, 4]);
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'lost');
+  assert.equal(f.ledger.confirmedCounters().piratePetrol, 300);
+});
+await test('分页期间总数变化会丢弃旧证据并从首页重读，新战报推送也清除扫描', async () => {
+  const f = pagedPirateReports([pirateReport, ...Array.from({ length: 3 }, (_value, index) => ({ ...unrelatedReport, uid: 8100 + index }))]);
+  await f.check();
+  f.state.reports = Array.from({ length: 5 }, (_value, index) => ({ ...unrelatedReport, uid: 8200 + index }));
+  await f.check();
+  assert.deepEqual(f.state.calls, [0, 1, 2]);
+  await f.check();
+  assert.deepEqual(f.state.calls, [0, 1, 2, 0, 1]);
+  invalidateFleetReports(f.client);
+  await f.check();
+  assert.deepEqual(f.state.calls, [0, 1, 2, 0, 1, 0, 1]);
+  await f.check();
+  await f.check();
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+  assert.equal(f.ledger.keyRecords()[f.key].details.active, false);
+  const count = f.state.calls.length;
+  await f.check();
+  assert.equal(f.state.calls.length, count, '读全后的结果在一分钟内复用');
+});
+await test('后续分页含第二份匹配战报时继续保留未知战果，不能提前按第一页确认', async () => {
+  const f = pagedPirateReports([pirateReport, unrelatedReport, { ...pirateReport, uid: 8003 }]);
+  await f.check();
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+  await f.check();
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+  assert.equal(f.ledger.keyRecords()[f.key].details.active, false);
+});
+await test('战报读取消耗八秒预算后让出本轮，下一轮从未读页继续', async () => {
+  const f = pagedPirateReports([unrelatedReport, { ...unrelatedReport, uid: 8004 }, pirateReport]);
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
+  try {
+    f.state.onPage = (_page, timeout) => {
+      assert(timeout > 0 && timeout <= 8000);
+      clock += 8001;
+    };
+    await f.check();
+    assert.deepEqual(f.state.calls, [0]);
+    assert.equal(f.ledger.keyRecords()[f.key].details.active, false);
+    f.state.onPage = () => {};
+    await f.check();
+    assert.deepEqual(f.state.calls, [0, 1, 2]);
+    assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'lost');
+  } finally { Date.now = originalNow; }
+});
+await test('两百页扫描上限保留未知结果并缓存，避免下一轮立即重复刷历史', async () => {
+  const f = pagedPirateReports(Array.from({ length: 201 }, (_value, index) => index ? { ...unrelatedReport, uid: 9000 + index } : pirateReport));
+  for (let round = 0; round < 100; round++) await f.check();
+  assert.equal(f.state.calls.length, 200);
+  assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+  await f.check();
+  assert.equal(f.state.calls.length, 200);
+});
+await test('重复分页和缺少有效战报 UID 均不能当作完整扫描确认首杀', async () => {
+  for (const invalid of [{ ...unrelatedReport }, { ...unrelatedReport, uid: undefined }, { ...unrelatedReport, uid: 0 }]) {
+    const f = pagedPirateReports([pirateReport, unrelatedReport, invalid]);
+    await f.check();
+    await f.check();
+    assert.equal(f.ledger.keyRecords()[f.key].details.outcome, 'started');
+    assert.equal(f.ledger.keyRecords()[f.key].details.active, false);
+  }
 });
 console.log('舰队占用专项 ' + n + '/' + n + ' 通过');

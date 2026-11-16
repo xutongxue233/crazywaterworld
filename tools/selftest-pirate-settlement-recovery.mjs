@@ -85,6 +85,24 @@ try {
     assert.equal(pirates.pirateHuntFlights(f.client).length, 1);
     assert.equal(f.client.writes.length, 1);
   });
+  await test('首杀归队但战果缺失时停止本轮推进，迟到胜利只结算并保持舰队可复用', async () => {
+    const f = fixture();
+    await f.run();
+    Object.assign(f.fleet, { state: 1, curGridIdx: 0, targetGridIdx: 0 });
+    await f.run();
+    assert.equal(recordOf(f)[1].details.active, false);
+    assert.equal(recordOf(f)[1].details.outcome, 'started');
+    assert.equal(f.checkpoint.state.halted, true);
+    assert.equal(fleetRecordReason(f.ledger.keyRecords(), f.fleet.buildingId, String(f.player.worldId)), '');
+    f.state.level = 1;
+    for (let i = 0; i < 3; i++) await f.run();
+    assert.equal(recordOf(f)[1].details.outcome, 'won');
+    assert.equal(f.checkpoint.state.wins, 1);
+    assert.equal(f.checkpoint.state.halted, true);
+    assert.equal(pirates.pirateHuntFlights(f.client).length, 0);
+    assert.equal(f.client.writes.length, 1);
+    assert.equal(f.ledger.confirmedCounters().piratePetrol, 300);
+  });
   await test('唯一个人战败记录同时结算账本并清理内存，下一轮可正常重试', async () => {
     const f = await lostWithoutEndPush();
     await checkFleetSettlement(f.client, f.player, f.ledger);
