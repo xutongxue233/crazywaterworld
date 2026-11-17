@@ -190,8 +190,9 @@ await test('并发开始只创建一个临时浏览器，状态仅返回二维�
   assert.equal(first.phase, 'waiting');
   assert.equal(first.expiresAt, fixedNow + 300_000);
   assert.equal(first.qrImage, 'data:image/png;base64,' + Buffer.from('fixture-png').toString('base64'));
-  assert.deepEqual(Object.keys(first).sort(), ['error', 'expiresAt', 'id', 'phase', 'qrImage']);
-  assert.doesNotMatch(JSON.stringify(first), /qr-secret|private-cookie|game-token|openId/);
+  assert.equal(first.launchUrl, env.qr().data.qrCode.url);
+  assert.deepEqual(Object.keys(first).sort(), ['error', 'expiresAt', 'id', 'launchUrl', 'phase', 'qrImage']);
+  assert.doesNotMatch(JSON.stringify({...first,launchUrl:null}), /qr-secret|private-cookie|game-token|openId/);
   assert.throws(() => env.manager.takeCredential(first.id), /尚未取得/);
 });
 

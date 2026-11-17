@@ -192,6 +192,7 @@ label[for=gift-code-input] { display:block; margin-bottom:8px }
 
 /* ---- 账号 ---- */
 .account-page { display:grid; gap:24px }
+.account-login-shortcuts { display:flex; flex-wrap:wrap; gap:12px }
 .account-page-heading,.account-page-title,.account-page-actions { display:flex; align-items:center; gap:12px }
 .account-page-heading { justify-content:space-between; flex-wrap:wrap }
 .account-page-title { flex-wrap:wrap }
@@ -233,7 +234,7 @@ label[for=gift-code-input] { display:block; margin-bottom:8px }
 .account-export-option>span { display:grid; gap:4px; min-width:0; overflow-wrap:anywhere }
 .account-export-option strong { font-weight:500 }
 .account-export-option .dim { font-size:12px; font-weight:400 }
-#account-add-dialog[open] { grid-template-rows:auto minmax(0,1fr); gap:20px; overflow:hidden }
+#account-add-dialog[open] { grid-template-rows:auto minmax(0,1fr) auto; gap:20px; overflow:hidden }
 .account-dialog-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px }
 .account-dialog-heading>[data-slot=dialog-header] { min-width:0; padding-top:4px }
 .account-dialog-heading h2 { margin:0; overflow-wrap:anywhere }
@@ -253,7 +254,23 @@ label[for=gift-code-input] { display:block; margin-bottom:8px }
   .account-page { gap:20px }
   .account-page-heading { align-items:flex-start; gap:16px }
   .account-page-title { gap:8px }
-  .account-page-actions { gap:4px }
+  .account-page-actions { width:100%; margin-inline-start:0; justify-content:flex-start; gap:8px }
+  .account-page-actions>button { flex:1; min-height:44px }
+  .account-login-shortcuts { display:grid; grid-template-columns:minmax(0,1fr); gap:8px }
+  .account-login-shortcuts>button { min-height:48px; justify-content:flex-start; white-space:normal }
+  #account-add-dialog { width:calc(100vw - 16px); max-height:calc(100dvh - 16px); padding:16px; }
+  #account-add-dialog .account-add-body { padding-bottom:8px; overflow-x:hidden }
+  .account-add-footer { padding-bottom:env(safe-area-inset-bottom); flex-wrap:wrap }
+  .account-add-footer>button { min-height:44px; flex:1 }
+  .phone-form>button,#phone-success>button { width:100%; min-height:44px }
+  .phone-input-action>button { flex:none; min-height:44px }
+  .phone-form input { font-size:16px; min-height:44px }
+  #alipay-flow>.bar { flex-wrap:wrap }
+  #alipay-flow>.bar>button { min-height:44px; flex:1 }
+  .alipay-qr { display:block; margin-inline:auto; height:auto; aspect-ratio:1 }
+  .phone-tabs { display:flex }
+  .phone-tabs>button { flex:1; min-height:44px }
+  .account-add-body p { overflow-wrap:anywhere }
   .account-channel-grid { grid-template-columns:minmax(0,1fr) }
   .account-channel { min-height:88px }
   #account-add-dialog,#account-info-dialog { padding:20px }
@@ -489,3 +506,5 @@ label[for=gift-code-input] { display:block; margin-bottom:8px }
 @media (prefers-reduced-motion:reduce) {
   #page-progress::after { animation:none }
 }
+
+.alipay-open-app { display:flex; align-items:center; justify-content:center; min-height:48px; padding:12px 20px; border-radius:8px; background:var(--primary); color:var(--primary-foreground); font-weight:600; text-decoration:none; margin-block:12px }

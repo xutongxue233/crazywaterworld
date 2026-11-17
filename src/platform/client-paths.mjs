@@ -11,7 +11,12 @@ function directories(root) {
   }
 }
 
-export function wechatUsersDirectory({ env = process.env, home = os.homedir() } = {}) {
+export function wechatUsersDirectory({ env = process.env, home = os.homedir(), platform = process.platform } = {}) {
+  if (platform === 'darwin' && !env.APPDATA) {
+    const containers = ['com.tencent.xinWeChat', 'com.tencent.WeChat'];
+    const roots = containers.map(name => path.join(home, 'Library', 'Containers', name, 'Data', 'Documents', 'app_data', 'radium', 'users'));
+    return roots.find(root => fs.existsSync(root)) || roots[0];
+  }
   return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Tencent', 'xwechat', 'radium', 'users');
 }
 

@@ -137,12 +137,19 @@ export function accountPage() {
     <div className="account-page-heading">
       <div className="account-page-title"><h2 className="text-xl font-semibold">账号</h2><span id="account-count" className="dim" aria-live="polite">正在读取</span></div>
       <div className="account-page-actions">
+        <form method="post" action="/auth/logout"><Button type="submit" variant="outline">退出登录</Button></form>
         <Button id="import-accounts" type="button" variant="outline">导入账号</Button>
         <input id="import-accounts-file" type="file" accept=".json,application/json" aria-label="选择账号备份文件" hidden />
         <Button id="export-accounts" type="button" variant="outline" aria-haspopup="dialog" aria-controls="account-export-dialog">导出账号</Button>
         <Button id="account-add" type="button" aria-haspopup="dialog" aria-controls="account-add-dialog"><Plus aria-hidden="true" />添加账号</Button>
       </div>
     </div>
+    <div className="account-login-shortcuts" role="group" aria-label="快速添加账号">
+      <Button id="account-add-alipay-shortcut" type="button" variant="outline"><QrCode aria-hidden="true" />支付宝扫码登录</Button>
+      <Button id="account-add-phone-shortcut" type="button" variant="outline"><Smartphone aria-hidden="true" />手机号登录</Button>
+      <Button id="account-add-wechat-shortcut" type="button" variant="outline"><MessageCircle aria-hidden="true" />电脑微信登录</Button>
+    </div>
+    <p className="dim">可连续添加多个账号，每个账号独立连接和挂机。切换当前查看的账号不会停止其他账号；可在账号卡片中单独暂停或恢复托管。</p>
     <p className="dim">新账号默认不挂机，点击账号卡片上的「开始挂机」后才会持续运行；可随时点击「暂停挂机」。</p>
     <p id="account-add-notice" className="dim" role="status" hidden />
     <p id="account-transfer-notice" className="dim" role="status" aria-live="polite" hidden />
@@ -188,14 +195,16 @@ export function accountPage() {
         <section id="account-add-alipay" hidden>
           <div id="alipay-flow" className="alipay-flow">
             <div className="bar"><Button id="alipay-start" type="button">生成二维码</Button><Button id="alipay-cancel" type="button" variant="outline" hidden>取消</Button></div>
+            <a id="alipay-open-app" className="alipay-open-app" hidden target="_blank" rel="noopener noreferrer">打开支付宝登录</a>
+            <p className="dim">手机上点击「打开支付宝登录」，确认授权后返回此页选择角色。无法跳转时，可截图二维码，在支付宝扫一扫中从相册识别；微信内请用系统浏览器打开。</p>
             <img id="alipay-qr" className="alipay-qr" alt="支付宝扫码登录二维码" width="256" height="256" hidden />
-            <p id="alipay-hint" className="phone-feedback dim" role="status" aria-live="polite" aria-atomic="true">点击「生成二维码」，然后使用支付宝扫一扫。</p>
+            <p id="alipay-hint" className="phone-feedback dim" role="status" aria-live="polite" aria-atomic="true">点击「生成二维码」，然后使用支付宝扫一扫。手机上可截屏后在支付宝扫一扫中从相册识别。</p>
             <div id="alipay-roles" hidden />
             <p id="alipay-result" hidden />
             <p id="alipay-expiry" className="dim" />
             <div className="bar"><Button id="alipay-save" type="button" hidden disabled>保存所选角色</Button><Button id="alipay-roles-retry" type="button" variant="outline" hidden>重新读取角色</Button></div>
           </div>
-          <p className="dim">本机需安装 Edge 或 Chrome。扫码后会进入游戏，可能让同账号的游戏客户端下线。</p>
+          <p className="dim">首次扫码会自动准备浏览器。扫码后选择角色并保存，新账号保存后可在账号卡片中点击「开始挂机」。</p>
         </section>
         <section id="account-add-phone" hidden>
           <p id="phone-step" className="sr-only" role="status">登录验证 → 选择区服和角色 → 保存并切换</p>
@@ -250,6 +259,7 @@ export function accountPage() {
         <section id="account-add-capture" hidden>
           <div className="bar"><Button id="cap-start" type="button" hidden>开始读取微信账号</Button><Button id="cap-douyin" type="button" hidden>开始读取抖音账号</Button><Button id="cap-stop" type="button" variant="outline" hidden>停止读取</Button><Button id="cap-recover" type="button" variant="outline" hidden>恢复上次采集残留</Button></div>
           <p id="cap-hint" className="phone-feedback" role="status" aria-live="polite" />
+          <p className="dim">微信需在电脑客户端登录与手机相同的账号，再重新进入小游戏。目前不支持手机微信直接扫码授权；电脑微信采集需要 Windows。</p>
           <div id="cap-box" />
         </section>
       </div>

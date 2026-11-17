@@ -17,3 +17,6 @@ certificates/
 *.log
 .planning/
 .impeccable/
+
+# Local server deployment configuration
+deploy/

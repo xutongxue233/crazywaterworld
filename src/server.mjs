@@ -142,7 +142,7 @@ const pageAsset = {
 };
 
 export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs, resourceUpdates = false, resourceUpdater = null, protocol: protocolOverride,
-  alipayLoginController = null,
+  alipayLoginController = null, authorize = null,
   captureController = { startCapture, stopCapture, captureState, inspectCaptureRecovery, recoverCapture } } = {}) {
   // 保留测试/嵌入调用方注入延迟的能力；正常运行时由当前账号的登录设置决定。
   const injectedRecoveryDelay = typeof recoveryDelayMs === 'function' ? recoveryDelayMs : null;
@@ -3905,8 +3905,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   const server = http.createServer((req, res) => {
-    res.on('error', () => { streams.delete(res); res.destroy(); });
     req.on('error', () => res.destroy());
+    if (authorize && !authorize(req, res)) return;
+    res.on('error', () => { streams.delete(res); res.destroy(); });
     req.setEncoding('utf8');
     let body = '';
     req.on('data', (chunk) => {

@@ -8,6 +8,7 @@
     "build:ui": "npm run build:server-ui && npm run build:client",
     "start": "node src/app.mjs",
     "test": "npm run check:ui && npm run test:client && npm run typecheck && npm run test:accounts && node tools/selftest-storage-transactions.mjs && node tools/selftest-settings-version.mjs && node tools/selftest-pending-operation.mjs && node tools/selftest-guard-lifecycle.mjs && node tools/selftest-loop-scheduler.mjs && node tools/selftest-platform-recovery.mjs && node tools/selftest-capture-recovery-http.mjs && npm run test:config && npm run test:core && npm run test:progression && npm run test:production && npm run test:extra",
+    "test:auth": "node tools/selftest-console-auth.mjs",
     "test:accounts": "node tools/selftest-account-backup-http.mjs && node tools/selftest-account-backup-ui.mjs",
     "test:logs": "node tools/selftest-log-filters.mjs",
     "test:logs:browser": "npm run build:ui && node tools/selftest-log-filters-browser.mjs",

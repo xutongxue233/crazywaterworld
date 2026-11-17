@@ -111,3 +111,14 @@ $('account-add-dialog').oncancel = event => {
   event.preventDefault();
   void leaveAccountAdd(true);
 };
+
+for (const channel of ['alipay', 'phone', 'wechat']) {
+  $('account-add-' + channel + '-shortcut').onclick = () => {
+    if ($('account-add-dialog').open) return;
+    $('account-add').onclick();
+    for (const button of document.querySelectorAll('#account-add-channels [data-login-channel]')) {
+      if (button.dataset.loginChannel === channel) button.onclick();
+    }
+    if (channel === 'alipay') void $('alipay-start').onclick();
+  };
+}

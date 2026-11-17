@@ -67,6 +67,7 @@ export function createAlipayLogin({
       id: session?.id ?? null,
       phase: session?.phase ?? 'cancelled',
       qrImage: session?.qrImage ?? null,
+      launchUrl: session?.phase === 'waiting' ? session.launchUrl ?? null : null,
       expiresAt: session?.expiresAt ?? null,
       error: session?.error ?? null,
     };
@@ -266,6 +267,9 @@ export function createAlipayLogin({
         await imageHandle.dispose();
       }
       if (!live(session) || session.phase === 'authorizing' || session.qrVersion !== version) return;
+      const target = new URL(result.data.qrCode.url);
+      session.launchUrl = target.protocol === 'https:' && !target.username && !target.password
+        && /(^|\.)alipay\.com$/i.test(target.hostname) ? target.href : null;
       session.qrImage = image;
       session.phase = 'waiting';
       session.ready();

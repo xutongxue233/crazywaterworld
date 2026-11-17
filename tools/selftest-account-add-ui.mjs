@@ -236,4 +236,18 @@ await test('Escape沿用清理路径，继续添加也先清理上一渠道', as
   assert.equal(env.channel(), 'douyin');
 });
 
+await test('页面快捷入口进入指定渠道，支付宝只在首次打开生成二维码', async () => {
+  for (const channel of ['alipay', 'phone', 'wechat']) {
+    const env = fixture();
+    let starts = 0;
+    env.node('alipay-start').onclick = async () => { starts++; };
+    env.click(channel + '-shortcut');
+    assert.equal(env.channel(), channel);
+    assert.equal(starts, channel === 'alipay' ? 1 : 0);
+    env.click('alipay-shortcut');
+    assert.equal(env.channel(), channel);
+    assert.equal(starts, channel === 'alipay' ? 1 : 0);
+  }
+});
+
 console.log(`添加账号弹窗自检通过 ${passed} 项`);

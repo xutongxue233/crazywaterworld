@@ -682,4 +682,19 @@ await test('生成和保存短请求在途时阻止弹窗清理，完成后发�
   assert.equal(f.calls('/cancel').length, 0, '已保存结果已由服务端消费');
 });
 
+await test('手机跳转仅使用当前二维码的支付宝官方地址，失效后移除', async () => {
+  const f = fixture();
+  f.state.launchUrl = 'https://render.alipay.com/p/s/ulink?auth=test';
+  await f.click('alipay-start');
+  assert.equal(f.node('alipay-open-app').hidden, false);
+  assert.equal(f.node('alipay-open-app').getAttribute('href'), f.state.launchUrl);
+  f.state.launchUrl = 'https://alipay.com.evil.invalid/login';
+  await f.tick(1500);
+  assert.equal(f.node('alipay-open-app').hidden, true);
+  assert.equal(f.node('alipay-open-app').getAttribute('href'), undefined);
+  f.state.phase = 'expired';
+  await f.tick(1500);
+  assert.equal(f.node('alipay-open-app').hidden, true);
+});
+
 console.log(`selftest-alipay-login-ui: ${passed} cases ok`);

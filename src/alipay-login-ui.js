@@ -110,6 +110,15 @@ function renderAlipayLogin() {
   image.hidden = !showQr;
   if (showQr) image.src = state.qrImage;
   else image.removeAttribute('src');
+  const appLink = $('alipay-open-app');
+  let launchUrl = null;
+  try {
+    const target = new URL(state.launchUrl);
+    if (target.protocol === 'https:' && /(^|\.)alipay\.com$/i.test(target.hostname) && !target.username && !target.password) launchUrl = target.href;
+  } catch {}
+  appLink.hidden = !showQr || !launchUrl;
+  if (!appLink.hidden) appLink.setAttribute('href', launchUrl);
+  else appLink.removeAttribute('href');
   $('alipay-start').textContent = state.id || ['expired', 'error'].includes(state.phase) ? '刷新二维码' : '生成二维码';
   $('alipay-start').disabled = alipayBusy;
   $('alipay-cancel').hidden = !state.id || ['cancelled', 'saved'].includes(state.phase);
